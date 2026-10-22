@@ -62,6 +62,17 @@ func TestMusicianCompletedPlayDoesNotRequireSongConfiguration(t *testing.T) {
 	}
 }
 
+func TestMusicianPlaylistOnlySourceReachesAccountValidation(t *testing.T) {
+	c, output := musicianPlayTestCommand()
+	c.root.Cfg.PlayIds = &config.PlayIdsConfig{PlaylistIDs: config.StringOrSlice{"123"}}
+	err := c.handlePlayTask(t.Context(), nil, eapi.MusicianVipSubTask{
+		MissionCode: musicianPlayCountCode, TotalCompleteNum: 1,
+	}, 0)
+	if err == nil || !strings.Contains(err.Error(), "未配置任何账号") {
+		t.Fatalf("playlist-only source should reach account validation without network, err=%v, output=%s", err, output)
+	}
+}
+
 func TestCalcNeededPlayCount(t *testing.T) {
 	tests := []struct {
 		name      string

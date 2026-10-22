@@ -301,6 +301,11 @@ func (c *PlayIds) executeForCookie(ctx context.Context, cookieFile string, uniqu
 		return 0, fmt.Errorf("创建网络客户端失败: %w", err)
 	}
 	defer cli.Close(ctx)
+	return c.executeForClient(ctx, cli, cookieFile, uniqueIds, playlistSources...)
+}
+
+// 使用已绑定当前账号的客户端执行播放，歌单和主歌计数共用这次会话解析的候选池。
+func (c *PlayIds) executeForClient(ctx context.Context, cli *api.Client, cookieFile string, uniqueIds []string, playlistSources ...string) (int64, error) {
 	var request = weapi.New(cli)
 
 	user, err := request.GetUserInfo(ctx, &weapi.GetUserInfoReq{})
