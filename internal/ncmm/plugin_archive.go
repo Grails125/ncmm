@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -136,9 +137,11 @@ func readPluginArchive(data []byte, filename string) ([]pluginArchiveEntry, stri
 	}
 	if executable == "" {
 		for _, entry := range entries {
-			if isExecutableFile(entry.name) && entry.mode&0111 != 0 {
+			if isExecutableFile(entry.name) && (runtime.GOOS == "windows" || entry.mode&0111 != 0) {
+				if executable != "" {
+					return nil, "", fmt.Errorf("插件包包含多个执行入口")
+				}
 				executable = entry.name
-				break
 			}
 		}
 	}
@@ -280,15 +283,31 @@ func preservePluginFiles(oldDir, newDir string) error {
 		if err != nil {
 			return err
 		}
-		total += info.Size()
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("插件本地数据含特殊文件，请手动处理后升级")
+		}
 		count++
-		if total > pluginArchiveLimit || count > 4096 {
+		remaining := int64(pluginArchiveLimit) - total
+		if info.Size() > remaining || count > 4096 {
 			return fmt.Errorf("插件本地数据过大，请手动备份并升级")
 		}
-		data, err := os.ReadFile(current)
+		file, err := os.Open(current)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(dest, data, info.Mode().Perm())
+		data, err := io.ReadAll(io.LimitReader(file, remaining+1))
+		_ = file.Close()
+		if err != nil {
+			return err
+		}
+		total += int64(len(data))
+		if total > pluginArchiveLimit {
+			return fmt.Errorf("插件本地数据过大，请手动备份并升级")
+		}
+		if err := os.WriteFile(dest, data, info.Mode().Perm()); err != nil {
+			return err
+		}
+		// 覆盖已解包配置时 WriteFile 不会收紧既有权限，必须恢复用户文件权限。
+		return os.Chmod(dest, info.Mode().Perm())
 	})
 }

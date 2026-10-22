@@ -49,3 +49,37 @@ func TestPluginPlatformAPIContracts(t *testing.T) {
 		t.Fatalf("bad public market %s", response.Body.String())
 	}
 }
+
+func TestPluginMutationAdmissionBlocksActiveAndNewRuns(t *testing.T) {
+	manager := newControlledRunManager(t, 1)
+	manager.runs["custom"] = RunRecord{Command: "plugin", Args: []string{"run", "demo", "--", "--amount", "1"}, Status: "queued"}
+	if _, err := manager.reservePluginMutation("demo"); err == nil {
+		t.Fatal("queued plugin admitted upgrade")
+	}
+	manager.runs["custom"] = RunRecord{Command: "plugin", Args: []string{"run", "demo"}, Status: "running"}
+	if _, err := manager.reservePluginMutation("DEMO"); err == nil {
+		t.Fatal("running plugin admitted upgrade")
+	}
+	delete(manager.runs, "custom")
+	release, err := manager.reservePluginMutation("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = manager.reservePluginMutation("demo"); err == nil {
+		t.Fatal("duplicate mutation admitted")
+	}
+	if _, err = manager.start(context.Background(), Schedule{Command: "plugin", Args: []string{"run", "demo"}}); err == nil || !strings.Contains(err.Error(), "升级") {
+		t.Fatalf("new run not blocked: %v", err)
+	}
+	otherRelease, err := manager.reservePluginMutation("other")
+	if err != nil {
+		t.Fatal("unrelated plugin blocked")
+	}
+	otherRelease()
+	release()
+	done, err := manager.reservePluginMutation("demo")
+	if err != nil {
+		t.Fatal("reservation not released")
+	}
+	done()
+}

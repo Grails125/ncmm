@@ -61,3 +61,22 @@ func TestPluginArchiveRejectsTraversalAndKeepsInstalledVersion(t *testing.T) {
 		t.Fatalf("old installation changed on failure: %q %v", got, err)
 	}
 }
+
+func TestPluginArchiveRejectsAmbiguousEntrypoints(t *testing.T) {
+	var data bytes.Buffer
+	writer := zip.NewWriter(&data)
+	for _, name := range []string{"first.exe", "second.exe"} {
+		header := &zip.FileHeader{Name: name}
+		header.SetMode(0755)
+		entry, err := writer.CreateHeader(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry.Write([]byte("never run"))
+	}
+	writer.Close()
+	_, _, err := readPluginArchive(data.Bytes(), "ambiguous.zip")
+	if err == nil {
+		t.Fatal("multiple unprefixed entrypoints accepted")
+	}
+}

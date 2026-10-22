@@ -1181,7 +1181,12 @@ func (s *Server) handlePluginDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	operation := func() error { return s.plugins.UninstallPlugin(name) }
-	var err error
+	release, err := s.runner.reservePluginMutation(name)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	defer release()
 	if s.daemons != nil {
 		err = s.daemons.mutate(name, false, operation)
 	} else {

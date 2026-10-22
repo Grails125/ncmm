@@ -2,6 +2,7 @@ package webui
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -59,11 +60,16 @@ func (s *Server) handlePluginUpgrade(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "插件名称不能为空")
 		return
 	}
+	release, err := s.runner.reservePluginMutation(name)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	defer release()
 	operation := func() error {
 		_, err := s.plugins.UpgradePlugin(r.Context(), name, input.Token, input.Proxy)
 		return err
 	}
-	var err error
 	if s.daemons != nil {
 		err = s.daemons.mutate(name, true, operation)
 	} else {
@@ -74,4 +80,39 @@ func (s *Server) handlePluginUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"success": true, "name": name})
+}
+
+func pluginTaskName(command string, args []string) string {
+	if command != "plugin" {
+		return ""
+	}
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "run" {
+			return strings.ToLower(args[i+1])
+		}
+	}
+	return ""
+}
+
+// 同一服务中的任务准入与升级互斥，网络期间不持有任务锁，也不阻塞其他插件。
+func (m *runManager) reservePluginMutation(name string) (func(), error) {
+	if m == nil {
+		return func() {}, nil
+	}
+	key := strings.ToLower(strings.TrimSpace(name))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.mutatingPlugins[key] {
+		return nil, fmt.Errorf("插件正在升级或卸载，请完成后重试")
+	}
+	for _, run := range m.runs {
+		if (run.Status == "running" || run.Status == "queued") && pluginTaskName(run.Command, run.Args) == key {
+			return nil, fmt.Errorf("插件仍有运行或排队任务，请先停止任务再升级或卸载")
+		}
+	}
+	if m.mutatingPlugins == nil {
+		m.mutatingPlugins = make(map[string]bool)
+	}
+	m.mutatingPlugins[key] = true
+	return func() { m.mu.Lock(); delete(m.mutatingPlugins, key); m.mu.Unlock() }, nil
 }
