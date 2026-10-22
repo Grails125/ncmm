@@ -2,9 +2,11 @@ package webui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,6 +82,98 @@ func TestServerStartsSchedulerOnlyAfterListenerIsBound(t *testing.T) {
 	}
 	if server.scheduler.isActive() {
 		t.Fatal("scheduler active after listener bind failure")
+	}
+}
+
+func TestServerRunEphemeralPortPreservesHostValidation(t *testing.T) {
+	for _, host := range []string{"127.0.0.1", "localhost"} {
+		t.Run(host, func(t *testing.T) {
+			home := t.TempDir()
+			ctx, cancel := context.WithCancel(context.Background())
+			server := newLifecycleTestServer(t, ctx, home, net.JoinHostPort(host, "0"))
+			done := make(chan struct{})
+			var runErr error
+			go func() {
+				runErr = server.Run(ctx)
+				close(done)
+			}()
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-done:
+					if runErr != nil {
+						t.Errorf("Server.Run() shutdown: %v", runErr)
+					}
+				case <-time.After(5 * time.Second):
+					t.Error("Server.Run() did not stop")
+				}
+			})
+
+			var metadata instanceMetadata
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				var err error
+				metadata, err = readInstanceMetadata(filepath.Join(home, InstanceLockFilename))
+				if err == nil && metadata.Listen != "" && metadata.InstanceID != "" {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			_, port, err := net.SplitHostPort(metadata.Listen)
+			if err != nil || port == "0" || metadata.InstanceID == "" {
+				t.Fatalf("listener did not publish an assigned port: metadata=%+v, err=%v", metadata, err)
+			}
+
+			client := &http.Client{Timeout: 2 * time.Second}
+			defer client.CloseIdleConnections()
+			for _, test := range []struct {
+				name string
+				host string
+				want int
+			}{
+				{name: "assigned address", host: metadata.Listen, want: http.StatusOK},
+				{name: "configured hostname", host: net.JoinHostPort(host, port), want: http.StatusOK},
+				{name: "wrong hostname", host: net.JoinHostPort("attacker.example", port), want: http.StatusMisdirectedRequest},
+				{name: "wrong port", host: net.JoinHostPort(host, "1"), want: http.StatusMisdirectedRequest},
+			} {
+				t.Run(test.name, func(t *testing.T) {
+					req, err := http.NewRequest(http.MethodGet, "http://"+metadata.Listen+"/api/v1/instance", nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					req.Host = test.host
+					response, err := client.Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer response.Body.Close()
+					if response.StatusCode != test.want {
+						t.Fatalf("Host %q status = %d; want %d", test.host, response.StatusCode, test.want)
+					}
+					if test.want == http.StatusOK {
+						var instance struct {
+							InstanceID string `json:"instanceId"`
+						}
+						if err := json.NewDecoder(response.Body).Decode(&instance); err != nil {
+							t.Fatal(err)
+						}
+						if instance.InstanceID != metadata.InstanceID {
+							t.Fatalf("instance ID = %q; want %q", instance.InstanceID, metadata.InstanceID)
+						}
+					}
+				})
+			}
+
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Server.Run() did not stop")
+			}
+			if server.opts.Listen != net.JoinHostPort(host, port) {
+				t.Fatalf("listener changed configured hostname: got %q", server.opts.Listen)
+			}
+		})
 	}
 }
 
