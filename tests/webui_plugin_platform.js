@@ -181,9 +181,11 @@ fs.mkdirSync(output, { recursive: true });
       await page.setViewportSize({ width, height: 1000 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `mobile viewport overflow at ${width}`);
       // 后台轮询会替换卡片节点，在同一次浏览器求值中读取元素和布局，避免跨请求读到已脱离的旧节点。
-      const installedLayout = await page.locator('.plugin-card[data-name="qqbot"], #plugin-check-updates:visible, #plugin-cards-grid button:visible').evaluateAll(elements => elements.map(element => {
+      const installedLayout = await page.evaluate(() => Array.from(document.querySelectorAll('.plugin-card[data-name="qqbot"], #plugin-check-updates, #plugin-cards-grid button')).flatMap(element => {
+        const card = element.classList.contains('plugin-card');
+        if (!card && (!element.getClientRects().length || getComputedStyle(element).visibility === 'hidden')) return [];
         const { x, width, height } = element.getBoundingClientRect();
-        return { card: element.classList.contains('plugin-card'), action: element.dataset.pluginAction, label: element.textContent.trim(), x, width, height };
+        return [{ card, action: element.dataset.pluginAction, label: element.textContent.trim(), x, width, height }];
       }));
       const bounds = installedLayout.find(element => element.card);
       const fitsViewport = element => element && element.width > 0 && element.height > 0 && element.x >= 0 && element.x + element.width <= width + 1;
@@ -201,7 +203,7 @@ fs.mkdirSync(output, { recursive: true });
       assert(dialog && dialog.x >= 0 && dialog.x + dialog.width <= width + 1, `upgrade dialog clipped at ${width}`);
       await page.locator('[data-close-dialog="plugin-upgrade-dialog"]').click();
       await page.locator('#plugin-tab-market').click();
-      const marketActions = await page.locator('#plugin-market-grid button:visible').evaluateAll(elements => elements.map(element => {
+      const marketActions = await page.evaluate(() => Array.from(document.querySelectorAll('#plugin-market-grid button')).filter(element => element.getClientRects().length && getComputedStyle(element).visibility !== 'hidden').map(element => {
         const { x, width, height } = element.getBoundingClientRect();
         return { label: element.textContent.trim(), x, width, height };
       }));
