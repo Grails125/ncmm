@@ -27,6 +27,7 @@
     update: null,
     updateChecked: false,
     updateBusy: false,
+    updateRevision: 0,
     restartPending: false,
     restartError: '',
     accountMain: false,
@@ -464,11 +465,14 @@
   }
 
   async function loadOptionalState() {
+    const updateRevision = state.updateRevision;
     const requests = [
       ['通知配置', '/api/v1/notify', value => { state.notify = value; }],
       ['配置元数据', '/api/v1/config/schema', value => { state.configSchema = value; }],
       ['认证策略', '/api/v1/auth/settings', value => { state.authSettings = value; state.savedAuthSettings = structuredClone(value); }],
-      ['版本信息', '/api/v1/update', value => { state.update = value; }],
+      ['版本信息', '/api/v1/update', value => {
+        if (updateRevision === state.updateRevision && !state.updateBusy) state.update = value;
+      }],
       ['二维码状态', '/api/v1/accounts/qrcode', value => { state.qrcodeSession = value; }],
 	  ['有效播放统计', '/api/v1/play-stats', value => {
 		state.playStats = value;
@@ -3017,6 +3021,7 @@
 
   async function applyUpdate() {
     if (state.updateBusy || state.restartPending) return;
+    state.updateRevision += 1;
     state.updateBusy = true;
     renderUpdateStatus();
     try {
@@ -3099,9 +3104,10 @@
 	  if (!state.authenticated || generation !== state.pollGeneration) return;
       renderRuns(); renderStatus(); renderSchedules(); renderDashboard();
       if (state.currentPage === 'system' && !state.updateBusy) {
+        const updateRevision = state.updateRevision;
         try {
           const update = await api('/api/v1/update');
-          if (state.authenticated && generation === state.pollGeneration && !state.updateBusy) { state.update = update; renderUpdateStatus(); }
+          if (state.authenticated && generation === state.pollGeneration && updateRevision === state.updateRevision && !state.updateBusy) { state.update = update; renderUpdateStatus(); }
         } catch { /* 保留上次更新状态，下次轮询重试。 */ }
       }
       if (state.currentPage === 'plugins') await refreshPlugins();
@@ -4054,6 +4060,7 @@
     });
     $('#update-check').addEventListener('click', async () => {
       if (state.updateBusy || state.restartPending) return;
+      state.updateRevision += 1;
       state.updateBusy = true;
       renderUpdateStatus();
       const button = $('#update-check'); button.disabled = true;

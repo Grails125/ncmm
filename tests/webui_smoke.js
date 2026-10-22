@@ -341,19 +341,21 @@ async function hasHorizontalScroll(locator, label) {
   });
   assert(Math.abs(overviewLayout.productHeight - overviewLayout.serviceHeight) < 1, `system overview cards were not equal height: ${JSON.stringify(overviewLayout)}`);
   assert(overviewLayout.serviceBottomSpace > 20, `service addresses were still pinned to the card bottom: ${JSON.stringify(overviewLayout)}`);
-  await page.route('**/api/v1/update/check', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({ current_version: '1.2.0', latest_version: '1.2.0', last_check_time: now, os: 'windows', arch: 'amd64', available: false, message: '当前已是最新版本。' }),
-  }));
+  let updateStatus = { current_version: '1.2.0', os: 'windows', arch: 'amd64', available: false };
+  await page.route('**/api/v1/update', route => route.fulfill({ status: 200, json: updateStatus }));
+  await page.route('**/api/v1/update/check', route => {
+    updateStatus = { ...updateStatus, latest_version: '1.2.0', last_check_time: now, message: '当前已是最新版本。' };
+    return route.fulfill({ status: 200, json: updateStatus });
+  });
   await page.locator('#update-check').click();
   await page.locator('#update-panel').waitFor({ state: 'visible' });
-  await page.waitForFunction(() => document.querySelector('#update-status-title')?.textContent === '当前已是最新版本');
+  await page.waitForFunction(() => !document.querySelector('#update-check')?.disabled && document.querySelector('#update-status-title')?.textContent === '当前已是最新版本' && document.querySelector('#update-message')?.textContent.startsWith('检查时间：'));
   const updatePanelText = await page.locator('#update-panel').innerText();
   assert((updatePanelText.match(/当前已是最新版本/g) || []).length === 1, `latest-version result was duplicated: ${updatePanelText}`);
   assert((await page.locator('#update-message').textContent()).startsWith('检查时间：'), 'checked update details did not show the check time');
   await page.screenshot({ path: path.join(outputDir, 'desktop-system.png'), fullPage: true });
   await page.unroute('**/api/v1/update/check');
+  await page.unroute('**/api/v1/update');
   await page.locator('[data-system-tab="security"]').click();
   assert(Number(await page.locator('#password-min-length').inputValue()) === 1, 'default password minimum length was not 1');
   assert(!(await page.locator('#require-letters').isChecked()) && !(await page.locator('#require-digits').isChecked()) && !(await page.locator('#require-symbols').isChecked()), 'default password character requirements were enabled');
