@@ -24,15 +24,53 @@ permissions:
   packages: write
 
 jobs:
+  resolve:
+    name: Resolve immutable source commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      commit_sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - name: Checkout requested source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+          persist-credentials: false
+
+      - name: Record immutable source commit
+        id: commit
+        run: |
+          # 分支和标签只在此解析一次，后续检查及发布仅使用固定 SHA。
+          SOURCE_SHA=$(git rev-parse --verify 'HEAD^{commit}')
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          printf 'sha=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+  quality:
+    name: Validate release source
+    needs: [resolve]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/quality-checks.yml
+    with:
+      commit_sha: ${{ needs.resolve.outputs.commit_sha }}
+
   docker:
     name: Build & Push Docker Image
+    needs: [resolve, quality]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.commit_sha || github.sha }}
+          ref: ${{ needs.resolve.outputs.commit_sha }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify validated source commit
+        env:
+          EXPECTED_COMMIT: ${{ needs.resolve.outputs.commit_sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
 
       - name: Verify native integration sources
         run: |

@@ -6,7 +6,7 @@
 请使用本仓库源码构建。原来的 v1.2.9 分发仓库未公开对应源码，本分支不宣称包含 v1.2.3–v1.2.9 的全部改动；已有较新实例请使用独立数据目录。详见 [源码基线](docs/source-baseline.md) 和 [原生评分说明](docs/music-partner.md)。
 
 ```bash
-git clone --branch codex/native-music-partner https://github.com/Grails125/ncmm.git
+git clone --branch main https://github.com/Grails125/ncmm.git
 cd ncmm
 docker compose up -d --build
 ```
@@ -41,6 +41,12 @@ docker compose up -d --build
 
 启动后访问 [http://127.0.0.1:3899](http://127.0.0.1:3899)，首次打开按页面提示设置管理员密码。详细操作见 [WebUI 使用说明](docs/webui.md)。
 
+省略 `--home` 时，程序优先复用原默认数据目录中的 `config.yaml` 或 `config.yml`；未找到时，按当前目录、`data/`、`run/`、`.ncmm/`、`config/`、`configs/`、`conf/` 的顺序查找同名配置，找到后使用该文件所在目录保存账号、认证及运行数据。只检查这些标准文件名，不递归读取备份或临时文件。已有配置会直接复用；WebUI 仅在未找到配置时创建默认文件。
+
+自动发现的配置会先在内存中迁移旧字段并校验，通过后才按原流程备份、升级文件；不会先用默认模板覆盖空白配置、其他应用的配置或损坏文件。旧版 `musicianVip`、`primary` 等字段仍可自动升级，已有音乐合伙人配置继续保留。
+
+多实例请显式指定 `--home`：它优先于 `NCMM_HOME` 环境变量，两者都会隔离查找范围，不回退到当前目录的其他实例。官方 Docker 默认固定使用 `/data`。`--config` 精确指定配置文件但不改变已选 home；配置和数据放在不同目录时，请同时传入两个参数。选中的配置损坏会报错，不会静默切换实例。完整优先级见 [命令行说明](docs/cli.md)。
+
 ### 使用命令行
 
 ```bash
@@ -73,6 +79,7 @@ docker compose up -d --build
 * 📖 [命令行使用说明](docs/cli.md) — 查看完整的命令树、通用参数以及所有子命令的使用实例。
 * 👥 [多账号隔离最佳实践](docs/multi-accounts.md) — 学习如何使用 `--home` 管理多个粉丝账号，实现全自动接力刷量。
 * 📝 [版本更新记录](docs/changelog.md) — 查看历史版本的新增功能、架构优化与 Bug 修复记录。
+* 🔄 [本分支的更新与发布](docs/native-updates.md) — 一键更新、备份恢复及固定提交的发布质量门禁。
 
 ---
 
