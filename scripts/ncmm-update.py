@@ -6,8 +6,8 @@ cron: 1 1 1 1 1
 new Env('NCMM 安装、更新')
 
 更新规则（重点）：
-  本脚本**不维护任何自己的更新规则** —— 版本判断、下载源、加速镜像、解压、二进制替换、
-  配置结构升级全部由 ncmm 自己决定，与 ncmm 的自动更新是同一套规则。
+  本脚本只允许更新带 -grails. 标识的本分支程序。版本比较、下载、解压和配置升级
+  由该程序自身处理；首次安装仅从 Grails125/ncmm 获取发布包。
 
   * 已经装好 ncmm：进入 ncmm 程序目录执行 `ncmm update --apply`，
     脚本只负责"手动触发 + 日志回显 + 记录 VERSION"。
@@ -74,8 +74,8 @@ def get_latest_release():
     
     # 1. 尝试 GitHub API
     api_urls = [
-        "https://api.github.com/repos/3899/ncmm/releases/latest",
-        "https://gh-proxy.com/https://api.github.com/repos/3899/ncmm/releases/latest"
+        "https://api.github.com/repos/Grails125/ncmm/releases/latest",
+        "https://gh-proxy.com/https://api.github.com/repos/Grails125/ncmm/releases/latest"
     ]
     for url in api_urls:
         try:
@@ -92,10 +92,10 @@ def get_latest_release():
             
     # 2. 备用方案：重定向解析 (依次尝试加速镜像与 GitHub 原地址兜底)
     redirect_urls = [
-        "https://gh-proxy.com/https://github.com/3899/ncmm/releases/latest",
-        "https://ghproxy.net/https://github.com/3899/ncmm/releases/latest",
-        "https://githubproxy.cc/https://github.com/3899/ncmm/releases/latest",
-        "https://github.com/3899/ncmm/releases/latest"
+        "https://gh-proxy.com/https://github.com/Grails125/ncmm/releases/latest",
+        "https://ghproxy.net/https://github.com/Grails125/ncmm/releases/latest",
+        "https://githubproxy.cc/https://github.com/Grails125/ncmm/releases/latest",
+        "https://github.com/Grails125/ncmm/releases/latest"
     ]
     for url in redirect_urls:
         try:
@@ -280,7 +280,7 @@ def run_ncmm_cli(binary_path, args, timeout=NCMM_UPDATE_TIMEOUT, capture=False):
         return 1, ""
 
 def query_binary_version(binary_path):
-    """读取二进制自身报告的版本号，仅用于日志与 VERSION 记录。"""
+    """读取二进制自身报告的版本号，用于更新来源检查和 VERSION 记录。"""
     code, output = run_ncmm_cli(binary_path, ["--version"], timeout=30, capture=True)
     if code != 0:
         return None
@@ -338,7 +338,7 @@ def install_from_archive(remote_tag, assets, binary_name, binary_path, config_pa
 
     if not download_url:
         print("[WARNING] GitHub API 资源匹配失败，尝试手动拼接下载链接...")
-        download_url = f"https://github.com/3899/ncmm/releases/download/{remote_tag}/{asset_filename}"
+        download_url = f"https://github.com/Grails125/ncmm/releases/download/{remote_tag}/{asset_filename}"
 
     # 创建本地临时解压目录
     temp_dir = os.path.join(current_dir, "_temp_ncmm_update_")
@@ -393,7 +393,7 @@ def install_from_archive(remote_tag, assets, binary_name, binary_path, config_pa
 
         if not os.path.exists(default_config_path):
             # 兼容处理：如果解包产物中无 config.yaml，从 GitHub 仓库直接下载最新默认配置
-            raw_config_url = f"https://raw.githubusercontent.com/3899/ncmm/{remote_tag}/config/config.yaml"
+            raw_config_url = f"https://raw.githubusercontent.com/Grails125/ncmm/{remote_tag}/config/config.yaml"
             print("[LOG] 解压缩产物中缺少 config.yaml，正在从 GitHub 下载默认配置文件备用...")
             default_config_path = os.path.join(temp_dir, "config.yaml")
             if not download_file_with_fallback(raw_config_url, default_config_path, headers=headers, timeout=15):
@@ -448,15 +448,22 @@ def main():
         if not remote_tag:
             print("[ERROR] 无法获取 GitHub 最新版本信息，安装中止。")
             sys.exit(1)
+        if not re.fullmatch(r'v?[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+', remote_tag):
+            print("[ERROR] 仓库尚无符合版本标识的原生评分发布包，请先从源码构建。")
+            sys.exit(1)
         print(f"[LOG] GitHub 最新版本为: {remote_tag}")
         ok = install_from_archive(remote_tag, assets, binary_name, binary_path, config_path, version_file)
         sys.exit(0 if ok else 1)
 
-    # 已有程序：手动触发 ncmm 自身的更新规则，脚本不做任何版本判断
+    # 旧上游二进制仍内置上游下载源，不能委托它更新本分支。
     print(f"[LOG] 当前 VERSION 记录: {read_local_version(version_file)}")
     current = query_binary_version(binary_path)
     if current:
         print(f"[LOG] 二进制当前版本: {current}")
+    if not current or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+', current):
+        print("[ERROR] 当前程序不是带 -grails. 标识的原生评分版本，已停止自动更新。")
+        print("[LOG] 请先从 Grails125/ncmm 构建或安装本分支发布包，再使用此更新脚本。")
+        sys.exit(1)
     print("[LOG] 交由 ncmm 自身的更新规则执行（ncmm update --apply），脚本仅做手动触发...")
 
     if not update_with_ncmm(binary_path, binary_name):

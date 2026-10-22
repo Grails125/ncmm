@@ -1,40 +1,29 @@
 services:
   ncmm:
-    # build 用于本地源码构建；image 同时作为构建标签和官方镜像拉取地址。
-    # build: .
-    image: ghcr.io/3899/ncmm:latest
-    container_name: ncmm
+    # 从当前仓库构建，保留原生评分功能；不拉取上游 3899 镜像。
+    build:
+      context: .
+    image: ncmm-native:local
+    pull_policy: never
     restart: unless-stopped
     ports:
-      - 3899:3899
+      - "127.0.0.1:3899:3899"
     volumes:
       - ./data:/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - TZ=Asia/Shanghai
+      TZ: Asia/Shanghai
+      NCMM_UPDATER_AUTO_UPDATE: "false"
+      # 每天 08:30 执行配置中已启用的任务；先在 WebUI 登录并设置任务开关。
+      # 这条环境规则在 WebUI 中只读。改用 WebUI 管理时删除它，避免重复调度。
+      CRON_1: "30 8 * * * task"
+      # COOKIECLOUD_SERVER: http://host.docker.internal:8088
+      # COOKIECLOUD_UUID: your-uuid
+      # COOKIECLOUD_PASSWORD: your-password
 
-      # CookieCloud 配置（服务运行在宿主机时使用 host.docker.internal）
-      #- COOKIECLOUD_SERVER=http://host.docker.internal:8088
-      #- COOKIECLOUD_UUID=your-uuid
-      #- COOKIECLOUD_PASSWORD=your-password
-
-      # 旧版 CRON_* 规则仍受支持，并在 WebUI 中显示为只读规则。
-      # 新规则建议直接在 WebUI 的“定时任务”页面创建。
-      # - CRON_1=30 8 * * * task
-      # - CRON_2=0 14 * * * musician
-
-# ============================================================
-# WebUI: http://localhost:3899
-# 首次启动直接打开 WebUI 设置并确认管理员密码。
-# 默认支持内容器更新与 WebUI 一键平滑热重启（保留最近 1 个备份可自动回滚）；
-# 若需升级底层 Docker 基础镜像，也可在宿主机执行：
-#   docker compose pull ncmm
-#   docker compose up -d --force-recreate ncmm
-#
-# 临时执行单个命令：
-#   docker compose run --rm ncmm task
-#   docker compose run --rm ncmm sign
-#   docker compose run --rm ncmm playids --ids 12345
-#   docker compose run --rm ncmm --help
-# ============================================================
+# 启动：docker compose up -d --build
+# 管理：http://127.0.0.1:3899
+# 更新源码后重建：docker compose build --pull && docker compose up -d
+# 查看日志：docker compose logs -f ncmm
+# 手动单次评分：docker compose exec ncmm ncmm --home /data music-partner

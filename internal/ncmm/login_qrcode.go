@@ -1,0 +1,196 @@
+// Copyright (c) 2026 @3899. All rights reserved.
+// Use of this source code is governed by a MIT-style license that can be found in the LICENSE file.
+
+package ncmm
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/3899/ncmm/api"
+	"github.com/3899/ncmm/api/weapi"
+	"github.com/3899/ncmm/config"
+	"github.com/3899/ncmm/pkg/log"
+
+	qrcode2 "github.com/skip2/go-qrcode"
+	"github.com/spf13/cobra"
+)
+
+type loginQrcodeCmd struct {
+	root *Login
+	cmd  *cobra.Command
+	l    *log.Logger
+
+	timeout time.Duration // 登录超时时间
+	dir     string        // 二维码文件路径
+	level   int           // 二维码恢复能力等级
+	output  string        // Cookie 输出文件路径
+}
+
+func qrcode(root *Login, l *log.Logger) *cobra.Command {
+	c := &loginQrcodeCmd{
+		root: root,
+		l:    l,
+	}
+	c.cmd = &cobra.Command{
+		Use:     "qrcode",
+		Short:   "use qrcode login",
+		Example: "  ncmm login qrcode",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return c.execute(cmd.Context(), args)
+		},
+	}
+	c.addFlags()
+	return c.cmd
+}
+
+func (c *loginQrcodeCmd) addFlags() {
+	c.cmd.Flags().DurationVarP(&c.timeout, "timeout", "t", time.Minute*5, "login timeout, eg: 1s、1m")
+	c.cmd.Flags().StringVarP(&c.dir, "dir", "d", "", "qrcode file output path. default ./")
+	c.cmd.Flags().IntVarP(&c.level, "level", "l", 1, "qrcode recovery capacity,0->7% 1->15%(default) 2->25% 3->30%")
+	c.cmd.Flags().StringVarP(&c.output, "output", "o", "", "output cookie file path")
+}
+
+func (c *loginQrcodeCmd) execute(ctx context.Context, _ []string) error {
+	if c.level < 0 || c.level > 3 {
+		return fmt.Errorf("qrcode level must be 0-3")
+	}
+
+	networkCfg := c.root.root.Cfg.Network
+	var tempCookieFile string
+	if c.output != "" {
+		outputPath := c.output
+		if !filepath.IsAbs(outputPath) {
+			var targetDir string
+			if networkCfg.Cookie.Filepath != "" {
+				targetDir = filepath.Dir(networkCfg.Cookie.Filepath)
+			} else {
+				home := c.root.root.Opts.Home
+				if home == "" {
+					home = config.HomeDir
+				}
+				targetDir = filepath.Clean(home)
+			}
+			outputPath = filepath.Join(targetDir, outputPath)
+		}
+		tempCookieFile = filepath.Clean(outputPath)
+		networkCfgCopy := *networkCfg
+		networkCfgCopy.Cookie.Filepath = tempCookieFile
+		networkCfg = &networkCfgCopy
+	} else if !c.root.isMain {
+		var targetDir string
+		if networkCfg.Cookie.Filepath != "" {
+			targetDir = filepath.Dir(networkCfg.Cookie.Filepath)
+		} else {
+			home := c.root.root.Opts.Home
+			if home == "" {
+				home = config.HomeDir
+			}
+			targetDir = filepath.Clean(home)
+		}
+		tempCookieFile = filepath.Join(targetDir, "temp_cookie.json")
+		networkCfgCopy := *networkCfg
+		networkCfgCopy.Cookie.Filepath = tempCookieFile
+		networkCfg = &networkCfgCopy
+	}
+
+	cli, err := api.NewClient(networkCfg, c.l)
+	if err != nil {
+		return fmt.Errorf("NewClient: %w", err)
+	}
+	defer cli.Close(ctx)
+	request := weapi.New(cli)
+
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	// 1. 生成key
+	key, err := request.QrcodeCreateKey(ctx, &weapi.QrcodeCreateKeyReq{Type: 1})
+	if err != nil {
+		return fmt.Errorf("QrcodeCreateKey: %w", err)
+	}
+	if key.UniKey == "" {
+		return fmt.Errorf("QrcodeCreateKey resp: %+v\n", key)
+	}
+
+	// 2. 生成二维码
+	qr, err := request.QrcodeGenerate(ctx, &weapi.QrcodeGenerateReq{
+		CodeKey:  key.UniKey,
+		Level:    qrcode2.RecoveryLevel(c.level),
+		Platform: "web",
+		DeviceId: ""})
+	if err != nil {
+		return fmt.Errorf("QrcodeGenerate: %s", err)
+	}
+
+	// 3. 手机扫码
+	if c.dir == "" {
+		dir, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		c.dir = dir
+	}
+	if err := os.MkdirAll(c.dir, os.ModePerm); err != nil {
+		return fmt.Errorf("MkdirAll: %w", err)
+	}
+	var file = filepath.Join(c.dir, "qrcode.png")
+	if err := os.WriteFile(file, qr.Qrcode, os.ModePerm); err != nil {
+		return err
+	}
+	c.cmd.Println(">>>>> please scan qrcode in your phone <<<<<")
+	c.cmd.Printf("qrcode content: https://music.163.com/login?codekey=%s\n", key.UniKey)
+	c.cmd.Printf("qrcode file: %s\n", file)
+	c.cmd.Printf("qrcode: \n%s\n", qr.QrcodePrint)
+
+	// 4. 轮训获取扫码状态
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		time.Sleep(time.Second * 3)
+		resp, err := request.QrcodeCheck(ctx, &weapi.QrcodeCheckReq{Type: 1, Key: key.UniKey})
+		if err != nil {
+			return fmt.Errorf("QrcodeCheck: %w", err)
+		}
+		log.Debug("QrcodeCheck resp: %v\n", resp)
+		switch resp.Code {
+		case 800: // 二维码不存在、已过期、用户取消授权
+			return fmt.Errorf("current QrcodeCheck resp: %v\n", resp)
+		case 801: // 等待扫码
+			continue
+		case 802: // 正在扫码授权中
+			continue
+		case 803: // 授权登录成功
+			goto ok
+		default:
+			return fmt.Errorf("登录失败 QrcodeCheck resp: %v\n", resp)
+		}
+	}
+ok:
+
+	if err := os.Remove(file); err != nil {
+		if !os.IsNotExist(err) {
+			log.Info("remove qrcode file: %s", err)
+		}
+	}
+
+	// 5. 查询登录信息是否成功
+	user, err := request.GetUserInfo(ctx, &weapi.GetUserInfoReq{})
+	if err != nil {
+		return fmt.Errorf("GetUserInfo: %s", err)
+	}
+	c.cmd.Printf("login success: uid=%d nickname=%s\n", user.Account.Id, user.Profile.Nickname)
+
+	err = c.root.saveLoginResult(ctx, user.Profile.Nickname, user.Profile.AvatarUrl, user.Account.Id, tempCookieFile, c.output, "")
+	if err != nil {
+		return err
+	}
+	return nil
+}

@@ -1,151 +1,97 @@
-# Docker 部署指南
+# Docker 部署
 
-预览图：
+本分支将音乐合伙人评分编译进 `ncmm` 主程序，与账号、批量任务、定时任务、日志和通知共用同一套功能。镜像只运行 Go 程序，不需要 Python、桌面环境或评分插件。
 
-![webui](.\pic\webui.jpg)
+当前构建版本为 `1.2.2-grails.1`，源码恢复自保留完整代码的 v1.2.2 fork，**不是上游 v1.2.9 的完整源码**。来源及功能边界见 [源码基线说明](source-baseline.md)。已有 v1.2.9 部署先保留原镜像和完整数据备份，使用独立目录验证本分支，勿直接复用正在运行的数据目录。
 
+## 构建并启动
 
-
-Docker 镜像默认启动 WebUI 和内置定时任务调度器，访问地址为 `http://localhost:3899`。运行数据、配置、Cookie 和日志统一保存在挂载的 `/data` 目录。
-
-镜像启动命令是 `ncmm web --listen 0.0.0.0:3899`；`web` 本身已经包含调度能力，不需要额外参数。每条定时规则通过自身开关独立启停，并按各自 cron 触发。
-
-
-
-## Docker Compose
-
-```yaml
-services:
-  ncmm:
-    image: ghcr.io/3899/ncmm:latest
-    container_name: ncmm
-    restart: unless-stopped
-    ports:
-      - 3899:3899
-    volumes:
-      - ./data:/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - TZ=Asia/Shanghai
-      # HTTPS 反向代理访问时启用 Secure Session Cookie。
-      # - NCMM_WEB_SECURE_COOKIE=true
-      # - COOKIECLOUD_SERVER=http://host.docker.internal:8088
-      # - COOKIECLOUD_UUID=your-uuid
-      # - COOKIECLOUD_PASSWORD=your-password
-```
-
-如果镜像拉取失败，可采用加速代理镜像：ghcr.1ms.run/3899/ncmm:latest
-
-启动容器：
+安装 Docker Engine 和 Docker Compose v2，在本仓库根目录执行：
 
 ```bash
+docker compose up -d --build
+docker compose logs -f ncmm
+```
+
+Compose 从当前源码构建 `ncmm-native:local`，不会下载 `ghcr.io/3899/ncmm:latest` 覆盖内置评分功能。默认只在宿主机 `127.0.0.1:3899` 发布 WebUI 端口；服务器可通过 SSH 端口转发访问，或在完成首次密码设置后配置 HTTPS 反向代理。
+
+默认配置：
+
+| 项目 | 设置 |
+| --- | --- |
+| WebUI | `http://127.0.0.1:3899` |
+| 时区 | `Asia/Shanghai` |
+| 持久目录 | 仓库下 `./data` 映射到容器 `/data` |
+| 自动运行 | 每天北京时间 08:30 执行 `ncmm task` |
+| 更新方式 | 更新仓库源码后重新构建镜像 |
+
+运行目录保存配置、Cookie、认证、任务记录和进度。一个 `/data` 目录只交给一个 WebUI 实例，避免多套调度器重复执行任务。
+
+## 首次设置和内置评分
+
+1. 打开 WebUI，设置管理员密码。
+2. 在账号中心扫码或导入 Cookie，按需要登记主账号和辅助账号。评分账号必须具有音乐合伙人资格。
+3. 在策略配置中选择所需的现有任务，并开启批量任务中的“音乐合伙人评分”。
+4. 设置评分策略、额外任务及账号范围。默认策略按歌名和作者名中的英文字母选择 3–4 分，不分析音频质量；额外任务默认目标为当天累计 7 首，可选择处理本次列表全部待评作品。
+5. 保存后可先单独运行“音乐合伙人评分”检查结果。完成设置后，默认 08:30 的批量规则会自动包含已启用的评分任务。
+
+对应 YAML 字段（仅展示评分部分，其余已有配置保留）：
+
+```yaml
+task:
+  music-partner: true
+
+musicPartner:
+  enableMain: true
+  enableSecondaries: false
+  score: 3
+  extraTasks: true
+  fullExtraTasks: false
+  extraLimit: 7
+  waitMin: 15
+  waitMax: 20
+  syncYunCircle: false
+```
+
+评分任务启用后应位于 `task.slow_tasks` 列表中，名称为 `music-partner`。默认模板包含此项；已有自定义队列需保留或补入此项。新功能不会自动改写其他任务的业务开关。Cookie 过期、没有合伙人资格或其他任务缺少移动端凭据时，需要在原账号/配置页面处理，Docker 不会绕过这些条件。
+
+## 定时规则
+
+Compose 默认注入 `CRON_1: "30 8 * * * task"`。它由 WebUI 内置 Go 调度器执行，在“定时任务”页面显示为环境变量托管的只读规则。容器启动不会立即执行所有任务。
+
+如果要在 WebUI 自由调整计划，删除 Compose 中的 `CRON_1`，执行 `docker compose up -d` 重建容器，再创建命令为 `task` 的定时规则。不要同时保留重复规则，也不要额外启动 `crond`、青龙或另一套宿主机 cron 执行同一批任务。
+
+可选的独立评分规则使用命令 `music-partner`。如果批量 `task` 已包含评分，一般无需再安排同账号独立评分。
+
+## 手动运行和诊断
+
+```bash
+# 查看内置评分命令
+docker compose exec ncmm ncmm --home /data music-partner --help
+
+# 只运行评分
+docker compose exec ncmm ncmm --home /data music-partner
+
+# 显式通过批量入口只运行评分
+docker compose exec ncmm ncmm --home /data task --music-partner
+
+# 查看容器内程序版本
+docker compose exec ncmm ncmm --version
+```
+
+日常建议从 WebUI 启动和停止任务，以复用调度器的账号排队和日志管理。命令行诊断前确认同一账号没有正在运行的任务。已有 CookieCloud 用户可在 Compose 中填写对应变量；宿主机服务地址使用 `host.docker.internal`，同一 Compose 网络中的服务使用服务名。
+
+## 更新与回退
+
+```bash
+git pull --ff-only
+docker compose build --pull
 docker compose up -d
-docker logs ncmm
+docker compose exec ncmm ncmm --version
 ```
 
-首次启动会在 `./data` 生成：
+容器内二进制自更新保持关闭，更新入口指向 `Grails125/ncmm`。不使用上游官方镜像更新本分支。每次更新前保留已验证的镜像标签，并在停止任务后备份整个 `data` 目录；回退程序时同时核对配置兼容性，不假定旧版本可以直接读取新版本数据。
 
-- `config.yaml`：ncmm 任务配置。
-- `notify.yaml`：通知通道配置。
-- `webui.yaml`：WebUI 定时任务和日志保留设置。
-- `webui-auth.json`：PBKDF2 管理员密码 hash、Session hash、策略和会话元数据，不含明文密码或明文 Session Token。
-- `webui.instance.lock`：WebUI 单实例锁及诊断元数据；容器停止后文件可保留，不能仅据此判断服务是否运行。
-- `log/runs/`：定时任务运行日志。
+非 Docker 安装的更新辅助脚本也只接受版本中带 `-grails.` 标识的本分支二进制。上游旧二进制仍可能内置上游下载源，应先从本仓库源码构建或安装本分支发布包，不能通过调用旧程序的更新命令完成迁移。
 
-## WebUI
-
-打开 `http://localhost:3899`。`/data/webui-auth.json` 尚未配置管理员密码时，页面直接显示与 SimAdmin 一致的首次设置界面，只需设置并确认管理员密码。密码只保存 PBKDF2 加盐 hash；登录成功后浏览器使用 HttpOnly、SameSite=Strict Session Cookie，服务端只保存 Session Token hash。
-
-Compose 默认使用 `127.0.0.1:3899:3899`，只从宿主机本机发布端口。容器内部因网络转发监听 `0.0.0.0`，但首次设置不再要求额外设置码；需要通过局域网或公网访问时，应先在宿主机完成首次设置，再开放端口或 HTTPS 反向代理，并设置 `NCMM_WEB_SECURE_COOKIE=true`。
-
-v1.2.0 不迁移旧 WebUI 令牌。升级后若 `/data/webui-auth.json` 不存在，重新设置管理员密码即可；挂载目录中的 `config.yaml`、Cookie、数据库、`webui.yaml` 调度规则与 `log/runs` 运行记录不会被清理或重建。
-
-旧 v1 `webui.yaml` 会迁移到 schema v2。官方镜像通过内部一次性迁移提示保留旧任务的启用状态；迁移完成后该提示不再影响 scheduler，后续只由每条任务自身的启用状态控制。
-
-同一个 `/data` 卷只能由一个 WebUI 容器实例托管。即使映射到不同宿主机端口，第二个共享该数据卷的实例也会被 home 级实例锁拒绝，避免两套调度器重复执行任务。横向运行多个实例时必须分别挂载独立数据目录。
-
-WebUI 支持：
-
-- 带字段说明可视化编辑 `config.yaml` 和 `notify.yaml`，也可直接编辑 YAML。
-- 支持粘贴 Cookie 或二维码登录，并可自定义导出的 `.json` 文件名。
-- 创建、修改、启停和立即运行定时任务。
-- 查看、停止运行任务以及查看运行日志。
-- 按保留天数和最大容量自动清理日志。
-- 修改管理员密码与密码/会话策略，查看和撤销登录会话，以及手动检查新版本。
-
-忘记管理员密码时，先停止容器，再用相同 `/data` 卷运行一次恢复命令；密码通过标准输入传入，不出现在进程参数中：
-
-```bash
-printf '%s\n' 'New#Password123' | docker run --rm -i -v "$(pwd)/data:/data" ghcr.io/3899/ncmm:latest --home /data auth reset-password --password-stdin
-```
-
-### 任务并发
-
-内置调度器默认最多运行 1 个任务，无需额外配置。可在“运行记录”的运行设置中将最大并发调整为 1–8；即使调高，不同规则使用同一账号或共享数据库时仍会自动排队。
-
-规则的“跳过重复触发”只针对同一规则已有 running/queued 记录的场景，并会生成可查询的 `skipped` 运行记录。“重复触发进入队列”允许保存本次触发，但账号和数据库资源可用前不会启动子进程。排队记录可以和运行中记录一样手动停止。
-
-## 更新镜像
-
-官方 Docker 镜像会强制禁用容器内二进制自更新，即使 `config.yaml` 中的 `updater.auto_update` 为 `true` 也不会替换 `/usr/local/bin/ncmm`。这样可避免容器可写层与镜像版本不一致。
-
-WebUI 检查到新版本后，在宿主机执行：
-
-```bash
-docker compose pull ncmm
-docker compose up -d --force-recreate ncmm
-```
-
-项目根目录的 `docker-compose.yml` 同时保留了 `build: .` 供本地源码构建。上述 `pull` 会刷新 `image` 指向的官方镜像；如需使用当前源码，则执行 `docker compose build --pull ncmm && docker compose up -d ncmm`。
-
-## CookieCloud
-
-Compose 使用桥接网络，因此宿主机上的 CookieCloud 地址应填写 `http://host.docker.internal:8088`。如果 CookieCloud 是同一个 Compose 项目中的服务，请改用其服务名，例如 `http://cookiecloud:8088`。
-
-## 旧版 Cron 兼容
-
-旧版 `CRON_*` 环境变量仍然有效：
-
-```yaml
-environment:
-  - CRON_1=30 8 * * * task
-  - CRON_2=0 14 * * * musician
-```
-
-这些规则由 Go 调度器载入，并在 WebUI 中显示为“环境变量托管”的只读规则。需要可视化修改时，应删除对应环境变量并在 WebUI 中重新创建。
-
-不要在同一个容器中同时使用默认 Web 管理模式和下方 BusyBox `crond` 模式；两者是互斥的调度入口，否则可能重复执行相同业务。
-
-显式使用旧版 BusyBox `crond` 仍受支持：
-
-```yaml
-command:
-  - cron
-  - |
-    30 8 * * * task
-    0 14 * * * musician
-```
-
-该模式不会启动 WebUI。
-
-## 单次运行
-
-```bash
-docker compose run --rm ncmm task
-docker compose run --rm ncmm sign
-docker compose run --rm ncmm playids --ids 3366663042
-docker compose run --rm ncmm musician
-docker compose run --rm ncmm --help
-```
-
-## docker run
-
-```bash
-docker run -d --name ncmm \
-  --restart unless-stopped \
-  -p 127.0.0.1:3899:3899 \
-  -v ./data:/data \
-  -e TZ=Asia/Shanghai \
-  ghcr.io/3899/ncmm:latest
-```
+项目提供手动或版本标签触发的镜像/二进制发布工作流。普通分支推送和 PR 只执行质量检查与 Docker 构建验收，不发布镜像或创建 Release。代码同步到 GitHub 不等于镜像已发布，更不等于服务器已经部署。

@@ -1,0 +1,110 @@
+# .goreleaser.yaml
+# 详情参考: https://goreleaser.com
+
+version: 2
+
+project_name: ncmm
+
+# 构建输出目录
+dist: ./dist
+
+before:
+  hooks:
+    - go mod download
+
+# 编译配置
+builds:
+  - id: ncmm-windows
+    env:
+      - CGO_ENABLED=0
+    main: .
+    binary: ncmm
+    ldflags:
+      - -s -w -X "main.Version={{.Version}}" -X "main.Commit={{.FullCommit}}" -X "main.Branch={{.Branch}}" -X "main.BuildTime={{.CommitDate}}"
+    goos:
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+  - id: ncmm-linux
+    env:
+      - CGO_ENABLED=0
+    main: .
+    binary: ncmm
+    ldflags:
+      - -s -w -X "main.Version={{.Version}}" -X "main.Commit={{.FullCommit}}" -X "main.Branch={{.Branch}}" -X "main.BuildTime={{.CommitDate}}"
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+      - arm
+    goarm:
+      - 6
+
+# 打包配置
+archives:
+  - id: ncmm-windows
+    ids:
+      - ncmm-windows
+    formats: [ 'zip' ]
+    # 归档文件名模板，例如 ncmm_Windows_x86_64.zip
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    files:
+      - LICENSE
+      - THIRD_PARTY_NOTICES.md
+      - licenses/**
+      - README.md
+      - src: config/config.yaml
+        dst: config.yaml
+      - src: config/notify.yaml
+        dst: notify.yaml
+      - src: scripts/一键启动.bat
+        dst: 一键启动.bat
+      - src: scripts/一键停止.bat
+        dst: 一键停止.bat
+
+  - id: ncmm-linux
+    ids:
+      - ncmm-linux
+    formats: [ 'tar.gz' ]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    files:
+      - LICENSE
+      - THIRD_PARTY_NOTICES.md
+      - licenses/**
+      - README.md
+      - src: config/config.yaml
+        dst: config.yaml
+      - src: config/notify.yaml
+        dst: notify.yaml
+
+# 发布日志配置
+changelog:
+  # 优先使用 GitHub 的自动 Release Notes 生成机制，能完美展示贡献者头像
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^typo:'
+      - '(?i)merge'
+
+# 远程发布配置
+release:
+  github:
+    owner: Grails125
+    name: ncmm

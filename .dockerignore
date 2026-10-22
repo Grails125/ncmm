@@ -1,0 +1,21 @@
+# Keep the Docker build context limited to files required by Dockerfile.
+**
+
+!go.mod
+!go.sum
+!main.go
+!VERSION
+!entrypoint.sh
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!licenses/
+!licenses/**
+
+!api/
+!api/**
+!config/
+!config/**
+!internal/
+!internal/**
+!pkg/
+!pkg/**

@@ -1,0 +1,34 @@
+// Copyright (c) 2026 @3899. All rights reserved.
+// Use of this source code is governed by a MIT-style license that can be found in the LICENSE file.
+
+package main
+
+import (
+	_ "embed"
+	"strings"
+	_ "time/tzdata"
+
+	"github.com/3899/ncmm/internal/ncmm"
+)
+
+//go:embed VERSION
+var versionStr string
+
+var (
+	Version   string
+	Commit    = "none"
+	Branch    = "unknown"
+	BuildTime = "now"
+)
+
+func init() {
+	if strings.TrimSpace(Version) == "" {
+		Version = strings.TrimSpace(versionStr)
+	}
+}
+
+func main() {
+	c := ncmm.New()
+	c.Version(Version, BuildTime, Commit, Branch)
+	c.Execute()
+}

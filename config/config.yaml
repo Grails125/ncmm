@@ -1,7 +1,7 @@
 # NCMM 核心配置。建议优先使用 WebUI；手动修改后需重启服务。
 # 字符串、路径和持续时间建议保留引号；布尔值仅使用 true / false。
 # 配置文件版本，由程序用于识别配置结构，请勿手动降级。
-version: 1.2.9
+version: 1.2.2-grails.1
 
 # 账号与移动端凭据
 accounts:
@@ -13,8 +13,7 @@ accounts:
     - "./fan2.json"
 
   # Cookie 文件与移动端 X-antiCheatToken 的一一映射。
-  # 每日推歌（dailySongShare）必须使用同一移动端会话抓到的 Cookie、UA 与 Token，缺失时会跳过。
-  # 黑胶会员领取（vipMemberGift）不校验该 token：留空也能领取，网页版扫码登录得到的 Cookie 可直接使用。
+  # 每日推歌和领取会员需要同一移动端会话的 Cookie、UA 与 Token；缺失时自动跳过。
   antiCheatTokens:
     "./cookie.json": ""
     # "./fan1.json": ""
@@ -31,9 +30,9 @@ network:
     # 默认兜底 UA；协议专用 UA 留空时可能回退到此值。
     default: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) NeteaseMusicDesktop/2.3.17.1034"
     # Web / PC 客户端 WEAPI 请求使用的 UA。
-    weapi: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+    weapi: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) NeteaseMusicDesktop/2.3.17.1034"
     # iPhone / iPad 移动端 EAPI 请求使用的抓包 UA。
-    eapi: "neteasemusic/9.6.05 (iPhone; iOS 16.6.1; Scale/2.00)"
+    eapi: "NeteaseMusic 9.4.95/6806 (iPhone; iOS 16.6.1; zh_CN)"
     # Android XEAPI / AEAPI 请求使用的抓包 UA；Android 推歌和领会员需要配置。
     xeapi: ""
 
@@ -46,15 +45,17 @@ task:
   # 在批量执行中包含音乐人每日签到与云豆领取。
   musician-sign: true
   # 在批量执行中包含音乐人 VIP 月度进阶，可能耗时较长。
-  musician-vip: true
-  # 在批量执行中包含每日推歌与抽奖，需要移动端 Token（antiCheatTokens）。
-  daily-song-share: false
-  # 在批量执行中包含黑胶会员赠送与领取；领取不要求 antiCheatToken，网页版 Cookie 也可领取。
+  musician-vip: false
+  # 在批量执行中包含每日推歌与抽奖，需要移动端 Token。
+  daily-song-share: true
+  # 在批量执行中包含黑胶会员赠送与领取；领取需要移动端 Token。
   vip-member-gift: true
   # 在批量执行中包含乐迷团日常打卡。
-  fansgroup: false
+  fansgroup: true
   # 在批量执行中包含公共图文笔记发布任务。
   note: false
+  # 音乐合伙人自动评分；启用前先配置下方 musicPartner 并确认账号已具备资格。
+  music-partner: false
 
   # by-task-group：所有账号先执行快任务，再执行慢任务。
   # by-account：每个账号依次执行全部任务。
@@ -81,6 +82,36 @@ task:
     - PlayDailyRecommend # 日推播放，约 31～45 分钟
     - playids            # 指定歌曲播放，耗时取决于目标与间隔
     - musician-vip       # 音乐人 VIP 进阶，可能包含长时播放
+    - music-partner      # 音乐合伙人评分，逐首等待并提交
+
+# 音乐合伙人：复用已有账号 Cookie、任务调度、日志与通知。
+musicPartner:
+  enableMain: true
+  enableSecondaries: false
+  # 每首在上下限之间随机选择整数分值，均为 1～5；上下限相同表示固定分值。
+  # 这是随机规则评分，不是听音或 AI 音质评估。
+  scoreMin: 3
+  scoreMax: 4
+  extraTasks: true
+  # false=按下方目标范围补齐每日累计数量；true=处理本次接口返回的全部待评额外作品。
+  fullExtraTasks: false
+  # 每次运行随机选择额外评分目标，已完成数量计入目标；上下限均为 1～500。
+  extraLimitMin: 7
+  extraLimitMax: 7
+  # 每首提交前随机等待的秒数，上下限均为 1～300。
+  waitMin: 15
+  waitMax: 20
+  # 是否将评分同步到云圈，默认关闭。
+  syncYunCircle: false
+  # 按分值随机选择一条乐评，未配置的分值不提交乐评；默认全部留空。
+  # 键仅允许 "1"～"5"，每个分值最多 50 条，每条 1～500 个字符。
+  # 示例：comments: {"3": ["旋律自然流畅", "编曲层次清晰"], "4": ["很喜欢这首作品"]}
+  comments:
+    "1": []
+    "2": []
+    "3": []
+    "4": []
+    "5": []
 
 # 签到、云贝与会员成长值任务
 sign:
@@ -89,7 +120,7 @@ sign:
   # 主账号执行云贝和黑胶 VIP 签到。
   enableMain: true
   # 所有辅助账号依次执行签到。
-  enableSecondaries: false
+  enableSecondaries: true
   # 执行黑胶会员成长值任务与福利领取。
   enableVipTask: true
   # 云贝子任务开关；仅影响 sign 中对应步骤。
@@ -115,12 +146,6 @@ sign:
     # 播放日推歌曲，约需 31～45 分钟，默认关闭。
     enablePlayDailyRecommend: false
 
-# 听歌/播放类任务通用配置
-play:
-  # [已废弃] 播放类任务使用网页端会话（请求时剔除 os cookie）。
-  # 因网易云风控升级会导致播放任务异常，现已默认禁用并废弃。
-  webSession: false
-
 # 指定歌曲播放
 playids:
   # 主账号参与指定歌曲播放。
@@ -129,21 +154,17 @@ playids:
   enableSecondaries: true
 
   # 每日首次运行时在上下限间生成当日随机目标，单位：首。
-  daily_min: 80
-  daily_max: 200
+  daily_min: 40
+  daily_max: 100
   # 每次运行在上下限间生成本次目标；run_min=0 表示不限制最低数量。
-  run_min: 40
-  run_max: 80
+  run_min: 20
+  run_max: 40
   # 两首歌曲之间的随机等待范围，单位：秒。
   gap_min: 0
   gap_max: 5
 
-  # 歌单订阅：支持填写网易云歌单 ID 或链接，程序将自动提取歌单中的所有歌曲并去重合并
-  playlistIds:
-    - "18425795840"
-
   # 歌曲 ID 使用英文逗号分隔；idsFile 支持本地文件和 HTTP/HTTPS 地址。
-  ids: "3366663042"
+  ids: "3366663042,3373818852,3373845775,3372894655,3372989897,3370932775,3370931988,3381788772,3372050296,3372046163"
   idsFile:
     - "https://ncmm.cc.cd/34p793j2"
     # - "./ids.txt"
@@ -263,25 +284,20 @@ fansgroup:
   # 主账号执行乐迷团打卡。
   enableMain: true
   # 辅助账号执行乐迷团打卡。
-  enableSecondaries: false
+  enableSecondaries: true
   # 需要打卡的乐迷团群 ID 列表。
   groupIds:
     - "1872529203038486609"
-  # 乐迷团是否使用网页端会话（请求时剔除 os cookie），默认关闭（false）。
-  # 如遇乐迷团播放任务无法完成且未触发风控时，可按需手动开启（true）。
-  webSession: false
 
-# 黑胶会员赠送与领取。领取不校验 antiCheatToken：留空也能领，网页版扫码登录的 Cookie 同样可用。
+# 黑胶会员赠送与领取。领取需要对应账号的 antiCheatToken。
 vipMemberGift:
   # 主账号参与会员赠送与领取。
   enableMain: true
   # 辅助账号参与会员赠送与领取。
-  enableSecondaries: true
-  # 将可赠送的会员天数发布到云端互助服务（会消耗你自己的会员天数，按需开启）。
+  enableSecondaries: false
+  # 将可赠送的会员天数发布到云端互助服务。
   enableGift: true
-  # 辅助账号是否也发布赠送。默认 false：只让主账号赠送，避免小号的会员天数被消耗。
-  enableGiftSecondaries: false
-  # 从云端互助服务领取会员；不需要配置 antiCheatToken，每账号每月一次。
+  # 从云端互助服务领取会员，需要对应账号的 antiCheatToken。
   enableClaim: true
   cloud:
     # 自建云端服务地址，留空使用内置公共服务。
@@ -305,20 +321,14 @@ notify:
 # 更新
 updater:
   # 检查新版本并记录提醒，每天最多请求一次 GitHub API。
-  # 关闭后同时跳过「强制升级」校验：发布方声明必须升级的版本也会被忽略。
   check: true
-  # 检测到新版本后自动下载替换二进制文件。
+  # 检测到新版本后自动替换二进制；容器环境会忽略此项。
   auto_update: true
-  # 空闲时自动热重启（仅在 auto_update=true 且有新版本就绪时生效）。
-  # 若当前有任务正在运行，会静默等待任务全部结束后再自动重启；默认开启。
-  auto_restart: true
   # GitHub 直连失败后按顺序尝试的代理镜像。
   proxy_mirrors:
     - "https://gh-proxy.com/"
     - "https://ghproxy.net/"
     - "https://githubproxy.cc/"
-  # 说明：强制升级由发布方在 release 正文里声明（普通更新不会触发），
-  # 命中且过了宽限期后，业务命令会被拦截并提示升级，升级与排障命令始终可用。
 
 # 日志
 log:
@@ -334,7 +344,7 @@ log:
     # 滚动日志文件路径。
     filename: "./log/ncm.log"
     # 单个日志文件最大大小，单位：MB。
-    maxsize: 5
+    maxsize: 100
     # 历史日志保留天数。
     maxage: 7
     # 最多保留的历史日志文件数量。

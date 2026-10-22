@@ -1,0 +1,118 @@
+name: Build Docker Image
+
+on:
+  push:
+    # branches:
+    #   - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（例如：1.2.2-grails.1，输入 auto 则读取 VERSION 文件）'
+        required: false
+        type: string
+        default: 'auto'
+      commit_sha:
+        description: '构建的 Git Commit Hash 或分支/标签（例如：2fb17f01bc，默认为 HEAD）'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  docker:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.commit_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify native integration sources
+        run: |
+          test -f internal/ncmm/music_partner.go
+          test -f THIRD_PARTY_NOTICES.md
+          test -f licenses/ncmp-MIT.txt
+
+      - name: Resolve Version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+            if echo "$GITHUB_REF" | grep -q "^refs/tags/"; then
+              INPUT_VERSION=${GITHUB_REF#refs/tags/}
+            else
+              INPUT_VERSION="auto"
+            fi
+          fi
+
+          if [ "$INPUT_VERSION" = "auto" ] || [ -z "$INPUT_VERSION" ]; then
+            CURRENT_COMMIT_TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || echo "")
+            if [ -n "$CURRENT_COMMIT_TAG" ]; then
+              VERSION=$(echo "$CURRENT_COMMIT_TAG" | sed 's/^v//' | tr -d '[:space:]')
+            elif [ -f VERSION ]; then
+              VERSION=$(cat VERSION | tr -d '[:space:]')
+            else
+              echo "Missing VERSION file" >&2
+              exit 1
+            fi
+          else
+            VERSION=$(echo "$INPUT_VERSION" | sed 's/^v//' | tr -d '[:space:]')
+          fi
+
+          if ! printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+$'; then
+            echo "Native releases require a version such as 1.2.2-grails.1" >&2
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "commit=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "Resolved version: $VERSION"
+
+      - name: Set up QEMU (for multi-platform builds)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
+            type=ref,event=branch
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+            VCS_REF=${{ steps.version.outputs.commit }}
+            BUILD_DATE=${{ steps.version.outputs.build_date }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,40 +1,17 @@
-<a href="https://github.com/3899/ncmm">
-  <img src="https://socialify.git.ci/3899/ncmm/image?description=1&descriptionEditable=%E5%9F%BA%E4%BA%8E%20Go%20%E7%9A%84%E7%BD%91%E6%98%93%E4%BA%91%E9%9F%B3%E4%B9%90%E4%BA%BA%E5%8A%A9%E6%89%8B%EF%BC%9A%E4%B8%80%E9%94%AE%E7%AD%BE%E5%88%B0%E3%80%81%E8%87%AA%E5%8A%A8%E4%BB%BB%E5%8A%A1%E3%80%81%E6%8E%A5%E5%8A%9B%E5%88%B7%E6%92%AD&font=Source%20Code%20Pro&logo=https%3A%2F%2Fp6.music.126.net%2Fobj%2Fwo3DlcOGw6DClTvDisK1%2F62177614927%2F22ad%2F1953%2Fa6cf%2Fe7007953d5942445a0444ca346bd06be.png%3Fraw%3Dtrue&name=1&owner=1&pattern=Floating%20Cogs&theme=Auto" alt="ncmm" />
-</a>
+# 🎵 ncmm · 原生音乐合伙人评分
 
-<div align="center">
-  <br/>
 
-  <div>
-    <a href="./LICENSE">
-      <img
-        src="https://img.shields.io/github/license/3899/ncmm?style=flat-square"
-      />
-    </a>
-    <a href="https://github.com/3899/ncmm/releases">
-      <img
-        src="https://img.shields.io/github/v/release/3899/ncmm?style=flat-square"
-      />
-    </a>
-    <a href="https://github.com/3899/ncmm/releases">
-      <img
-        src="https://img.shields.io/github/downloads/3899/ncmm/total?style=flat-square"
-      />  
-    </a>
-    <a href="https://github.com/3899/ncmm/pkgs/container/ncmm">
-      <img
-        src="https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fghcr-badge.elias.eu.org%2Fapi%2F3899%2Fncmm&query=downloadCount&style=flat-square&logo=docker&label=Docker%20Pulls&color=2496ed"
-      />
-    </a>
-    <a href="https://github.com/3899/ncmm/pkgs/container/ncmm">
-      <img
-        src="https://ghcr-badge.egpl.dev/3899/ncmm/size?color=%23FF7F50&tag=latest&style=flat-square"
-      />
-    </a>
-  </div>
-</div>
+本分支恢复了公开 fork 中保留的 **v1.2.2 完整源码**，在原有 Go 程序和 WebUI 中内置音乐合伙人评分，版本为 `1.2.2-grails.1`。与账号、批量任务、定时调度、日志和通知共用一套系统。
 
-# 🎵 ncmm
+请使用本仓库源码构建。原来的 v1.2.9 分发仓库未公开对应源码，本分支不宣称包含 v1.2.3–v1.2.9 的全部改动；已有较新实例请使用独立数据目录。详见 [源码基线](docs/source-baseline.md) 和 [原生评分说明](docs/music-partner.md)。
+
+```bash
+git clone --branch codex/native-music-partner https://github.com/Grails125/ncmm.git
+cd ncmm
+docker compose up -d --build
+```
+
+访问 [http://127.0.0.1:3899](http://127.0.0.1:3899)，设置管理员密码、登录网易云账号，在配置中启用 `task.music-partner` 并确认评分策略。Compose 默认每天北京时间 08:30 执行已启用的批量任务；需要账号资格和 Cookie 的任务须先完成账号配置。
 
 `ncmm` 是一个基于 Go 开发的网易云音乐一站式任务管理工具，同时提供命令行与 WebUI，面向音乐人、黑胶 VIP 和普通账号使用。
 
@@ -46,6 +23,7 @@
 
 - **WebUI 管理工作台**：统一管理账号、任务、配置、日志和系统状态，支持明暗主题。
 - **多账号登录与隔离**：支持二维码、Cookie、手机号和 CookieCloud 登录。
+- **音乐合伙人原生评分**：基础任务与额外任务、主副账号选择、评分与每日目标范围、各分值乐评、作品日志、本期积分展示与评分前后积分变化、执行失败状态和通知。[配置与使用](docs/music-partner.md)。
 - **任务自动化**：覆盖签到、播放、音乐人、图文动态、每日推歌、会员礼品和乐迷团任务。
 - **数据统计**：展示云贝、VIP 成长值、账号状态和最近 7 日有效播放量。
 - **定时调度与通知**：任务可独立设置 cron，并支持多种失败通知通道。
