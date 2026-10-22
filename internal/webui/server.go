@@ -81,6 +81,7 @@ func New(ctx context.Context, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	runner.appVersion = opts.Version
 	scheduler, err := newScheduler(ctx, webConfig, runner)
 	if err != nil {
 		return nil, err

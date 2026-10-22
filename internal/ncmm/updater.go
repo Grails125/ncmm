@@ -24,7 +24,9 @@ import (
 	"github.com/3899/ncmm/config"
 	"github.com/3899/ncmm/internal/atomicfile"
 	"github.com/3899/ncmm/internal/filelock"
+	"github.com/3899/ncmm/internal/managedruntime"
 	"github.com/3899/ncmm/internal/selfupdate"
+	"github.com/3899/ncmm/internal/upgradepolicy"
 	"github.com/3899/ncmm/pkg/log"
 )
 
@@ -49,16 +51,20 @@ type UpdateState struct {
 	InstalledSHA256 string    `json:"installed_sha256,omitempty"` // 安装回执，用于区分待重启与二进制降级
 
 	// 系统架构及目标资产信息
-	OS            string `json:"os"`           // 操作系统 (如 Windows / Linux / Darwin)
-	Arch          string `json:"arch"`         // 系统架构 (如 x86_64 / arm64)
-	AssetFilename string `json:"target_asset"` // 匹配的压缩包文件名 (如 ncmm_Linux_x86_64.tar.gz)
-	DownloadURL   string `json:"download_url"` // 资产原始下载链接
+	OS                  string    `json:"os"`           // 操作系统 (如 Windows / Linux / Darwin)
+	Arch                string    `json:"arch"`         // 系统架构 (如 x86_64 / arm64)
+	AssetFilename       string    `json:"target_asset"` // 匹配的压缩包文件名 (如 ncmm_Linux_x86_64.tar.gz)
+	DownloadURL         string    `json:"download_url"` // 资产原始下载链接
+	LastCheckFailed     bool      `json:"last_check_failed,omitempty"`
+	RequiredVersion     string    `json:"required_version,omitempty"`
+	RequiredPublishedAt time.Time `json:"required_published_at,omitempty"`
 }
 
 type githubRelease struct {
-	TagName string        `json:"tag_name"`
-	Body    string        `json:"body"`
-	Assets  []githubAsset `json:"assets"`
+	TagName     string        `json:"tag_name"`
+	Body        string        `json:"body"`
+	Assets      []githubAsset `json:"assets"`
+	PublishedAt time.Time     `json:"published_at"`
 }
 
 type githubAsset struct {
@@ -126,7 +132,7 @@ func (c *Root) loadUpdateState(statePath, execPath string) UpdateState {
 		log.Warn("[updater] 更新缓存无效，重新检查本分支发布")
 		return c.initDefaultUpdateState()
 	}
-	installed := selfupdate.Matches(execPath, state.InstalledSHA256)
+	installed := managedruntime.InstalledMatches(execPath, state.LatestVersion, state.InstalledSHA256)
 	if state.UpdateStatus == "updating" {
 		if installed {
 			state.UpdateStatus = "success"
@@ -218,7 +224,7 @@ func (c *Root) CheckForUpdatesPreRun() {
 		log.Warn("[updater] 获取程序路径失败: %v", err)
 		return
 	}
-	needAutoUpdate := autoUpdateEnabled && os.Getenv("NCMM_DOCKER_OFFICIAL") != "1"
+	needAutoUpdate := autoUpdateEnabled && (os.Getenv("NCMM_DOCKER_OFFICIAL") != "1" || selfupdate.RuntimeManaged(execPath))
 	unlock, err := c.lockUpdater(execPath, needAutoUpdate)
 	if err != nil {
 		log.Warn("[updater] %v", err)
@@ -307,6 +313,10 @@ func (c *Root) checkNewVersionSync(statePath string, currentVer string, execPath
 
 	if !succeeded {
 		log.Debug("[updater] 获取最新版本信息失败: %v", lastErr)
+		state.LastCheckFailed = true
+		if err := c.saveUpdateState(statePath, &state); err != nil {
+			log.Warn("[updater] 保存检查失败状态: %v", err)
+		}
 		return state, fmt.Errorf("获取最新版本信息失败: %w", lastErr)
 	}
 	defer responseCancel()
@@ -315,6 +325,10 @@ func (c *Root) checkNewVersionSync(statePath string, currentVer string, execPath
 	var rel githubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
 		log.Warn("[updater] 解析版本信息失败: %v", err)
+		state.LastCheckFailed = true
+		if saveErr := c.saveUpdateState(statePath, &state); saveErr != nil {
+			log.Warn("[updater] 保存检查失败状态: %v", saveErr)
+		}
 		return state, fmt.Errorf("解析版本信息失败: %w", err)
 	}
 
@@ -340,6 +354,11 @@ func (c *Root) checkNewVersionSync(statePath string, currentVer string, execPath
 	}
 
 	state.LastCheckTime = time.Now()
+	state.LastCheckFailed = false
+	policyCache := upgradepolicy.Cache{RequiredVersion: state.RequiredVersion, RequiredPublishedAt: state.RequiredPublishedAt}
+	policyCache.Observe(tag, rel.Body, rel.PublishedAt)
+	state.RequiredVersion = policyCache.RequiredVersion
+	state.RequiredPublishedAt = policyCache.RequiredPublishedAt
 	state.CurrentVersion = currentVer
 	state.LatestVersion = tag
 	state.ReleaseNotes = rel.Body
@@ -392,7 +411,9 @@ func (c *Root) performSelfUpdateFromState(state *UpdateState, statePath, execPat
 
 	log.Info("[updater] 正在自动升级至 %s ...", state.LatestVersion)
 	// 不同 home 可能共用同一个程序；已有相同文件时保留上次备份，只补本实例回执。
-	if !selfupdate.Matches(execPath, state.InstalledSHA256) {
+	if selfupdate.RuntimeManaged(execPath) {
+		_, err = managedruntime.Stage(managedruntime.Directory(), state.LatestVersion, binaryBytes)
+	} else if !selfupdate.Matches(execPath, state.InstalledSHA256) {
 		err = selfupdate.Replace(execPath, binaryBytes)
 	}
 	if err != nil {
@@ -439,12 +460,12 @@ func (c *Root) CheckForUpdatesNow() (UpdateState, error) {
 
 // ApplyAvailableUpdate 每次主动检查本仓库最新发布，再在锁内安装。
 func (c *Root) ApplyAvailableUpdate() (UpdateState, error) {
-	if os.Getenv("NCMM_DOCKER_OFFICIAL") == "1" {
-		return c.initDefaultUpdateState(), fmt.Errorf("官方 Docker 容器不支持替换镜像内二进制，请拉取新镜像后重建容器")
-	}
 	execPath, err := updateExecutablePath()
 	if err != nil {
 		return c.initDefaultUpdateState(), err
+	}
+	if os.Getenv("NCMM_DOCKER_OFFICIAL") == "1" && !selfupdate.RuntimeManaged(execPath) {
+		return c.initDefaultUpdateState(), fmt.Errorf("此 Docker 容器未由启动器管理，请重建本仓库镜像后更新")
 	}
 	return c.applyAvailableUpdateAt(execPath)
 }

@@ -20,6 +20,7 @@ import (
 
 	"github.com/3899/ncmm/config"
 	"github.com/3899/ncmm/internal/filelock"
+	"github.com/3899/ncmm/internal/upgradepolicy"
 )
 
 const maxQueuedRuns = 100
@@ -64,6 +65,7 @@ type runManager struct {
 	command     runCommandFactory
 	randomDelay func(int) int
 	policy      LogPolicy
+	appVersion  string
 }
 
 func newRunManager(executable, configPath, home string, policy LogPolicy, concurrency ConcurrencyPolicy, supervisors ...*processSupervisor) (*runManager, error) {
@@ -139,6 +141,9 @@ func (m *runManager) startScheduled(ctx context.Context, job Schedule) (RunRecor
 }
 
 func (m *runManager) startWithDelay(ctx context.Context, job Schedule, delaySeconds int) (RunRecord, error) {
+	if err := upgradepolicy.Check(m.home, m.appVersion, time.Now()); err != nil {
+		return RunRecord{}, err
+	}
 	resources := m.concurrencyKeys(ctx, job)
 	m.mu.Lock()
 	defer m.mu.Unlock()
