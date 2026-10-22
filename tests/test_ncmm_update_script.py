@@ -77,6 +77,11 @@ class UpdateScriptTests(unittest.TestCase):
                 process.assert_called_once()
         self.assertIn("denied", self.output.getvalue())
 
+    def test_binary_version_does_not_trim_an_untrusted_suffix(self):
+        for version in ("1.2.2-grails.2+unknown", "1.2.2-grails.2/other"):
+            with self.subTest(version=version), mock.patch.object(self.script.subprocess, "run", return_value=self.completed(output=f"Version: {version}\n")):
+                self.assertEqual(self.script.query_binary_version(str(self.binary)), version)
+
     def test_main_propagates_cli_exit_and_keeps_version_and_recovery_backup(self):
         process = self.run_installed(update_code=7)
         with self.assertRaises(SystemExit) as result:
@@ -155,12 +160,173 @@ class UpdateScriptTests(unittest.TestCase):
         def download(url, destination, **kwargs):
             Path(destination).write_bytes(archive.getvalue())
             return True
-        with mock.patch.object(self.script, "get_platform_info", return_value=("Windows", "x86_64", ".zip")), mock.patch.object(self.script, "download_file_with_fallback", side_effect=download):
+        with mock.patch.object(self.script, "get_platform_info", return_value=("Windows", "x86_64", ".zip")), mock.patch.object(self.script, "download_file_with_fallback", side_effect=download), mock.patch.object(self.script, "query_binary_version", return_value="1.2.2-grails.2") as version:
             self.assertTrue(self.script.install_from_archive("v1.2.2-grails.2", [], self.binary.name, str(self.binary), str(config), str(self.version)))
+        self.assertNotEqual(version.call_args.args[0], str(self.binary))
         self.assertEqual(self.binary.read_bytes(), b"new executable")
         self.assertEqual(config.read_text(encoding="utf-8"), "user: preserved\n")
         self.assertEqual(self.version.read_text(encoding="utf-8"), "1.2.2-grails.2\n")
         self.assertFalse((self.root / "_temp_ncmm_update_").exists())
+
+    def install_archive(self, tag="v1.2.2-grails.2", assets=None, reported_version="1.2.2-grails.2", include_binary=True, existing_config=True):
+        config = self.root / "config.yaml"
+        if existing_config:
+            config.write_text("user: preserved\n", encoding="utf-8")
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as package:
+            if include_binary:
+                package.writestr("bundle/ncmm.exe", b"candidate executable")
+            package.writestr("bundle/config.yaml", "user: default\n")
+
+        def download(url, destination, **kwargs):
+            Path(destination).write_bytes(archive.getvalue())
+            return True
+
+        with mock.patch.object(self.script, "get_platform_info", return_value=("Windows", "x86_64", ".zip")), mock.patch.object(self.script, "download_file_with_fallback", side_effect=download) as fetch, mock.patch.object(self.script, "query_binary_version", return_value=reported_version) as version:
+            result = self.script.install_from_archive(tag, assets or [], self.binary.name, str(self.binary), str(config), str(self.version))
+        return result, fetch, version
+
+    def test_first_install_rejects_untrusted_asset_urls_before_download(self):
+        for url in (
+            "https://example.com/ncmm_Windows_x86_64.zip",
+            "https://github.com/3899/ncmm/releases/download/v1.2.2-grails.2/ncmm_Windows_x86_64.zip",
+            "https://github.com/Grails125/ncmm/releases/download/v1.2.2-grails.1/ncmm_Windows_x86_64.zip",
+            "https://github.com/Grails125/ncmm/releases/download/v1.2.2-grails.2/ncmm_Windows_x86_64.zip?redirect=1",
+        ):
+            with self.subTest(url=url):
+                ok, fetch, version = self.install_archive(assets=[{"name": "ncmm_Windows_x86_64.zip", "browser_download_url": url}])
+                self.assertFalse(ok)
+                fetch.assert_not_called()
+                version.assert_not_called()
+                self.assertFalse(self.binary.exists())
+                self.assertEqual(self.version.read_text(encoding="utf-8"), "1.2.2-grails.1\n")
+
+    def test_first_install_validates_native_tag_and_candidate_before_writing(self):
+        for tag, version, include_binary in (
+            ("v1.2.9", "1.2.9", True),
+            ("v1.2.2-grails.2/other", "1.2.2-grails.2", True),
+            ("v1.2.2-grails.2", None, True),
+            ("v1.2.2-grails.2", "1.2.9", True),
+            ("v1.2.2-grails.2", "1.2.2-grails.1", True),
+            ("v1.2.2-grails.2", "1.2.2-grails.2", False),
+        ):
+            with self.subTest(tag=tag, version=version, binary=include_binary):
+                ok, _, _ = self.install_archive(tag=tag, reported_version=version, include_binary=include_binary)
+                self.assertFalse(ok)
+                self.assertFalse(self.binary.exists())
+                self.assertEqual((self.root / "config.yaml").read_text(encoding="utf-8"), "user: preserved\n")
+                self.assertEqual(self.version.read_text(encoding="utf-8"), "1.2.2-grails.1\n")
+                self.assertEqual(list(self.root.glob(".ncmm-install-*")), [])
+
+    def test_first_install_uses_only_exact_platform_asset_and_canonical_fallback(self):
+        for assets in (
+            [{"name": "ncmm_Windows_x86_64.zip", "browser_download_url": "https://github.com/Grails125/ncmm/releases/download/v1.2.2-grails.2/ncmm_Windows_x86_64.zip"}],
+            [{"name": "untrusted_ncmm_Windows_x86_64.zip", "browser_download_url": "https://example.com/untrusted.zip"}],
+        ):
+            with self.subTest(assets=assets):
+                ok, fetch, _ = self.install_archive(assets=assets)
+                self.assertTrue(ok)
+                self.assertEqual(fetch.call_args.args[0], "https://github.com/Grails125/ncmm/releases/download/v1.2.2-grails.2/ncmm_Windows_x86_64.zip")
+                self.assertEqual(self.binary.read_bytes(), b"candidate executable")
+                self.binary.unlink()
+
+    def test_first_install_never_replaces_existing_program(self):
+        self.binary.write_bytes(b"already installed")
+        ok, fetch, _ = self.install_archive()
+        self.assertFalse(ok)
+        fetch.assert_not_called()
+        self.assertEqual(self.binary.read_bytes(), b"already installed")
+
+    def test_first_install_rolls_back_new_files_if_version_record_fails(self):
+        with mock.patch.object(self.script.os, "replace", side_effect=PermissionError("read-only VERSION")):
+            ok, _, _ = self.install_archive()
+        self.assertFalse(ok)
+        self.assertFalse(self.binary.exists())
+        self.assertEqual(self.version.read_text(encoding="utf-8"), "1.2.2-grails.1\n")
+        self.assertEqual((self.root / "config.yaml").read_text(encoding="utf-8"), "user: preserved\n")
+
+    def test_first_install_creates_default_config_and_rolls_it_back_on_failure(self):
+        with mock.patch.object(self.script.os, "replace", side_effect=PermissionError("read-only VERSION")):
+            ok, _, _ = self.install_archive(existing_config=False)
+        self.assertFalse(ok)
+        self.assertFalse(self.binary.exists())
+        self.assertFalse((self.root / "config.yaml").exists())
+        self.assertEqual(self.version.read_text(encoding="utf-8"), "1.2.2-grails.1\n")
+        ok, _, _ = self.install_archive(existing_config=False)
+        self.assertTrue(ok)
+        self.assertEqual((self.root / "config.yaml").read_text(encoding="utf-8"), "user: default\n")
+
+    def test_first_install_cleanup_failure_does_not_undo_committed_install(self):
+        temporary_directory = self.script.tempfile.TemporaryDirectory
+
+        class CleanupFailure:
+            def __init__(self, *args, **kwargs):
+                self.directory = temporary_directory(*args, **kwargs)
+
+            def __enter__(self):
+                return self.directory.__enter__()
+
+            def __exit__(self, *args):
+                self.directory.__exit__(*args)
+                raise PermissionError("simulated cleanup failure")
+
+        with mock.patch.object(self.script.tempfile, "TemporaryDirectory", CleanupFailure):
+            ok, _, _ = self.install_archive()
+        self.assertTrue(ok)
+        self.assertEqual(self.binary.read_bytes(), b"candidate executable")
+        self.assertEqual(self.version.read_text(encoding="utf-8"), "1.2.2-grails.2\n")
+        self.assertIn("[WARNING]", self.output.getvalue())
+        self.assertNotIn("[ERROR]", self.output.getvalue())
+
+    def test_first_install_rollback_preserves_program_replaced_by_another_process(self):
+        link, replace = self.script.os.link, self.script.os.replace
+
+        def concurrent_link(source, destination):
+            link(source, destination)
+            if destination == str(self.binary):
+                foreign = self.root / "other-program"
+                foreign.write_bytes(b"another process program")
+                replace(foreign, destination)
+
+        def replace_with_version_failure(source, destination):
+            if destination == str(self.version):
+                raise PermissionError("read-only VERSION")
+            return replace(source, destination)
+
+        with mock.patch.object(self.script.os, "link", side_effect=concurrent_link), mock.patch.object(self.script.os, "replace", side_effect=replace_with_version_failure):
+            ok, _, _ = self.install_archive()
+        self.assertFalse(ok)
+        self.assertEqual(self.binary.read_bytes(), b"another process program")
+        self.assertEqual(self.version.read_text(encoding="utf-8"), "1.2.2-grails.1\n")
+
+    def test_first_install_extraction_rejects_duplicate_programs_and_links(self):
+        for kind in ("duplicate", "symlink", "oversize"):
+            with self.subTest(kind=kind):
+                archive = self.root / "untrusted.zip"
+                with zipfile.ZipFile(archive, "w") as package:
+                    package.writestr("../unrelated.txt", "must not escape")
+                    if kind == "duplicate":
+                        package.writestr("first/ncmm.exe", "one")
+                        package.writestr("second/ncmm.exe", "two")
+                    elif kind == "symlink":
+                        entry = zipfile.ZipInfo("ncmm.exe")
+                        entry.external_attr = 0o120777 << 16
+                        package.writestr(entry, "../other.exe")
+                    else:
+                        package.writestr("ncmm.exe", "larger than limit")
+                with tempfile.TemporaryDirectory(dir=self.root) as directory, mock.patch.object(self.script, "MAX_INSTALL_FILE_BYTES", 5):
+                    with self.assertRaises(ValueError):
+                        self.script.extract_install_files(str(archive), ".zip", "ncmm.exe", directory)
+                self.assertFalse((self.root / "unrelated.txt").exists())
+
+    def test_first_install_aborts_when_no_native_release_exists(self):
+        for tag in (None, "v1.2.9"):
+            with self.subTest(tag=tag), mock.patch.object(self.script, "get_latest_release", return_value=(tag, [])), mock.patch.object(self.script, "install_from_archive") as install:
+                with self.assertRaises(SystemExit) as result:
+                    self.script.main()
+                self.assertEqual(result.exception.code, 1)
+                install.assert_not_called()
+                self.assertFalse(self.binary.exists())
 
     def test_first_install_download_retains_mirror_fallback(self):
         self.network.side_effect = [urllib.error.URLError("offline"), io.BytesIO(b"archive bytes")]

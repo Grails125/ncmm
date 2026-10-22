@@ -206,6 +206,8 @@ func (c *Root) lockUpdater(execPath string, install bool) (func(), error) {
 
 // CheckForUpdatesPreRun 执行任务前阶段的版本检测与同步热替换
 func (c *Root) CheckForUpdatesPreRun() {
+	// 即使关闭联网检查，仍需提示有效缓存中的宽限期；任务结束时不重复输出。
+	defer c.showUpgradeGraceNotice()
 	// 获取配置中的 updater 控制参数 (支持配置文件与 NCMM_UPDATER_CHECK / NCMM_UPDATER_AUTO_UPDATE 环境变量)
 	checkEnabled := true
 	autoUpdateEnabled := true
@@ -414,7 +416,7 @@ func (c *Root) performSelfUpdateFromState(state *UpdateState, statePath, execPat
 		return err
 	}
 	if c.CfgPath != "" && c.CfgPath != "default" {
-		if _, err := config.BackupConfigFile(c.CfgPath, 2); err != nil {
+		if _, err := config.BackupConfigFile(c.CfgPath, 5); err != nil {
 			return fmt.Errorf("升级前备份配置失败: %w", err)
 		}
 	}
@@ -648,9 +650,18 @@ func readUpdateBytes(r io.Reader) ([]byte, error) {
 	return data, nil
 }
 
-// ShowUpdateNotificationPostRun 在 PersistentPostRun 阶段展示更新提醒（非强制自动更新模式下）
-func (c *Root) ShowUpdateNotificationPostRun() {
-	// PostRun 阶段仅需在检测到有更新但未开启 auto_update 时提醒用户
+func (c *Root) showUpgradeGraceNotice() {
+	policy := upgradepolicy.Read(c.getHomePath(), c.AppVersion, time.Now())
+	if policy.Required || policy.RequiredVersion == "" {
+		return
+	}
+	c.upgradeGraceNoticeOnce.Do(func() {
+		var output io.Writer = os.Stderr
+		if c.cmd != nil {
+			output = c.cmd.ErrOrStderr()
+		}
+		fmt.Fprintf(output, "版本升级提醒：当前版本 %s，发布方要求升级至 %s，请于 %s 前升级；宽限期内仍可执行任务。\n", policy.CurrentVersion, policy.RequiredVersion, policy.GraceUntil.Format(time.RFC3339))
+	})
 }
 
 // CompareVersions 比对版本号。v1 > v2 返回 1，v1 < v2 返回 -1，相等返回 0
