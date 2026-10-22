@@ -47,22 +47,24 @@ type queuedProcess struct {
 type runCommandFactory func(context.Context, string, ...string) *exec.Cmd
 
 type runManager struct {
-	mu          sync.RWMutex
-	executable  string
-	configPath  string
-	home        string
-	logDir      string
-	runs        map[string]RunRecord
-	running     map[string]*runningProcess
-	queued      map[string]*queuedProcess
-	queue       []string
-	jobRuns     map[string]map[string]struct{}
-	resources   map[string]string
-	maxParallel int
-	supervisor  *processSupervisor
-	command     runCommandFactory
-	randomDelay func(int) int
-	policy      LogPolicy
+	mu              sync.RWMutex
+	executable      string
+	configPath      string
+	home            string
+	logDir          string
+	runs            map[string]RunRecord
+	running         map[string]*runningProcess
+	queued          map[string]*queuedProcess
+	queue           []string
+	jobRuns         map[string]map[string]struct{}
+	resources       map[string]string
+	maxParallel     int
+	supervisor      *processSupervisor
+	command         runCommandFactory
+	randomDelay     func(int) int
+	validateJob     func(Schedule) error
+	mutatingPlugins map[string]bool
+	policy          LogPolicy
 }
 
 func newRunManager(executable, configPath, home string, policy LogPolicy, concurrency ConcurrencyPolicy, supervisors ...*processSupervisor) (*runManager, error) {
@@ -138,10 +140,18 @@ func (m *runManager) startScheduled(ctx context.Context, job Schedule) (RunRecor
 }
 
 func (m *runManager) startWithDelay(ctx context.Context, job Schedule, delaySeconds int) (RunRecord, error) {
+	if m.validateJob != nil {
+		if err := m.validateJob(job); err != nil {
+			return RunRecord{}, err
+		}
+	}
 	resources := m.concurrencyKeys(ctx, job)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.pluginMutationBlocked(job.Command, job.Args) {
+		return RunRecord{}, fmt.Errorf("插件正在升级或卸载，请完成后重试")
+	}
 	runID := newID("run")
 	stamp := time.Now().Format("20060102-150405")
 	base := stamp + "_" + sanitizeFilePart(job.ID) + "_" + runID
@@ -237,6 +247,15 @@ func (m *runManager) startWithDelay(ctx context.Context, job Schedule, delaySeco
 }
 
 func (m *runManager) launchLocked(ctx context.Context, job Schedule, record RunRecord, resources []string) (RunRecord, error) {
+	if m.pluginMutationBlocked(job.Command, job.Args) {
+		err := fmt.Errorf("插件正在升级或卸载，请完成后重试")
+		return m.failBeforeStartLocked(job.ID, record, err), err
+	}
+	if m.validateJob != nil {
+		if err := m.validateJob(job); err != nil {
+			return m.failBeforeStartLocked(job.ID, record, err), err
+		}
+	}
 	logFile, err := os.OpenFile(record.LogFile, os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return m.failBeforeStartLocked(job.ID, record, err), err

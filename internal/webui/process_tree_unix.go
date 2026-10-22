@@ -67,10 +67,18 @@ func (p *unixProcessTree) forceKill() error {
 func (p *unixProcessTree) close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
+	// 父进程自行退出也可能留下后台子进程；守护生命周期结束时一并回收进程组。
+	err := syscall.Kill(-p.pid, syscall.SIGKILL)
 	p.closed = true
 	if p.timer != nil {
 		p.timer.Stop()
 		p.timer = nil
 	}
-	return nil
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
 }

@@ -1,0 +1,160 @@
+const { chromium } = require('playwright');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const [baseURL, testRoot] = process.argv.slice(2);
+if (!baseURL || !testRoot || !['127.0.0.1', 'localhost'].includes(new URL(baseURL).hostname)) throw Error('isolated local server required');
+const output = path.join(testRoot, 'screenshots');
+fs.mkdirSync(output, { recursive: true });
+
+(async () => {
+  const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+    const errors = [], actions = [], installations = [], checks = [];
+    let running = false, autoStart = false, args = [];
+    let failAction = '', releaseStart, startGate;
+    let failInstall = false;
+    const plugins = () => [
+      { name: 'qqbot', title: 'QQ 机器人', type: 'daemon', version: '1.0.1', running, autoStart, source: { repository: 'crossgg/ncmm-qqbot', tag: 'v1.0.1' }, update: { latestTag: 'v1.0.2', updateAvailable: true } },
+      { name: 'demo', title: '定时演示', type: 'task', version: '1.0', description: '<img src=x onerror=alert(1)>仅展示文字' },
+    ];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.route('**/api/v1/music-partner/points**', route => route.fulfill({ status: 503, json: { error: '隔离测试无账号' } }));
+    await page.route('**/api/v1/play-stats', route => route.fulfill({ json: [] }));
+    await page.route('**/api/v1/plugins', route => route.fulfill({ json: plugins() }));
+    await page.route('**/api/v1/plugins/market', route => route.fulfill({ json: [{ name: 'qqbot', title: 'QQ 机器人', type: 'daemon', repository: 'crossgg/ncmm-qqbot', description: '隔离测试的公开市场入口', homepage: 'https://github.com/crossgg/ncmm-qqbot' }] }));
+    await page.route('**/api/v1/plugins/updates', route => { checks.push(route.request().postDataJSON()); return route.fulfill({ json: [] }); });
+    await page.route('**/api/v1/plugins/qqbot/daemon/log', route => route.fulfill({ json: { output: '<img src=x onerror=alert(1)>\n日志仅作为文字显示' } }));
+    await page.route('**/api/v1/plugins/install', route => {
+      installations.push(route.request().postDataJSON());
+      return route.fulfill(failInstall ? { status: 502, json: { error: '模拟安装失败' } } : { json: { success: true, name: 'qqbot' } });
+    });
+    await page.route(/\/api\/v1\/plugins\/qqbot\/(daemon|start|stop|restart|upgrade)$/, async route => {
+      const action = new URL(route.request().url()).pathname.split('/').at(-1);
+      const method = route.request().method();
+      const body = method === 'GET' ? null : route.request().postDataJSON();
+      actions.push({ action, method, body });
+      if (action === 'start' && startGate) await startGate;
+      if (action === failAction && method !== 'GET') return route.fulfill({ status: 502, json: { error: `模拟${action}失败` } });
+      if (action === 'start' || action === 'restart') running = true;
+      if (action === 'stop') running = false;
+      if (action === 'daemon' && method === 'PUT') ({ autoStart, args } = body);
+      return route.fulfill({ json: { name: 'qqbot', running, autoStart, args, success: true } });
+    });
+    // 所有可能执行插件或安装程序的请求都在浏览器边界替换，不触发真实业务。
+    await page.route(/\/api\/v1\/(plugins|schedules)\/[^/]+\/run$/, route => { errors.push('unexpected task execution'); return route.abort(); });
+    await page.route('**/api/v1/plugins/upload', route => { errors.push('unexpected plugin upload'); return route.abort(); });
+    await page.goto(baseURL, { waitUntil: 'networkidle' });
+    assert.equal(await page.locator('#auth-title').textContent(), '设置管理员密码', 'use a fresh isolated home');
+    await page.locator('#password-input').fill('Plugin#2026');
+    await page.locator('#setup-confirm-password').fill('Plugin#2026');
+    await page.locator('#setup-submit').click();
+    await page.locator('#app-shell').waitFor({ state: 'visible' });
+    await page.locator('.nav-item[data-page="plugins"]').click();
+    const daemon = page.locator('.plugin-card[data-name="qqbot"]');
+    await daemon.waitFor({ state: 'visible' });
+    assert(await page.locator('#plugin-file-input').isHidden(), 'upload input must remain hidden under CSP');
+    assert.equal(await daemon.locator('[data-plugin-action="schedule"]').count(), 0, 'daemon is not a scheduled task');
+    assert.equal(await daemon.locator('[data-plugin-action="run"]').count(), 0);
+    assert.equal(await page.locator('.plugin-card[data-name="demo"] img').count(), 0, 'plugin text must be escaped');
+    await page.locator('#plugin-check-updates').click();
+    await page.waitForFunction(() => !document.querySelector('#plugin-check-updates').disabled);
+    assert(checks.some(check => check.force === true));
+    assert(checks.some(check => check.force === false), 'automatic version check uses cache');
+    failAction = 'start';
+    await daemon.locator('[data-plugin-action="start"]').click();
+    await page.locator('.toast.error').filter({ hasText: '模拟start失败' }).waitFor();
+    assert(await daemon.locator('[data-plugin-action="start"]').isEnabled());
+    failAction = '';
+    const beforeStart = actions.filter(action => action.action === 'start').length;
+    startGate = new Promise(resolve => { releaseStart = resolve; });
+    await daemon.locator('[data-plugin-action="start"]').click();
+    assert(await daemon.locator('[data-plugin-action="start"]').isDisabled());
+    await daemon.locator('[data-plugin-action="restart"]').dispatchEvent('click');
+    await page.waitForTimeout(100);
+    assert.equal(actions.filter(action => action.action === 'start').length, beforeStart + 1);
+    assert.equal(actions.filter(action => action.action === 'restart').length, 0, 'same-plugin actions cannot overlap');
+    releaseStart(); startGate = null;
+    await daemon.locator('[data-plugin-action="stop"]').waitFor({ state: 'visible' });
+    await daemon.locator('[data-plugin-action="settings"]').click();
+    await page.locator('#plugin-daemon-autostart').check();
+    await page.locator('#plugin-daemon-args').fill('--port\n5678');
+    failAction = 'daemon';
+    await page.locator('#plugin-daemon-save').click();
+    await page.locator('.toast.error').filter({ hasText: '模拟daemon失败' }).waitFor();
+    assert(await page.locator('#plugin-daemon-dialog').isVisible());
+    assert(await page.locator('#plugin-daemon-save').isEnabled());
+    assert.equal(await page.locator('#plugin-daemon-args').inputValue(), '--port\n5678');
+    failAction = '';
+    await page.locator('#plugin-daemon-save').click();
+    await page.locator('#plugin-daemon-dialog').waitFor({ state: 'hidden' });
+    assert.equal(autoStart, true); assert.deepEqual(args, ['--port', '5678']);
+    await daemon.locator('[data-plugin-action="settings"]').click();
+    assert(await page.locator('#plugin-daemon-autostart').isChecked());
+    assert.equal(await page.locator('#plugin-daemon-args').inputValue(), '--port\n5678');
+    await page.locator('[data-close-dialog="plugin-daemon-dialog"]').click();
+    await daemon.locator('[data-plugin-action="logs"]').click();
+    await page.locator('#plugin-daemon-log-dialog').waitFor({ state: 'visible' });
+    assert.match(await page.locator('#plugin-daemon-log-output').textContent(), /<img src=x onerror=alert\(1\)>/);
+    assert.equal(await page.locator('#plugin-daemon-log-output img').count(), 0, 'daemon logs must not execute HTML');
+    await page.locator('[data-close-dialog="plugin-daemon-log-dialog"]').click();
+    await daemon.locator('[data-plugin-action="upgrade"]').click();
+    await page.locator('#plugin-upgrade-token').fill('fixture-token-not-a-secret');
+    failAction = 'upgrade';
+    await page.locator('#plugin-upgrade-submit').click();
+    await page.locator('.toast.error').filter({ hasText: '模拟upgrade失败' }).waitFor();
+    assert(await page.locator('#plugin-upgrade-dialog').isVisible());
+    assert(await page.locator('#plugin-upgrade-submit').isEnabled());
+    assert.equal(await page.locator('#plugin-upgrade-token').inputValue(), 'fixture-token-not-a-secret');
+    await page.locator('#plugin-upgrade-token').fill('');
+    await page.locator('#plugin-upgrade-proxy').selectOption('https://ghproxy.net');
+    failAction = '';
+    await page.locator('#plugin-upgrade-submit').click();
+    await page.locator('#plugin-upgrade-dialog').waitFor({ state: 'hidden' });
+    assert.equal(actions.filter(action => action.action === 'upgrade').at(-1).body.proxy, 'https://ghproxy.net');
+    await daemon.locator('[data-plugin-action="upgrade"]').click();
+    assert.equal(await page.locator('#plugin-upgrade-token').inputValue(), '');
+    await page.locator('[data-close-dialog="plugin-upgrade-dialog"]').click();
+    assert(!await page.evaluate(() => JSON.stringify(localStorage).includes('fixture-token-not-a-secret')));
+    await daemon.locator('[data-plugin-action="stop"]').click();
+    await daemon.locator('[data-plugin-action="start"]').waitFor({ state: 'visible' });
+    await page.locator('[data-market-install="crossgg/ncmm-qqbot"]').click();
+    assert.equal(await page.locator('#plugin-install-repo').inputValue(), 'crossgg/ncmm-qqbot');
+    await page.locator('#plugin-install-proxy').selectOption('https://githubproxy.cc');
+    failInstall = true;
+    await page.locator('#plugin-install-submit').click();
+    await page.locator('.toast.error').filter({ hasText: '模拟安装失败' }).waitFor();
+    assert(await page.locator('#plugin-install-dialog').isVisible());
+    assert(await page.locator('#plugin-install-submit').isEnabled());
+    failInstall = false;
+    await page.locator('#plugin-install-submit').click();
+    await page.locator('#plugin-install-dialog').waitFor({ state: 'hidden' });
+    assert.equal(installations.at(-1).target, 'crossgg/ncmm-qqbot');
+    assert.equal(installations.at(-1).proxy, 'https://githubproxy.cc');
+    await page.locator('.plugin-card[data-name="demo"] [data-plugin-action="schedule"]').click();
+    assert.deepEqual(await page.locator('#schedule-plugin-select option').evaluateAll(options => options.map(option => option.value)), ['demo']);
+    await page.locator('#schedule-dialog').evaluate(dialog => dialog.close());
+    await page.locator('.toast').last().waitFor({ state: 'hidden' });
+    await page.screenshot({ path: path.join(output, 'plugin-platform-desktop.png'), fullPage: true });
+    for (const width of [320, 390, 768]) {
+      await page.setViewportSize({ width, height: 1000 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `mobile viewport overflow at ${width}`);
+      const bounds = await daemon.boundingBox();
+      if (!bounds || bounds.x < 0 || bounds.x + bounds.width > width + 1) await page.screenshot({ path: path.join(output, `plugin-clipped-${width}.png`), fullPage: true });
+      assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width + 1, `plugin card clipped at ${width}: ${JSON.stringify(bounds)}`);
+      for (const button of await page.locator('#plugin-check-updates, #plugin-market-grid button, #plugin-cards-grid button').all()) {
+        const action = await button.boundingBox();
+        assert(action && action.x >= 0 && action.x + action.width <= width + 1, `plugin action clipped at ${width}: ${await button.textContent()}`);
+      }
+      await daemon.locator('[data-plugin-action="upgrade"]').click();
+      const dialog = await page.locator('#plugin-upgrade-dialog').boundingBox();
+      assert(dialog && dialog.x >= 0 && dialog.x + dialog.width <= width + 1, `upgrade dialog clipped at ${width}`);
+      await page.locator('[data-close-dialog="plugin-upgrade-dialog"]').click();
+      if (width === 390) await page.screenshot({ path: path.join(output, 'plugin-platform-mobile.png'), fullPage: true });
+    }
+    assert.deepEqual(errors, []);
+    console.log(JSON.stringify({ result: 'passed', actionsMocked: actions.length, installationsMocked: installations.length, screenshots: output }));
+  } finally { await browser.close(); }
+})().catch(error => { console.error(error); process.exitCode = 1; });

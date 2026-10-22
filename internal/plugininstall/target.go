@@ -12,10 +12,12 @@ import (
 var ErrInvalidOptions = errors.New("插件安装参数无效")
 
 type Options struct {
-	Target  string
-	Tag     string
-	Token   string
-	DestDir string
+	Target       string
+	Tag          string
+	Token        string
+	DestDir      string
+	Proxy        string
+	ExpectedName string
 }
 
 type Target struct {

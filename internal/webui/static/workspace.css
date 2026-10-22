@@ -7323,7 +7323,7 @@
 
     .plugin-cards-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr));
       gap: 20px;
     }
 
@@ -7430,6 +7430,7 @@
 
     .plugin-card-actions {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 8px;
       margin-top: auto;
@@ -7441,6 +7442,12 @@
       font-size: 12.5px;
       padding: 6px 12px;
     }
+
+    .plugin-market-panel { margin-bottom: 24px; }
+    .plugin-market-panel summary { cursor: pointer; font-weight: 700; margin-bottom: 12px; }
+    .plugin-market-panel > p { margin-bottom: 12px; }
+    .plugin-card p { overflow-wrap: anywhere; }
+    #plugin-daemon-log-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 55vh; overflow: auto; font: 12px/1.6 monospace; }
 
     /* Plugin Params in Schedule Dialog */
     .plugin-params-panel {

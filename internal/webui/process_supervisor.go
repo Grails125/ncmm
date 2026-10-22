@@ -26,6 +26,7 @@ type processSpec struct {
 	Args           []string
 	Dir            string
 	Env            []string
+	Stdin          io.Reader
 	Stdout         io.Writer
 	Stderr         io.Writer
 	Timeout        time.Duration
@@ -119,6 +120,7 @@ func (s *processSupervisor) Start(parent context.Context, spec processSpec) (*ma
 	}
 	cmd.Dir = spec.Dir
 	cmd.Env = spec.Env
+	cmd.Stdin = spec.Stdin
 	cmd.Stdout = spec.Stdout
 	cmd.Stderr = spec.Stderr
 	prepareProcessTree(cmd)
