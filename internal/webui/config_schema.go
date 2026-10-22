@@ -422,6 +422,12 @@ func mainConfigSchema() configTargetSchema {
 		schemaField("musicPartner.comments.4", "4 分乐评", "每行一条，评分为 4 分时随机选取；留空不填写乐评。", "partner-comments", "string-list", "textarea-list"),
 		schemaField("musicPartner.comments.5", "5 分乐评", "每行一条，评分为 5 分时随机选取；留空不填写乐评。", "partner-comments", "string-list", "textarea-list"),
 
+		schemaField("fansgroup.webSession", "乐迷团网页播放会话", "默认关闭，仅影响乐迷团播放。开启后使用独立网页会话，可能触发平台风控；其他播放任务保留原会话。", "fans", "boolean", "switch"),
+		func() configSchemaField {
+			f := schemaField("fansgroup.commentCheckTokens", "网页评论短效 Token", "按 Cookie 文件配置正常浏览器评论请求正文中的 checkToken；不复用移动端令牌。缺失时跳过评论，过期需重新获取。", "fans", "string-map", "map")
+			f.Sensitive = true
+			return f
+		}(),
 		schemaField("fansgroup.enableMain", "主账号执行乐迷团", "主账号执行配置的乐迷团打卡。", "fans", "boolean", "switch"),
 		schemaField("fansgroup.enableSecondaries", "辅助账号执行乐迷团", "辅助账号依次执行乐迷团打卡。", "fans", "boolean", "switch"),
 		schemaField("fansgroup.groupIds", "乐迷团群 ID", "支持配置多个乐迷团群。", "fans", "string-list", "tags"),

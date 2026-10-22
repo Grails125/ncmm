@@ -348,7 +348,7 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 		return nil, fmt.Errorf("network.user_agent.xeapi is required for xeapi requests")
 	}
 
-	request := c.cli.R().
+	request := c.requestClient(opts).R().
 		SetContext(ctx).
 		SetHeader("Host", uri.Host).
 		SetHeader("Connection", "keep-alive").
