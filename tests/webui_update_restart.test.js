@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../internal/webui/static/app.js'), 'utf8');
 const boot = /\r?\n  boot\(\);\r?\n\}\)\(\);\s*$/;
 
-function harness(replies = [], answers = []) {
+function harness(replies = [], answers = [], requestHandler) {
   const nodes = new Map();
   const requests = [];
   const questions = [];
@@ -17,16 +17,21 @@ function harness(replies = [], answers = []) {
     if (!nodes.has(selector)) nodes.set(selector, { textContent: '', disabled: false, hidden: false, className: '', classList: { toggle(name, value) { if (name === 'hidden') nodes.get(selector).hidden = value; } } });
     return nodes.get(selector);
   } };
-  const context = vm.createContext({ document, AbortController, Date: { now: () => clock }, clearTimeout() {}, setTimeout(fn, ms) { if (ms <= 1000) { clock += ms; fn(); } return 1; },
+  const context = vm.createContext({ document, AbortController, structuredClone, Date: class extends Date { static now() { return clock; } }, clearTimeout() {}, setTimeout(fn, ms) { if (ms <= 1000) { clock += ms; fn(); } return 1; },
     location: { reload() { reloads++; } }, confirm(message) { questions.push(message); return answers.length ? answers.shift() : true; },
-    request: async (url, options) => { requests.push({ url, options }); const reply = replies.shift(); if (reply instanceof Error) throw reply; return reply; },
+    request: async (url, options) => { requests.push({ url, options }); if (requestHandler) return requestHandler(url, options); const reply = replies.shift(); if (reply instanceof Error) throw reply; return reply; },
   });
   vm.runInContext(source.replace(boot, `
     api = publicApi = request;
     toast = () => {};
-    renderSystem = () => {};
+    renderSystem = renderAll = setAccountMethod = () => {};
+    qrcodeSessionActive = () => false;
+    renderRuns = renderStatus = renderSchedules = renderDashboard = () => {};
+    refreshMusicPartnerPointsAfterRun = () => {};
+    refreshPlayStatsAfterRun = async () => {};
+    applyUpgradePolicy = setServiceStatus = scheduleNextPoll = () => {};
     startPolling = () => {};
-    globalThis.ui = { state, renderUpdateStatus, applyUpdate, restartService, waitForRestart };
+    globalThis.ui = { state, renderUpdateStatus, applyUpdate, restartService, waitForRestart, refreshOperationalState, loadOptionalState };
   })();`), context);
   return { ...context.ui, nodes, requests, questions, get reloads() { return reloads; } };
 }
@@ -114,4 +119,53 @@ test('更新期间被拒绝重启时不发送force请求', async () => {
   assert.equal(ui.requests.length, 1);
   assert.equal(ui.questions.length, 1);
   assert.equal(ui.reloads, 0);
+});
+
+
+test('延迟旧版本GET不能覆盖手动安装完成后的待重启状态', async () => {
+  let releaseStaleGet;
+  let notifyGetStarted;
+  const staleGet = new Promise(resolve => { releaseStaleGet = resolve; });
+  const getStarted = new Promise(resolve => { notifyGetStarted = resolve; });
+  const installed = { current_version: '1.2.2-grails.1', latest_version: '1.2.2-grails.2', available: true, canApply: false, restartRequired: true };
+  const beforeInstall = { current_version: '1.2.2-grails.1', latest_version: '1.2.2-grails.2', available: true, canApply: true, restartRequired: false };
+  const ui = harness([], [false], async url => {
+    if (url === '/api/v1/update') { notifyGetStarted(); return staleGet; }
+    if (url === '/api/v1/update/apply') return installed;
+    if (url === '/api/v1/runs' || url === '/api/v1/schedules') return [];
+    if (url === '/api/v1/status' || url === '/api/v1/auth/status') return {};
+    throw new Error(`unexpected request ${url}`);
+  });
+  Object.assign(ui.state, { authenticated: true, currentPage: 'system', update: beforeInstall });
+  const polling = ui.refreshOperationalState();
+  await getStarted;
+  await ui.applyUpdate();
+  assert.equal(ui.state.update.restartRequired, true, 'install response must first become visible');
+  assert.equal(ui.state.updateBusy, false, 'late GET is delivered after manual work completes');
+  releaseStaleGet(beforeInstall);
+  await polling;
+  assert.equal(ui.state.update.restartRequired, true, 'old GET replaced installed state');
+  assert.equal(ui.nodes.get('#update-apply').textContent, '立即重启生效');
+});
+
+
+test('初次可选加载的旧版本GET不能覆盖手动安装结果', async () => {
+  let releaseStaleGet;
+  let notifyGetStarted;
+  const staleGet = new Promise(resolve => { releaseStaleGet = resolve; });
+  const getStarted = new Promise(resolve => { notifyGetStarted = resolve; });
+  const installed = { available: true, canApply: false, restartRequired: true };
+  const ui = harness([], [false], async url => {
+    if (url === '/api/v1/update') { notifyGetStarted(); return staleGet; }
+    if (url === '/api/v1/update/apply') return installed;
+    return null;
+  });
+  ui.state.authenticated = true;
+  const loading = ui.loadOptionalState();
+  await getStarted;
+  await ui.applyUpdate();
+  assert.equal(ui.state.update.restartRequired, true);
+  releaseStaleGet({ available: true, canApply: true, restartRequired: false });
+  await loading;
+  assert.equal(ui.state.update.restartRequired, true, 'initial optional GET replaced installed state');
 });

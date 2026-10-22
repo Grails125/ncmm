@@ -16,6 +16,8 @@ import (
 	"github.com/3899/ncmm/config"
 	"github.com/3899/ncmm/internal/atomicfile"
 	"github.com/3899/ncmm/internal/filelock"
+	"github.com/3899/ncmm/internal/managedruntime"
+	"github.com/3899/ncmm/internal/selfupdate"
 	"github.com/3899/ncmm/internal/webui"
 	"github.com/3899/ncmm/pkg/utils"
 	"github.com/spf13/cobra"
@@ -114,6 +116,9 @@ func runWeb(parent context.Context, root *Root, opts webOptions) error {
 	if !errors.Is(err, webui.ErrRestartRequested) {
 		return err
 	}
+	if selfupdate.RuntimeManaged(executable) {
+		return &managedRestartError{}
+	}
 	restarted := exec.Command(executable, webRestartArgs(os.Args[1:], home, configPath, opts.webConfig)...)
 	restarted.Dir = home
 	restarted.Env = append(os.Environ(), "NCMM_WEB_RESTARTED=1")
@@ -121,6 +126,11 @@ func runWeb(parent context.Context, root *Root, opts webOptions) error {
 	restarted.Stderr = os.Stderr
 	return restarted.Start()
 }
+
+type managedRestartError struct{}
+
+func (*managedRestartError) Error() string { return "请求启动器重启程序" }
+func (*managedRestartError) ExitCode() int { return managedruntime.RestartExitCode }
 
 func prepareWebConfig(parent context.Context, home, configPath string) (string, error) {
 	if configPath != "" && configPath != "default" {

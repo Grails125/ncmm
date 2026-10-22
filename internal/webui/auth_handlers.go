@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/3899/ncmm/internal/upgradepolicy"
 	webauth "github.com/3899/ncmm/internal/webui/auth"
 )
 
@@ -16,9 +17,10 @@ const csrfHeader = "X-NCMM-CSRF"
 
 type authStatusResponse struct {
 	webauth.Status
-	SetupRequired bool   `json:"setupRequired"`
-	SecureCookie  bool   `json:"secureCookie"`
-	Version       string `json:"version"`
+	SetupRequired bool                 `json:"setupRequired"`
+	SecureCookie  bool                 `json:"secureCookie"`
+	Version       string               `json:"version"`
+	UpgradePolicy upgradepolicy.Status `json:"upgradePolicy"`
 }
 
 type authSettingsResponse struct {
@@ -36,6 +38,7 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	response := authStatusResponse{
 		Status: status, SetupRequired: !status.Configured,
 		SecureCookie: s.opts.SecureCookie, Version: s.opts.Version,
+		UpgradePolicy: upgradepolicy.Read(s.opts.Home, s.opts.Version, time.Now()),
 	}
 	writeJSON(w, http.StatusOK, response)
 }

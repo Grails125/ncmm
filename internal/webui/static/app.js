@@ -27,6 +27,7 @@
     update: null,
     updateChecked: false,
     updateBusy: false,
+    updateRevision: 0,
     restartPending: false,
     restartError: '',
     accountMain: false,
@@ -264,6 +265,11 @@
     };
   }
 
+  function applyUpgradePolicy(policy) {
+    state.auth = { ...(state.auth || {}), upgradePolicy: policy };
+    globalThis.NCMMUpgradePolicy?.render(policy);
+  }
+
   async function api(path, options = {}) {
     const method = (options.method || 'GET').toUpperCase();
     const headers = { ...(options.headers || {}) };
@@ -277,6 +283,7 @@
     const payload = type.includes('application/json') ? await response.json() : await response.text();
     if (!response.ok) {
       if (response.status === 401) clearSession(true);
+      if (response.status === 426 && payload?.upgradePolicy) applyUpgradePolicy(payload.upgradePolicy);
       const error = new Error(payload?.error || payload || `HTTP ${response.status}`);
       error.status = response.status;
       error.details = payload;
@@ -449,6 +456,7 @@
     state.musicPartnerFinishedRuns = new Set(musicPartnerFinishedRunKeys(runs));
     state.settings = settings;
     state.auth = auth;
+    applyUpgradePolicy(auth.upgradePolicy);
     state.csrf = auth.csrfToken || state.csrf;
     state.configDirty = false;
     state.configDirtyMode = '';
@@ -457,11 +465,14 @@
   }
 
   async function loadOptionalState() {
+    const updateRevision = state.updateRevision;
     const requests = [
       ['通知配置', '/api/v1/notify', value => { state.notify = value; }],
       ['配置元数据', '/api/v1/config/schema', value => { state.configSchema = value; }],
       ['认证策略', '/api/v1/auth/settings', value => { state.authSettings = value; state.savedAuthSettings = structuredClone(value); }],
-      ['版本信息', '/api/v1/update', value => { state.update = value; }],
+      ['版本信息', '/api/v1/update', value => {
+        if (updateRevision === state.updateRevision && !state.updateBusy) state.update = value;
+      }],
       ['二维码状态', '/api/v1/accounts/qrcode', value => { state.qrcodeSession = value; }],
 	  ['有效播放统计', '/api/v1/play-stats', value => {
 		state.playStats = value;
@@ -3010,6 +3021,7 @@
 
   async function applyUpdate() {
     if (state.updateBusy || state.restartPending) return;
+    state.updateRevision += 1;
     state.updateBusy = true;
     renderUpdateStatus();
     try {
@@ -3080,19 +3092,22 @@
     state.pollInFlight = true;
     const generation = ++state.pollGeneration;
     try {
-      const [runs, status, schedules] = await Promise.all([
+      const [runs, status, schedules, auth] = await Promise.all([
         api('/api/v1/runs'), api('/api/v1/status'), api('/api/v1/schedules'),
+        publicApi('/api/v1/auth/status'),
       ]);
       if (!state.authenticated || generation !== state.pollGeneration) return;
       state.runs = runs; state.status = status; state.schedules = schedules;
+      applyUpgradePolicy(auth.upgradePolicy);
 	  refreshMusicPartnerPointsAfterRun(runs);
 	  await refreshPlayStatsAfterRun(runs);
 	  if (!state.authenticated || generation !== state.pollGeneration) return;
       renderRuns(); renderStatus(); renderSchedules(); renderDashboard();
       if (state.currentPage === 'system' && !state.updateBusy) {
+        const updateRevision = state.updateRevision;
         try {
           const update = await api('/api/v1/update');
-          if (state.authenticated && generation === state.pollGeneration && !state.updateBusy) { state.update = update; renderUpdateStatus(); }
+          if (state.authenticated && generation === state.pollGeneration && updateRevision === state.updateRevision && !state.updateBusy) { state.update = update; renderUpdateStatus(); }
         } catch { /* 保留上次更新状态，下次轮询重试。 */ }
       }
       if (state.currentPage === 'plugins') await refreshPlugins();
@@ -4045,6 +4060,7 @@
     });
     $('#update-check').addEventListener('click', async () => {
       if (state.updateBusy || state.restartPending) return;
+      state.updateRevision += 1;
       state.updateBusy = true;
       renderUpdateStatus();
       const button = $('#update-check'); button.disabled = true;
@@ -4076,6 +4092,7 @@
       catch { toast('复制失败，请手动复制地址', true); }
     });
     $('#system-restart').addEventListener('click', () => restartService());
+    $('#upgrade-policy-system').addEventListener('click', event => { event.preventDefault(); navigate('system'); });
     window.addEventListener('popstate', () => navigate(routePages[location.pathname] || 'dashboard', { history: false }));
     if ('ResizeObserver' in window) {
       dashboardChartObserver = new ResizeObserver(entries => {
@@ -4096,6 +4113,7 @@
     try {
       const auth = await publicApi('/api/v1/auth/status');
       state.auth = auth;
+      applyUpgradePolicy(auth.upgradePolicy);
       if (auth.setupRequired) {
         showSetupView(auth);
         return;

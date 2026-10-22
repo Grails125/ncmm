@@ -37,7 +37,7 @@ fi
 # imported as read-only schedules for backward compatibility.
 if [ "$1" = "web" ]; then
   sync_cookiecloud
-  exec ncmm -c /data/config.yaml "$@"
+  exec /usr/local/bin/ncmm-launcher serve -- --home /data -c /data/config.yaml "$@"
 fi
 
 # 2. 解析环境变量中的多重定时任务

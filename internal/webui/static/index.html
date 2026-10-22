@@ -9,6 +9,7 @@
   <title>NCMM - 网易云音乐任务系统</title>
   <link rel="stylesheet" href="/app.css?v=3.1">
   <link rel="stylesheet" href="/workspace.css?v=3.1">
+  <link rel="stylesheet" href="/upgrade-policy.css?v=1">
 </head>
 
 <body>
@@ -176,6 +177,10 @@
         <h1 id="auth-title">NCMM</h1>
         <p id="auth-subtitle">网易云音乐一站式任务管理系统</p>
       </header>
+      <aside class="upgrade-policy" data-upgrade-policy hidden role="status" aria-live="polite">
+        <div class="upgrade-policy-copy"><strong data-upgrade-title></strong><p data-upgrade-message></p></div>
+        <div class="upgrade-policy-actions"><span>登录后可在系统设置中更新</span><a data-upgrade-release target="_blank" rel="noopener noreferrer">版本说明</a></div>
+      </aside>
       <div class="login-panel">
         <form id="auth-form" class="auth-form" novalidate>
           <div id="login-logo" class="login-logo" aria-label="NCMM">
@@ -324,6 +329,10 @@
         </div>
       </header>
 
+      <aside id="upgrade-policy-banner" class="upgrade-policy" data-upgrade-policy hidden role="status" aria-live="polite">
+        <div class="upgrade-policy-copy"><strong data-upgrade-title></strong><p data-upgrade-message></p></div>
+        <div class="upgrade-policy-actions"><a id="upgrade-policy-system" href="/system">前往系统更新</a><a data-upgrade-release target="_blank" rel="noopener noreferrer">版本说明</a></div>
+      </aside>
       <main class="page-body">
         <section id="page-dashboard" class="page tab-page active">
           <section class="dashboard-telemetry-bar">
@@ -1160,6 +1169,7 @@
 	</dialog>
 	<dialog id="plugin-daemon-log-dialog" class="dialog compact-dialog"><h2>常驻插件日志</h2><p class="muted">保留本次服务期间最近 1 MB 输出，重启插件后显示新进程日志。</p><pre id="plugin-daemon-log-output"></pre><div class="dialog-actions"><button type="button" class="btn btn-glass" data-close-dialog="plugin-daemon-log-dialog">关闭</button></div></dialog>
   <div id="toast-region" class="toast-region toast-container" aria-live="polite"></div>
+  <script src="/upgrade-policy.js?v=1" defer></script>
   <script src="/app.js?v=3.1" defer></script>
 </body>
 

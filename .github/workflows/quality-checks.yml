@@ -51,7 +51,7 @@ jobs:
         run: node --check internal/webui/static/app.js
 
       - name: Test browser launcher, account status and task configuration
-        run: node --test tests/run_webui_browser.test.js tests/webui_cookie_status.test.js tests/webui_music_partner_config.test.js tests/webui_music_partner_points.test.js tests/webui_task_config.test.js tests/webui_update_restart.test.js tests/webui_base_fixes.test.js tests/webui_plugin_platform.test.js
+        run: node --test tests/run_webui_browser.test.js tests/webui_cookie_status.test.js tests/webui_music_partner_config.test.js tests/webui_music_partner_points.test.js tests/webui_task_config.test.js tests/webui_update_restart.test.js tests/webui_upgrade_policy.test.js tests/webui_base_fixes.test.js tests/webui_plugin_platform.test.js
 
       - name: Test updater script behavior
         run: python3 -m unittest discover -s tests -p test_ncmm_update_script.py
@@ -88,6 +88,9 @@ jobs:
       - name: Test update and restart flow in Chromium
         run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_update_restart.js "$RUNNER_TEMP/webui-update-restart"
 
+      - name: Test native upgrade policy UI in Chromium
+        run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_upgrade_policy.js "$RUNNER_TEMP/webui-upgrade-policy"
+
       - name: Test base compatibility UI in Chromium
         run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_base_fixes.js "$RUNNER_TEMP/webui-base-fixes"
 
@@ -95,7 +98,7 @@ jobs:
         run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_plugin_platform.js "$RUNNER_TEMP/webui-plugin-platform"
 
       - name: Race test high-risk services
-        run: go test -race ./api/... ./config ./internal/webui ./internal/ncmm ./internal/partnerpoints ./internal/selfupdate ./internal/filelock ./internal/atomicfile ./pkg/cookie
+        run: go test -race ./api/... ./config ./internal/webui ./internal/ncmm ./internal/partnerpoints ./internal/selfupdate ./internal/managedruntime ./internal/upgradepolicy ./internal/filelock ./internal/atomicfile ./pkg/cookie
 
       - name: Upload WebUI failure logs
         if: failure()
@@ -148,3 +151,6 @@ jobs:
           done
           docker exec ncmm-smoke wget -qO- http://127.0.0.1:3899/api/v1/instance | grep -F "$(cat VERSION)"
           docker exec ncmm-smoke test -s /usr/share/licenses/ncmm/licenses/ncmp-MIT.txt
+          docker exec ncmm-smoke test -s /data/runtime/manager.json
+          docker exec ncmm-smoke test -s /data/runtime/state.json
+          docker exec ncmm-smoke ncmm --version | grep -F "$(cat VERSION)"

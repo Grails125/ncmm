@@ -6,6 +6,10 @@
 !main.go
 !VERSION
 !entrypoint.sh
+!scripts/
+!scripts/ncmm-runtime.sh
+!cmd/
+!cmd/**
 !LICENSE
 !THIRD_PARTY_NOTICES.md
 !licenses/

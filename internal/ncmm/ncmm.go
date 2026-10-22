@@ -13,6 +13,7 @@ import (
 
 	"github.com/3899/ncmm/config"
 	"github.com/3899/ncmm/internal/filelock"
+	"github.com/3899/ncmm/internal/upgradepolicy"
 	"github.com/3899/ncmm/pkg/log"
 	"github.com/3899/ncmm/pkg/notify"
 
@@ -116,6 +117,12 @@ func New() *Root {
 		if cmd.Name() != "update" {
 			c.CheckForUpdatesPreRun()
 		}
+		if !upgradepolicy.AllowsCommand(cmd.CommandPath()) {
+			if err := upgradepolicy.Check(c.getHomePath(), c.AppVersion, time.Now()); err != nil {
+				log.Warn("[updater] 自动任务因版本要求停止: %v", err)
+				return err
+			}
+		}
 		return nil
 	}
 	c.cmd.PersistentPostRunE = func(cmd *cobra.Command, args []string) error {
@@ -194,6 +201,9 @@ func (c *Root) Execute() {
 			_ = c.l.Close()
 		}
 		c.cmd.PrintErrln(err)
+		if coded, ok := err.(interface{ ExitCode() int }); ok {
+			os.Exit(coded.ExitCode())
+		}
 		os.Exit(1)
 	}
 }

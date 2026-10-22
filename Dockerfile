@@ -13,13 +13,15 @@ COPY api ./api
 COPY config ./config
 COPY internal ./internal
 COPY pkg ./pkg
+COPY cmd ./cmd
 ARG VERSION
 ARG VCS_REF=unknown
 ARG BUILD_DATE=unknown
 RUN BUILD_VERSION="${VERSION:-$(cat VERSION)}" && \
     CGO_ENABLED=0 go build \
     -trimpath -ldflags="-s -w -X main.Version=${BUILD_VERSION} -X main.Commit=${VCS_REF} -X main.BuildTime=${BUILD_DATE}" \
-    -o /ncmm main.go
+    -o /ncmm main.go && \
+    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.Version=${BUILD_VERSION}" -o /ncmm-launcher ./cmd/ncmm-launcher
 
 
 # ---- 运行阶段 ----
@@ -28,11 +30,15 @@ FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata
 ENV NCMM_DOCKER_OFFICIAL=1 \
     NCMM_WEB_PRESERVE_LEGACY_SCHEDULES=true \
-    NCMM_UPDATER_AUTO_UPDATE=false
+    NCMM_RUNTIME_MANAGED=1 \
+    NCMM_RUNTIME_DIR=/data/runtime
 LABEL org.opencontainers.image.source="https://github.com/Grails125/ncmm" \
     org.opencontainers.image.description="ncmm 原生音乐合伙人评分集成（基于 v1.2.2）"
 
-COPY --from=builder /ncmm /usr/local/bin/ncmm
+COPY --from=builder /ncmm /opt/ncmm/ncmm
+COPY --from=builder /ncmm-launcher /usr/local/bin/ncmm-launcher
+COPY scripts/ncmm-runtime.sh /usr/local/bin/ncmm
+RUN sed -i 's/\r$//' /usr/local/bin/ncmm && chmod +x /usr/local/bin/ncmm
 COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/licenses/ncmm/
 COPY licenses /usr/share/licenses/ncmm/licenses
 
