@@ -283,7 +283,9 @@ async function hasHorizontalScroll(locator, label) {
   assert(await firstConfigSection.getAttribute('data-section') === 'task' && (await firstConfigSection.innerText()).includes('批量任务'), 'batch tasks were not the first simplified navigation item');
   assert((await page.locator('#config-current-title').innerText()).includes('规则配置面板'), 'continuous flow title was not rendered');
   assert(await page.locator('.card-flow-section').count() === 16, 'configuration did not render all 16 modules');
-  assert(await page.locator('.config-card-box').count() === 31, 'configuration card flow did not match the prototype');
+  assert(await page.locator('.config-card-box').count() === 32, 'configuration card flow did not include all cards and per-score comments');
+  assert(await page.locator('#config-block-musicPartner .range-inputs-row').count() === 3, 'partner score, extra target and wait ranges were incomplete');
+  assert(await page.locator('#config-block-musicPartner textarea[data-kind="array"]').count() === 5, 'partner per-score comment pools were incomplete');
   assert(await page.locator('#config-block-task .task-card').count() === 9, 'task matrix did not render nine task cards');
   assert(await page.locator('#config-block-task .schema-segmented').count() === 1, 'task mode segmented control was missing');
   assert(await page.locator('.schema-fallback').count() === 0, 'registered task fields fell back to generic controls');
@@ -293,7 +295,7 @@ async function hasHorizontalScroll(locator, label) {
   assert(await page.locator('.card-flow-section:not(.search-hidden)').count() === 1, 'full-flow search did not narrow the matching module');
   assert(await page.locator('#config-block-task .task-card:not(.search-hidden)').count() === 0, 'full-flow search left unrelated task cards visible');
   await page.locator('#config-search').fill('');
-  for (const [section, control] of [['accounts', '.config-token-control'], ['musician', '.schema-stepper'], ['musicPartner', '.schema-segmented'], ['mixPlay', '.single-range-input'], ['note', '.schema-textarea'], ['dailySongShare', '.schema-json'], ['network', '.quick-pill'], ['playids', '.schema-tags']]) {
+  for (const [section, control] of [['accounts', '.config-token-control'], ['musician', '.schema-stepper'], ['musicPartner', '.range-inputs-row'], ['mixPlay', '.single-range-input'], ['note', '.schema-textarea'], ['dailySongShare', '.schema-json'], ['network', '.quick-pill'], ['playids', '.schema-tags']]) {
     await page.locator(`#config-sections [data-section="${section}"]`).click();
     await page.waitForFunction(key => document.querySelector(`#config-sections [data-section="${key}"]`)?.classList.contains('active'), section);
     assert(await page.locator(`#config-block-${section} ${control}`).count() > 0, `${section} prototype control ${control} was missing`);
