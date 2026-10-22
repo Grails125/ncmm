@@ -5,6 +5,8 @@
 
 请使用本仓库源码构建。原来的 v1.2.9 分发仓库未公开对应源码，本分支不宣称包含 v1.2.3–v1.2.9 的全部改动；已有较新实例请使用独立数据目录。详见 [源码基线](docs/source-baseline.md) 和 [原生评分说明](docs/music-partner.md)。
 
+已补齐的公开1.2.9行为、配置迁移、插件市场与发布边界见 [兼容性说明](docs/v129-compatibility.md)。支持已知官方配置迁移，现有账号和评分设置保留；切换已有实例前仍需完整备份并验证数据兼容性。
+
 ```bash
 git clone --branch main https://github.com/Grails125/ncmm.git
 cd ncmm

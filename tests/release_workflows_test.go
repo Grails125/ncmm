@@ -26,6 +26,7 @@ type workflowJob struct {
 	With            map[string]string `yaml:"with"`
 	Outputs         map[string]string `yaml:"outputs"`
 	Permissions     map[string]string `yaml:"permissions"`
+	Secrets         string            `yaml:"secrets"`
 	Steps           []workflowStep    `yaml:"steps"`
 	ContinueOnError bool              `yaml:"continue-on-error"`
 }
@@ -69,7 +70,7 @@ func checkoutStep(t *testing.T, steps []workflowStep) workflowStep {
 }
 
 func TestReleaseWorkflowsGateEveryPublishedCommit(t *testing.T) {
-	for file, publishJob := range map[string]string{"build.yml": "build", "build-image.yml": "docker"} {
+	for file, publishJobs := range map[string][]string{"release.yml": {"build", "docker"}} {
 		t.Run(file, func(t *testing.T) {
 			workflow := readWorkflow(t, file)
 			resolve, ok := workflow.Jobs["resolve"]
@@ -89,12 +90,24 @@ func TestReleaseWorkflowsGateEveryPublishedCommit(t *testing.T) {
 			if gate.ContinueOnError || gate.If != "" || gate.Permissions["contents"] != "read" {
 				t.Fatal("质量门禁不得绕过失败或拥有发布权限")
 			}
-			publish := workflow.Jobs[publishJob]
-			if !containsNeed(publish.Needs, "resolve") || !containsNeed(publish.Needs, "quality") || publish.If != "" || publish.ContinueOnError {
-				t.Fatal("发布 job 必须依赖解析和完整质量检查成功，不能 always/continue-on-error 绕过")
-			}
-			if got := checkoutStep(t, publish.Steps).With["ref"]; got != "${{ needs.resolve.outputs.commit_sha }}" {
-				t.Fatalf("发布重新解析了可移动 ref，未使用已验证 SHA: %q", got)
+			for _, publishJob := range publishJobs {
+				publish := workflow.Jobs[publishJob]
+				if !containsNeed(publish.Needs, "resolve") || !containsNeed(publish.Needs, "quality") || publish.ContinueOnError {
+					t.Fatal("发布 job 必须依赖解析和完整质量检查成功，不能忽略失败")
+				}
+				selector := "build_package"
+				if publishJob == "docker" {
+					selector = "build_image"
+				}
+				if publish.If != "github.event_name == 'push' || inputs."+selector {
+					t.Fatal("发布只能按产物选择开关过滤，不得用 always 或成功状态表达式绕过门禁")
+				}
+				if containsNeed(publish.Needs, "build") || containsNeed(publish.Needs, "docker") {
+					t.Fatal("包和镜像应在质量检查后并行构建")
+				}
+				if got := checkoutStep(t, publish.Steps).With["ref"]; got != "${{ needs.resolve.outputs.commit_sha }}" {
+					t.Fatalf("发布重新解析了可移动 ref，未使用已验证 SHA: %q", got)
+				}
 			}
 			for _, job := range workflow.Jobs {
 				for _, step := range job.Steps {
@@ -104,6 +117,60 @@ func TestReleaseWorkflowsGateEveryPublishedCommit(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestManualReleaseEntrypointsKeepTheSharedQualityGate(t *testing.T) {
+	for file, selected := range map[string]string{"build.yml": "build_package", "build-image.yml": "build_image"} {
+		t.Run(file, func(t *testing.T) {
+			workflow := readWorkflow(t, file)
+			var events map[string]yaml.Node
+			if err := workflow.On.Decode(&events); err != nil {
+				t.Fatal(err)
+			}
+			if len(events) != 1 || events["workflow_dispatch"].Kind == 0 {
+				t.Fatal("旧入口只保留手动触发，标签发布由统一流水线负责")
+			}
+			if len(workflow.Jobs) != 1 {
+				t.Fatal("手动入口应委托统一流水线，不另建可绕过的发布 job")
+			}
+			call := workflow.Jobs["release"]
+			if call.Uses != "./.github/workflows/release.yml" || call.Secrets != "inherit" || call.If != "" || call.ContinueOnError {
+				t.Fatal("手动入口必须完整委托受质量门禁保护的流水线")
+			}
+			if call.With["commit_sha"] != "${{ inputs.commit_sha }}" || call.With["version"] != "${{ inputs.version }}" || call.With[selected] != "true" {
+				t.Fatal("手动选择的 ref、版本和产物必须完整传递")
+			}
+			other := "build_image"
+			if selected == other {
+				other = "build_package"
+			}
+			if call.With[other] != "false" {
+				t.Fatal("独立入口只发布所选产物")
+			}
+		})
+	}
+}
+
+func TestPrereleaseImagesDoNotReplaceLatest(t *testing.T) {
+	workflow := readWorkflow(t, "release.yml")
+	latestRules := 0
+	for _, step := range workflow.Jobs["docker"].Steps {
+		if !strings.HasPrefix(step.Uses, "docker/metadata-action@") {
+			continue
+		}
+		for _, rule := range strings.Split(step.With["tags"], "\n") {
+			if !strings.Contains(rule, "value=latest") {
+				continue
+			}
+			latestRules++
+			if !strings.Contains(rule, "enable=${{ inputs.release_type != '预发布版（pre-release）' && (") {
+				t.Fatal("预发布镜像不得覆盖 latest；所有事件条件都必须受发布类型保护")
+			}
+		}
+	}
+	if latestRules != 1 {
+		t.Fatal("必须只有一条受保护的 latest 镜像标签规则")
 	}
 }
 

@@ -2,7 +2,7 @@
 
 ## 准备文件
 
-从 Release 下载与系统架构对应的 Windows ZIP，并完整解压到单独目录。不要直接在压缩包中运行程序。
+从本仓库 Release 下载带 `-grails.N` 标识且与系统架构对应的 Windows ZIP，并完整解压到单独目录。若尚无原生发布包，先从本仓库源码构建并复制配套配置和脚本。不要使用上游二进制替换原生评分程序，也不要直接在压缩包中运行。
 
 解压后的目录应至少包含：
 
@@ -45,7 +45,7 @@ ncmm.exe web
 双击 `一键启动.bat` 即可在后台运行：
 
 ```text
-ncmm.exe web --background
+ncmm.exe --home <发布目录> web --background
 ```
 
 `一键启动.bat` 不依赖 PowerShell。脚本把发布目录显式作为 `--home`，`ncmm.exe` 会创建无控制台窗口的后台进程，启动完成后不会保留 CMD 窗口或任务栏按钮。
