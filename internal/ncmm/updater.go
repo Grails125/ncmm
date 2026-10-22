@@ -22,14 +22,16 @@ import (
 	"time"
 
 	"github.com/3899/ncmm/config"
+	"github.com/3899/ncmm/internal/atomicfile"
+	"github.com/3899/ncmm/internal/filelock"
+	"github.com/3899/ncmm/internal/selfupdate"
 	"github.com/3899/ncmm/pkg/log"
-	"github.com/3899/ncmm/pkg/utils"
 )
 
-var (
-	updaterMu   sync.Mutex
-	stateFileMu sync.Mutex
-)
+var updaterMu sync.Mutex
+
+// 启动时保存路径，避免 Unix 原子替换后 os.Executable 指向已删除的旧 inode。
+var runningUpdateExecutable, runningUpdateExecutableErr = os.Executable()
 
 // UpdateState 定义跟目录 ncmm-update.json 中保存的状态元数据
 type UpdateState struct {
@@ -40,10 +42,11 @@ type UpdateState struct {
 	ReleaseNotes   string    `json:"release_notes"`   // 最新版本的更新说明/日志摘要
 
 	// 自动热更新状态
-	UpdateStatus   string    `json:"update_status"`    // 状态: "idle" | "updating" | "success" | "failed"
-	UpdatedVersion string    `json:"updated_version"`  // 已成功替换完成的目标版本号
-	LastUpdateTime time.Time `json:"last_update_time"` // 上次热替换成功完成时间
-	LastError      string    `json:"last_error"`       // 上次失败错误日志
+	UpdateStatus    string    `json:"update_status"`              // 状态: "idle" | "updating" | "success" | "failed"
+	UpdatedVersion  string    `json:"updated_version"`            // 已成功替换完成的目标版本号
+	LastUpdateTime  time.Time `json:"last_update_time"`           // 上次热替换成功完成时间
+	LastError       string    `json:"last_error"`                 // 上次失败错误日志
+	InstalledSHA256 string    `json:"installed_sha256,omitempty"` // 安装回执，用于区分待重启与二进制降级
 
 	// 系统架构及目标资产信息
 	OS            string `json:"os"`           // 操作系统 (如 Windows / Linux / Darwin)
@@ -99,33 +102,90 @@ func (c *Root) initDefaultUpdateState() UpdateState {
 }
 
 // saveUpdateState 并发安全地保存 ncmm-update.json 状态数据
-func (c *Root) saveUpdateState(statePath string, state *UpdateState) {
-	stateFileMu.Lock()
-	defer stateFileMu.Unlock()
-	if data, err := json.MarshalIndent(state, "", "  "); err == nil {
-		_ = os.MkdirAll(filepath.Dir(statePath), 0755)
-		if err := os.WriteFile(statePath, data, 0644); err != nil {
-			log.Warn("[updater] 写入 ncmm-update.json 状态文件失败: %v", err)
-		}
+func (c *Root) saveUpdateState(statePath string, state *UpdateState) error {
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
 	}
+	if err := os.MkdirAll(filepath.Dir(statePath), 0755); err != nil {
+		return err
+	}
+	if err := atomicfile.Write(statePath, data, 0600); err != nil {
+		return fmt.Errorf("保存更新状态失败: %w", err)
+	}
+	return nil
 }
 
-// CleanOldExecutable 清理上一次更新留下的 .old 临时备份文件
-func (c *Root) CleanOldExecutable() {
-	execPath, err := os.Executable()
+func (c *Root) loadUpdateState(statePath, execPath string) UpdateState {
+	state := c.initDefaultUpdateState()
+	data, err := os.ReadFile(statePath)
 	if err != nil {
-		return
+		return state
 	}
-	oldPath := execPath + ".old"
-	if utils.FileExists(oldPath) {
-		_ = os.Remove(oldPath)
+	if json.Unmarshal(data, &state) != nil || !isNativeUpdate(state.LatestVersion, state.AssetFilename, state.DownloadURL) {
+		log.Warn("[updater] 更新缓存无效，重新检查本分支发布")
+		return c.initDefaultUpdateState()
 	}
+	installed := selfupdate.Matches(execPath, state.InstalledSHA256)
+	if state.UpdateStatus == "updating" {
+		if installed {
+			state.UpdateStatus = "success"
+			state.UpdatedVersion = state.LatestVersion
+			state.LastError = ""
+		} else {
+			state.UpdateStatus = "failed"
+			state.UpdatedVersion = ""
+			state.InstalledSHA256 = ""
+			state.LastError = "上次更新未完成，可重新检查并更新；原程序备份保留在 .old 文件"
+		}
+	}
+	if state.UpdatedVersion != "" && !installed {
+		state.UpdatedVersion = ""
+		state.InstalledSHA256 = ""
+		state.UpdateStatus = "idle"
+		state.LastError = ""
+		state.LastCheckTime = time.Time{}
+	}
+	state.CurrentVersion = c.initDefaultUpdateState().CurrentVersion
+	return state
+}
+
+func updateExecutablePath() (string, error) {
+	if runningUpdateExecutableErr != nil {
+		return "", runningUpdateExecutableErr
+	}
+	return filepath.EvalSymlinks(runningUpdateExecutable)
+}
+
+// 所有写入固定先锁程序、再锁状态文件；仅检查版本无需程序目录的写权限。
+func (c *Root) lockUpdater(execPath string, install bool) (func(), error) {
+	var executableLock *filelock.Lock
+	if install {
+		var err error
+		executableLock, err = filelock.TryAcquire(execPath + ".update.lock")
+		if err != nil {
+			return nil, fmt.Errorf("无法获取程序更新锁，请稍后重试: %w", err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stateLock, err := filelock.Acquire(ctx, c.getUpdateStatePath()+".lock")
+	if err != nil {
+		if executableLock != nil {
+			executableLock.Close()
+		}
+		return nil, fmt.Errorf("无法获取更新状态锁，请稍后重试: %w", err)
+	}
+	return func() {
+		stateLock.Close()
+		if executableLock != nil {
+			executableLock.Close()
+		}
+	}, nil
 }
 
 // CheckForUpdatesPreRun 执行任务前阶段的版本检测与同步热替换
 func (c *Root) CheckForUpdatesPreRun() {
-	c.CleanOldExecutable()
-
 	// 获取配置中的 updater 控制参数 (支持配置文件与 NCMM_UPDATER_CHECK / NCMM_UPDATER_AUTO_UPDATE 环境变量)
 	checkEnabled := true
 	autoUpdateEnabled := true
@@ -151,40 +211,33 @@ func (c *Root) CheckForUpdatesPreRun() {
 		return
 	}
 
+	updaterMu.Lock()
+	defer updaterMu.Unlock()
+	execPath, err := updateExecutablePath()
+	if err != nil {
+		log.Warn("[updater] 获取程序路径失败: %v", err)
+		return
+	}
+	needAutoUpdate := autoUpdateEnabled && os.Getenv("NCMM_DOCKER_OFFICIAL") != "1"
+	unlock, err := c.lockUpdater(execPath, needAutoUpdate)
+	if err != nil {
+		log.Warn("[updater] %v", err)
+		return
+	}
+	defer unlock()
 	statePath := c.getUpdateStatePath()
-	var state UpdateState
-
-	// 仅当 ncmm-update.json 不存在时（新系统首次初始化 / 旧版本升级过渡）
-	if !utils.FileExists(statePath) {
-		// 顺手擦除历史残留文件 update_cache.json
-		_ = os.Remove(filepath.Join(c.getHomePath(), "update_cache.json"))
-		state = c.initDefaultUpdateState()
-		c.saveUpdateState(statePath, &state)
-	} else {
-		// 只要 ncmm-update.json 已存在，直接读取
-		if data, err := os.ReadFile(statePath); err == nil {
-			_ = json.Unmarshal(data, &state)
-		}
+	state := c.loadUpdateState(statePath, execPath)
+	currentVer := state.CurrentVersion
+	if err := c.saveUpdateState(statePath, &state); err != nil {
+		log.Warn("[updater] %v", err)
+		return
 	}
-
-	currentVer := c.AppVersion
-	if currentVer == "" {
-		currentVer = "0.0.0"
-	}
-
-	isDockerOfficial := os.Getenv("NCMM_DOCKER_OFFICIAL") == "1"
-	// 旧安装的更新缓存不能用于覆盖本分支，重新向本仓库检查。
-	if !isNativeUpdate(state.LatestVersion, state.AssetFilename, state.DownloadURL) {
-		state = c.initDefaultUpdateState()
-		c.saveUpdateState(statePath, &state)
-	}
-	needAutoUpdate := autoUpdateEnabled && !isDockerOfficial
 
 	// 1. 命中已有的状态记录：如果记录的最新版本大于当前版本
 	if state.LatestVersion != "" && CompareVersions(currentVer, state.LatestVersion) < 0 {
 		log.Info("[updater] 发现可用新版本: %s (当前版本: %s)", state.LatestVersion, currentVer)
 		if needAutoUpdate && state.UpdatedVersion != state.LatestVersion {
-			_ = c.performSelfUpdateFromState(&state, statePath)
+			_ = c.performSelfUpdateFromState(&state, statePath, execPath)
 			return
 		}
 	}
@@ -195,17 +248,18 @@ func (c *Root) CheckForUpdatesPreRun() {
 	}
 
 	// 3. 发起同步网络 API 检测并处理热替换
-	_, _ = c.checkNewVersionSync(statePath, currentVer, needAutoUpdate)
+	state, err = c.checkNewVersionSync(statePath, currentVer, execPath)
+	if err != nil {
+		log.Warn("[updater] 检查失败: %v", err)
+		return
+	}
+	if needAutoUpdate && CompareVersions(currentVer, state.LatestVersion) < 0 && state.UpdatedVersion != state.LatestVersion {
+		_ = c.performSelfUpdateFromState(&state, statePath, execPath)
+	}
 }
 
-func (c *Root) checkNewVersionSync(statePath string, currentVer string, autoUpdateEnabled bool) (UpdateState, error) {
-	state := c.initDefaultUpdateState()
-	if data, err := os.ReadFile(statePath); err == nil {
-		_ = json.Unmarshal(data, &state)
-	}
-	if !isNativeUpdate(state.LatestVersion, state.AssetFilename, state.DownloadURL) {
-		state = c.initDefaultUpdateState()
-	}
+func (c *Root) checkNewVersionSync(statePath string, currentVer string, execPath string) (UpdateState, error) {
+	state := c.loadUpdateState(statePath, execPath)
 	proxyMirrors := []string{"https://gh-proxy.com/", "https://ghproxy.net/", "https://githubproxy.cc/"}
 	if c.Cfg != nil && c.Cfg.Updater != nil && len(c.Cfg.Updater.ProxyMirrors) > 0 {
 		proxyMirrors = c.Cfg.Updater.ProxyMirrors
@@ -294,7 +348,13 @@ func (c *Root) checkNewVersionSync(statePath string, currentVer string, autoUpda
 	state.AssetFilename = targetName
 	state.DownloadURL = downloadURL
 
-	c.saveUpdateState(statePath, &state)
+	if CompareVersions(currentVer, tag) >= 0 && state.UpdateStatus != "success" {
+		state.UpdateStatus = "idle"
+		state.LastError = ""
+	}
+	if err := c.saveUpdateState(statePath, &state); err != nil {
+		return state, err
+	}
 
 	if CompareVersions(currentVer, tag) >= 0 {
 		return state, nil
@@ -302,23 +362,45 @@ func (c *Root) checkNewVersionSync(statePath string, currentVer string, autoUpda
 
 	log.Info("[updater] 发现可用新版本: %s (当前版本: %s)", tag, currentVer)
 
-	if autoUpdateEnabled && state.UpdatedVersion != tag {
-		_ = c.performSelfUpdateFromState(&state, statePath)
-	}
 	return state, nil
 }
 
 // performSelfUpdateFromState 从状态结构中提取配置并执行全自动热替换
-func (c *Root) performSelfUpdateFromState(state *UpdateState, statePath string) error {
-	state.UpdateStatus = "updating"
-	c.saveUpdateState(statePath, state)
-
-	log.Info("[updater] 正在自动升级至 %s ...", state.LatestVersion)
-	err := c.performSelfUpdateWithInfo(state.LatestVersion, state.AssetFilename, state.DownloadURL)
+func (c *Root) performSelfUpdateFromState(state *UpdateState, statePath, execPath string) error {
+	binaryBytes, err := c.downloadUpdate(state.LatestVersion, state.AssetFilename, state.DownloadURL)
 	if err != nil {
 		state.UpdateStatus = "failed"
 		state.LastError = err.Error()
-		c.saveUpdateState(statePath, state)
+		if saveErr := c.saveUpdateState(statePath, state); saveErr != nil {
+			log.Warn("[updater] %v", saveErr)
+		}
+		log.Warn("[updater] 下载更新失败: %v", err)
+		return err
+	}
+	if c.CfgPath != "" && c.CfgPath != "default" {
+		if _, err := config.BackupConfigFile(c.CfgPath, 2); err != nil {
+			return fmt.Errorf("升级前备份配置失败: %w", err)
+		}
+	}
+	state.UpdateStatus = "updating"
+	state.UpdatedVersion = ""
+	state.InstalledSHA256 = selfupdate.Digest(binaryBytes)
+	state.LastError = ""
+	if err := c.saveUpdateState(statePath, state); err != nil {
+		return err
+	}
+
+	log.Info("[updater] 正在自动升级至 %s ...", state.LatestVersion)
+	// 不同 home 可能共用同一个程序；已有相同文件时保留上次备份，只补本实例回执。
+	if !selfupdate.Matches(execPath, state.InstalledSHA256) {
+		err = selfupdate.Replace(execPath, binaryBytes)
+	}
+	if err != nil {
+		state.UpdateStatus = "failed"
+		state.LastError = err.Error()
+		if saveErr := c.saveUpdateState(statePath, state); saveErr != nil {
+			log.Warn("[updater] %v", saveErr)
+		}
 		log.Warn("[updater] 自动升级失败: %s", err)
 		return err
 	} else {
@@ -326,8 +408,15 @@ func (c *Root) performSelfUpdateFromState(state *UpdateState, statePath string) 
 		state.UpdatedVersion = state.LatestVersion
 		state.LastUpdateTime = time.Now()
 		state.LastError = ""
-		c.saveUpdateState(statePath, state)
+		if err := c.saveUpdateState(statePath, state); err != nil {
+			return fmt.Errorf("程序已替换，保存成功状态失败；下次检查将核对安装文件: %w", err)
+		}
 		log.Info("[updater] ncmm 已成功升级至 %s 版本", state.LatestVersion)
+	}
+	if c.CfgPath != "" && c.CfgPath != "default" {
+		if err := config.AutoUpgradeConfig(c.CfgPath); err != nil {
+			log.Warn("[updater] 配置文件自动升级合并失败: %s", err)
+		}
 	}
 	return nil
 }
@@ -336,40 +425,54 @@ func (c *Root) performSelfUpdateFromState(state *UpdateState, statePath string) 
 func (c *Root) CheckForUpdatesNow() (UpdateState, error) {
 	updaterMu.Lock()
 	defer updaterMu.Unlock()
-	currentVer := strings.TrimSpace(c.AppVersion)
-	if currentVer == "" {
-		currentVer = "0.0.0"
+	execPath, err := updateExecutablePath()
+	if err != nil {
+		return c.initDefaultUpdateState(), err
 	}
-	return c.checkNewVersionSync(c.getUpdateStatePath(), currentVer, false)
+	unlock, err := c.lockUpdater(execPath, false)
+	if err != nil {
+		return c.initDefaultUpdateState(), err
+	}
+	defer unlock()
+	return c.checkNewVersionSync(c.getUpdateStatePath(), c.initDefaultUpdateState().CurrentVersion, execPath)
 }
 
-// ApplyAvailableUpdate installs the release recorded by the latest manual check.
+// ApplyAvailableUpdate 每次主动检查本仓库最新发布，再在锁内安装。
 func (c *Root) ApplyAvailableUpdate() (UpdateState, error) {
+	if os.Getenv("NCMM_DOCKER_OFFICIAL") == "1" {
+		return c.initDefaultUpdateState(), fmt.Errorf("官方 Docker 容器不支持替换镜像内二进制，请拉取新镜像后重建容器")
+	}
+	execPath, err := updateExecutablePath()
+	if err != nil {
+		return c.initDefaultUpdateState(), err
+	}
+	return c.applyAvailableUpdateAt(execPath)
+}
+
+func (c *Root) applyAvailableUpdateAt(execPath string) (UpdateState, error) {
 	updaterMu.Lock()
 	defer updaterMu.Unlock()
 	statePath := c.getUpdateStatePath()
-	state := c.initDefaultUpdateState()
-	if data, err := os.ReadFile(statePath); err == nil {
-		_ = json.Unmarshal(data, &state)
+	unlock, err := c.lockUpdater(execPath, true)
+	if err != nil {
+		return c.initDefaultUpdateState(), err
 	}
-	currentVer := strings.TrimSpace(c.AppVersion)
-	if currentVer == "" {
-		currentVer = "0.0.0"
+	defer unlock()
+	state, err := c.checkNewVersionSync(statePath, c.initDefaultUpdateState().CurrentVersion, execPath)
+	if err != nil {
+		return state, err
 	}
-	if os.Getenv("NCMM_DOCKER_OFFICIAL") == "1" {
-		return state, fmt.Errorf("官方 Docker 容器不支持替换镜像内二进制，请拉取新镜像后重建容器")
+	if CompareVersions(state.CurrentVersion, state.LatestVersion) >= 0 || state.UpdatedVersion == state.LatestVersion {
+		return state, nil
 	}
-	if state.LatestVersion == "" || CompareVersions(currentVer, state.LatestVersion) >= 0 {
-		return state, fmt.Errorf("当前没有可应用的新版本，请先检查更新")
-	}
-	if err := c.performSelfUpdateFromState(&state, statePath); err != nil {
+	if err := c.performSelfUpdateFromState(&state, statePath, execPath); err != nil {
 		return state, err
 	}
 	return state, nil
 }
 
-// performSelfUpdateWithInfo 执行真正的升级下载与文件覆盖
-func (c *Root) performSelfUpdateWithInfo(tag string, assetName string, rawDownloadURL string) error {
+// downloadUpdate 仅下载并解包本分支的目标资产，不改动运行程序。
+func (c *Root) downloadUpdate(tag string, assetName string, rawDownloadURL string) ([]byte, error) {
 	osPart, archPart, ext := getPlatformInfo()
 	if assetName == "" {
 		assetName = fmt.Sprintf("ncmm_%s_%s%s", osPart, archPart, ext)
@@ -378,7 +481,7 @@ func (c *Root) performSelfUpdateWithInfo(tag string, assetName string, rawDownlo
 		rawDownloadURL = fmt.Sprintf("https://github.com/Grails125/ncmm/releases/download/%s/%s", tag, assetName)
 	}
 	if !isNativeUpdate(tag, assetName, rawDownloadURL) {
-		return fmt.Errorf("拒绝安装其他来源的更新，请检查 Grails125/ncmm 原生集成版本")
+		return nil, fmt.Errorf("拒绝安装其他来源的更新，请检查 Grails125/ncmm 原生集成版本")
 	}
 
 	proxyMirrors := []string{"https://gh-proxy.com/", "https://ghproxy.net/", "https://githubproxy.cc/"}
@@ -427,14 +530,14 @@ func (c *Root) performSelfUpdateWithInfo(tag string, assetName string, rawDownlo
 	}
 
 	if !succeeded {
-		return fmt.Errorf("下载更新包失败，已尝试所有下载方式。最后一次错误: %w", lastErr)
+		return nil, fmt.Errorf("下载更新包失败，已尝试所有下载方式。最后一次错误: %w", lastErr)
 	}
 	defer responseCancel()
 	defer resp.Body.Close()
 
-	archiveBytes, err := io.ReadAll(resp.Body)
+	archiveBytes, err := readUpdateBytes(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var binaryBytes []byte
@@ -446,18 +549,18 @@ func (c *Root) performSelfUpdateWithInfo(tag string, assetName string, rawDownlo
 	if ext == ".zip" {
 		zipReader, err := zip.NewReader(bytes.NewReader(archiveBytes), int64(len(archiveBytes)))
 		if err != nil {
-			return fmt.Errorf("zip.NewReader: %w", err)
+			return nil, fmt.Errorf("zip.NewReader: %w", err)
 		}
 		for _, file := range zipReader.File {
 			if strings.EqualFold(filepath.Base(file.Name), binaryName) {
 				rc, err := file.Open()
 				if err != nil {
-					return err
+					return nil, err
 				}
-				binaryBytes, err = io.ReadAll(rc)
+				binaryBytes, err = readUpdateBytes(rc)
 				rc.Close()
 				if err != nil {
-					return err
+					return nil, err
 				}
 				break
 			}
@@ -466,7 +569,7 @@ func (c *Root) performSelfUpdateWithInfo(tag string, assetName string, rawDownlo
 		// tar.gz
 		gzipReader, err := gzip.NewReader(bytes.NewReader(archiveBytes))
 		if err != nil {
-			return fmt.Errorf("gzip.NewReader: %w", err)
+			return nil, fmt.Errorf("gzip.NewReader: %w", err)
 		}
 		defer gzipReader.Close()
 
@@ -477,12 +580,12 @@ func (c *Root) performSelfUpdateWithInfo(tag string, assetName string, rawDownlo
 				break
 			}
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if strings.EqualFold(filepath.Base(header.Name), binaryName) {
-				binaryBytes, err = io.ReadAll(tarReader)
+				binaryBytes, err = readUpdateBytes(tarReader)
 				if err != nil {
-					return err
+					return nil, err
 				}
 				break
 			}
@@ -490,40 +593,21 @@ func (c *Root) performSelfUpdateWithInfo(tag string, assetName string, rawDownlo
 	}
 
 	if len(binaryBytes) == 0 {
-		return fmt.Errorf("在升级包中找不到可执行文件: %s", binaryName)
+		return nil, fmt.Errorf("在升级包中找不到可执行文件: %s", binaryName)
 	}
+	return binaryBytes, nil
+}
 
-	if c.CfgPath != "" && c.CfgPath != "default" {
-		if _, err := config.BackupConfigFile(c.CfgPath, 2); err != nil {
-			log.Warn("[updater] 升级前备份配置文件失败: %v", err)
-		}
-	}
-
-	execPath, err := os.Executable()
+func readUpdateBytes(r io.Reader) ([]byte, error) {
+	const maxUpdateSize = 256 << 20
+	data, err := io.ReadAll(io.LimitReader(r, maxUpdateSize+1))
 	if err != nil {
-		return err
+		return nil, err
 	}
-
-	oldPath := execPath + ".old"
-	if utils.FileExists(oldPath) {
-		_ = os.Remove(oldPath)
+	if len(data) > maxUpdateSize {
+		return nil, fmt.Errorf("更新文件超过 256 MiB 限制")
 	}
-	if err := os.Rename(execPath, oldPath); err != nil {
-		return fmt.Errorf("重命名原程序失败: %w", err)
-	}
-
-	if err := os.WriteFile(execPath, binaryBytes, 0755); err != nil {
-		_ = os.Rename(oldPath, execPath)
-		return fmt.Errorf("写入新二进制文件失败: %w", err)
-	}
-
-	if c.CfgPath != "" && c.CfgPath != "default" {
-		if err := config.AutoUpgradeConfig(c.CfgPath); err != nil {
-			log.Warn("[updater] 配置文件自动升级合并失败: %s", err)
-		}
-	}
-
-	return nil
+	return data, nil
 }
 
 // ShowUpdateNotificationPostRun 在 PersistentPostRun 阶段展示更新提醒（非强制自动更新模式下）

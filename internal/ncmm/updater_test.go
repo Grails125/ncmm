@@ -49,7 +49,7 @@ func TestNativeUpdateSourceBoundary(t *testing.T) {
 		{"v1.2.2-grails.2", "ncmm.zip", "https://github.com/3899/ncmm/releases/download/v1.2.2-grails.2/ncmm.zip"},
 		{"v1.2.2-grails.2", "ncmm.zip", "https://github.com/Grails125/ncmm/releases/download/v1.2.2-grails.2/ncmm.zip?redirect=evil"},
 	} {
-		if err := root.performSelfUpdateWithInfo(tc.tag, tc.asset, tc.url); err == nil {
+		if _, err := root.downloadUpdate(tc.tag, tc.asset, tc.url); err == nil {
 			t.Fatal("foreign cached update accepted")
 		}
 	}

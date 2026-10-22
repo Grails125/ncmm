@@ -27,6 +27,9 @@ func newUpdateCommand(root *Root) *cobra.Command {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(state)
 			}
 			cmd.Printf("当前版本: %s\n最新版本: %s\n状态: %s\n", state.CurrentVersion, state.LatestVersion, state.UpdateStatus)
+			if apply && CompareVersions(state.CurrentVersion, state.LatestVersion) >= 0 {
+				cmd.Println("当前已是最新版本，无需更新。")
+			}
 			return nil
 		},
 	}
