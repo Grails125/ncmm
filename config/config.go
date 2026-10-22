@@ -389,12 +389,13 @@ type DailySongShareLotteryConf struct {
 
 // VipMemberGiftConf configures the VIP member gift task.
 type VipMemberGiftConf struct {
-	EnableMain        bool                   `json:"enableMain" yaml:"enableMain"`
-	EnableSecondaries bool                   `json:"enableSecondaries" yaml:"enableSecondaries"`
-	EnableGift        bool                   `json:"enableGift" yaml:"enableGift"`
-	EnableClaim       bool                   `json:"enableClaim" yaml:"enableClaim"`
-	Refer             string                 `json:"refer" yaml:"refer"`
-	Cloud             VipMemberGiftCloudConf `json:"cloud" yaml:"cloud"`
+	EnableMain            bool                   `json:"enableMain" yaml:"enableMain"`
+	EnableSecondaries     bool                   `json:"enableSecondaries" yaml:"enableSecondaries"`
+	EnableGift            bool                   `json:"enableGift" yaml:"enableGift"`
+	EnableGiftSecondaries bool                   `json:"enableGiftSecondaries" yaml:"enableGiftSecondaries"`
+	EnableClaim           bool                   `json:"enableClaim" yaml:"enableClaim"`
+	Refer                 string                 `json:"refer" yaml:"refer"`
+	Cloud                 VipMemberGiftCloudConf `json:"cloud" yaml:"cloud"`
 }
 
 type VipMemberGiftCloudConf struct {

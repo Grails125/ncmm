@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/3899/ncmm/api"
+	"github.com/3899/ncmm/api/eapi"
 	"github.com/3899/ncmm/api/types"
 	"github.com/3899/ncmm/api/weapi"
 	"github.com/3899/ncmm/pkg/database"
@@ -39,11 +40,11 @@ type PlayIdsOpts struct {
 }
 
 type PlayIds struct {
-	root *Root
-	cmd  *cobra.Command
-	opts PlayIdsOpts
-	l    *log.Logger
-	rng  *rand.Rand
+	root     *Root
+	cmd      *cobra.Command
+	opts     PlayIdsOpts
+	l        *log.Logger
+	rng      *rand.Rand
 	sharedDB database.Database
 }
 
@@ -344,6 +345,41 @@ func isDatabaseLockError(err error) bool {
 		strings.Contains(errMsg, "temporarily unavailable")
 }
 
+// playIdsArtistID 只读取当前听歌会话的音乐人身份，不使用主账号或昵称推断归属。
+func playIdsArtistID(ctx context.Context, request *eapi.Api, accountID int64) (int64, error) {
+	role, err := request.MusicianRoleGet(ctx, &eapi.MusicianRoleGetReq{})
+	if err != nil {
+		return 0, fmt.Errorf("获取听歌账号音乐人身份失败: %w", err)
+	}
+	if role == nil {
+		return 0, fmt.Errorf("获取听歌账号音乐人身份返回为空")
+	}
+	if role.Code != 200 {
+		return 0, fmt.Errorf("获取听歌账号音乐人身份失败: code=%d", role.Code)
+	}
+	if role.Data.UserId > 0 && role.Data.UserId != accountID {
+		return 0, fmt.Errorf("音乐人身份与当前听歌账号不一致")
+	}
+	if !role.Data.IsMusician || role.Data.ArtistId <= 0 {
+		return 0, nil
+	}
+	return role.Data.ArtistId, nil
+}
+
+func isPlayIdsOwnSong(song *weapi.SongDetailRespSongs, accountID, artistID int64) bool {
+	if song.DjId > 0 && song.DjId == accountID {
+		return true
+	}
+	if artistID > 0 {
+		for _, artist := range song.Ar {
+			if artist.Id == artistID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (c *PlayIds) executeForCookie(ctx context.Context, cookieFile string, uniqueIds []string) (int64, error) {
 	// 1. 网络客户端与登录校验
 	networkCfg := c.root.Cfg.Network
@@ -497,6 +533,15 @@ func (c *PlayIds) executeForCookie(ctx context.Context, cookieFile string, uniqu
 	}
 
 	// 7. 跳过听歌账号本人歌曲的比对过滤
+	artistID, err := playIdsArtistID(ctx, eapi.New(cli), user.Account.Id)
+	if err != nil {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		c.log("[WARN] %s，本次仅按上传者 ID 过滤本人歌曲", err)
+	} else if artistID > 0 {
+		c.log("当前听歌账号音乐人 ID: %d，将按歌手 ID 过滤本人及合作作品", artistID)
+	}
 	var validCandidateIds []string
 	for _, id := range uniqueIds {
 		detail, ok := songsDetailMap[id]
@@ -504,18 +549,7 @@ func (c *PlayIds) executeForCookie(ctx context.Context, cookieFile string, uniqu
 			continue
 		}
 
-		isSelf := false
-		for _, ar := range detail.Ar {
-			if ar.Name == user.Profile.Nickname {
-				isSelf = true
-				break
-			}
-		}
-		if detail.DjId > 0 && detail.DjId == user.Account.Id {
-			isSelf = true
-		}
-
-		if isSelf {
+		if isPlayIdsOwnSong(detail, user.Account.Id, artistID) {
 			c.log("⚠️ 检测到候选歌曲 \"%s\" (ID: %s) 歌手或上传者为当前听歌账号本人，自动跳过该首候选歌曲", detail.Name, id)
 			continue
 		}
@@ -542,27 +576,8 @@ func (c *PlayIds) executeForCookie(ctx context.Context, cookieFile string, uniqu
 		} else if recommendResp.Code != 200 || len(recommendResp.Data.DailySongs) == 0 {
 			c.log("[WARN] 接口返回暂无推荐歌曲，本次播放将仅使用候选歌池")
 		} else {
-			// 获取日推歌曲 ID 列表
+			// 日推复用同一次身份查询及相同的本人歌曲过滤，并缓存歌曲详情。
 			var recommendIds []string
-			for _, item := range recommendResp.Data.DailySongs {
-				// 跳过过滤：同样不能播放当前账号本人的日推歌
-				isSelf := false
-				for _, ar := range item.Ar {
-					if ar.Name == user.Profile.Nickname {
-						isSelf = true
-						break
-					}
-				}
-				if item.DjId > 0 && item.DjId == user.Account.Id {
-					isSelf = true
-				}
-				if isSelf {
-					continue
-				}
-				recommendIds = append(recommendIds, strconv.FormatInt(item.Id, 10))
-			}
-
-			// 我们将日推也批量加到 songsDetailMap 缓存中，防止二次查询
 			for _, item := range recommendResp.Data.DailySongs {
 				songIdStr := strconv.FormatInt(item.Id, 10)
 				var artists []types.Artist
@@ -582,13 +597,19 @@ func (c *PlayIds) executeForCookie(ctx context.Context, cookieFile string, uniqu
 					PicStr: item.Al.PicStr,
 					Tns:    item.Al.Tns,
 				}
-				songsDetailMap[songIdStr] = &weapi.SongDetailRespSongs{
+				detail := &weapi.SongDetailRespSongs{
 					Id:   item.Id,
 					Name: item.Name,
 					Dt:   item.Dt,
 					Ar:   artists,
 					Al:   album,
+					DjId: item.DjId,
 				}
+				if isPlayIdsOwnSong(detail, user.Account.Id, artistID) {
+					continue
+				}
+				recommendIds = append(recommendIds, songIdStr)
+				songsDetailMap[songIdStr] = detail
 			}
 
 			// 混入计算：主歌占 (1 - ratio)，日推占 ratio

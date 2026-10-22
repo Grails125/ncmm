@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -41,8 +42,9 @@ type configDocument struct {
 }
 
 type accountProfile struct {
-	Nickname  string `json:"nickname,omitempty"`
-	AvatarURL string `json:"avatarUrl,omitempty"`
+	Nickname         string `json:"nickname,omitempty"`
+	AvatarURL        string `json:"avatarUrl,omitempty"`
+	CookieVerifiedAt string `json:"cookieVerifiedAt,omitempty"`
 }
 
 func withYAMLSections(document configDocument) configDocument {
@@ -243,12 +245,22 @@ func collectAccountNicknames(document *yaml.Node) map[string]string {
 
 func collectAccountProfiles(document *yaml.Node) map[string]accountProfile {
 	profiles := make(map[string]accountProfile)
+	for _, node := range accountConfigNodes(document) {
+		if profile := accountProfileFromNode(node); profile.Nickname != "" || profile.AvatarURL != "" || profile.CookieVerifiedAt != "" {
+			profiles[node.Value] = profile
+		}
+	}
+	return profiles
+}
+
+func accountConfigNodes(document *yaml.Node) []*yaml.Node {
+	var nodes []*yaml.Node
 	if document == nil || document.Kind != yaml.DocumentNode || len(document.Content) == 0 {
-		return profiles
+		return nodes
 	}
 	root := document.Content[0]
 	if root.Kind != yaml.MappingNode {
-		return profiles
+		return nodes
 	}
 	var accounts *yaml.Node
 	for i := 0; i+1 < len(root.Content); i += 2 {
@@ -258,16 +270,14 @@ func collectAccountProfiles(document *yaml.Node) map[string]accountProfile {
 		}
 	}
 	if accounts == nil || accounts.Kind != yaml.MappingNode {
-		return profiles
+		return nodes
 	}
 	for i := 0; i+1 < len(accounts.Content); i += 2 {
 		key, value := accounts.Content[i].Value, accounts.Content[i+1]
 		switch key {
 		case "main", "primary":
 			if value.Kind == yaml.ScalarNode {
-				if profile := accountProfileFromNode(value); profile.Nickname != "" || profile.AvatarURL != "" {
-					profiles[value.Value] = profile
-				}
+				nodes = append(nodes, value)
 			}
 		case "secondary":
 			if value.Kind != yaml.SequenceNode {
@@ -275,14 +285,12 @@ func collectAccountProfiles(document *yaml.Node) map[string]accountProfile {
 			}
 			for _, item := range value.Content {
 				if item.Kind == yaml.ScalarNode {
-					if profile := accountProfileFromNode(item); profile.Nickname != "" || profile.AvatarURL != "" {
-						profiles[item.Value] = profile
-					}
+					nodes = append(nodes, item)
 				}
 			}
 		}
 	}
-	return profiles
+	return nodes
 }
 
 func accountNickname(node *yaml.Node) string {
@@ -291,7 +299,8 @@ func accountNickname(node *yaml.Node) string {
 
 func accountProfileFromNode(node *yaml.Node) accountProfile {
 	var profile accountProfile
-	for _, comment := range []string{node.LineComment, node.HeadComment} {
+	var verifiedPath string
+	for _, comment := range []string{node.HeadComment, node.LineComment} {
 		comment = normalizeYAMLComment(comment)
 		for _, line := range strings.Split(comment, "\n") {
 			for _, part := range strings.Split(line, "|") {
@@ -306,12 +315,35 @@ func accountProfileFromNode(node *yaml.Node) accountProfile {
 						profile.Nickname = strings.TrimSpace(value)
 					case "头像":
 						profile.AvatarURL = strings.TrimSpace(value)
+					case "Cookie 验证时间":
+						if verifiedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value)); err == nil && !verifiedAt.IsZero() {
+							profile.CookieVerifiedAt = verifiedAt.UTC().Format(time.RFC3339Nano)
+						}
+					case "Cookie 验证路径":
+						verifiedPath = strings.TrimSpace(value)
 					}
 				}
 			}
 		}
 	}
+	// 表单修改路径会保留注释；只有原路径可继承其成功登录记录。
+	if verifiedPath != node.Value {
+		profile.CookieVerifiedAt = ""
+	}
 	return profile
+}
+
+func setAccountCookieVerification(node *yaml.Node, verifiedAt string) {
+	parts := strings.Split(normalizeYAMLComment(node.LineComment), "|")
+	kept := parts[:0]
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" && !strings.HasPrefix(part, "Cookie 验证时间:") && !strings.HasPrefix(part, "Cookie 验证路径:") {
+			kept = append(kept, part)
+		}
+	}
+	kept = append(kept, "Cookie 验证时间: "+verifiedAt, "Cookie 验证路径: "+node.Value)
+	node.LineComment = "# " + strings.Join(kept, " | ")
 }
 
 func (s *configStore) saveData(expectedRevision string, value any) (configDocument, error) {
@@ -346,7 +378,17 @@ func (s *configStore) saveData(expectedRevision string, value any) (configDocume
 	if err := yaml.Unmarshal(srcData, &src); err != nil {
 		return configDocument{}, err
 	}
+	accountComments := make(map[string]string)
+	for _, node := range accountConfigNodes(&dst) {
+		accountComments[node.Value] = node.LineComment
+	}
 	mergeYAMLNode(&dst, &src)
+	// 表单会重建辅助账号数组，按原完整路径恢复登录元数据，避免排序后丢失或串号。
+	for _, node := range accountConfigNodes(&dst) {
+		if comment, ok := accountComments[node.Value]; ok {
+			node.LineComment = comment
+		}
+	}
 	var out bytes.Buffer
 	enc := yaml.NewEncoder(&out)
 	enc.SetIndent(2)
@@ -416,12 +458,23 @@ func (s *configStore) updateAccount(expectedRevision string, result loginresult.
 	if err != nil {
 		return configDocument{}, err
 	}
+	if result.UID <= 0 || strings.TrimSpace(result.CookiePath) == "" || strings.TrimSpace(result.AccountPath) == "" {
+		return configDocument{}, fmt.Errorf("登录验证结果不完整，未更新账号状态")
+	}
 	var document yaml.Node
 	if err := yaml.Unmarshal(existing, &document); err != nil {
 		return configDocument{}, fmt.Errorf("parse config: %w", err)
 	}
 	if err := config.ApplyAccountProfileUpdate(&document, result.AccountPath, result.Nickname, result.AvatarURL, result.Main); err != nil {
 		return configDocument{}, err
+	}
+	for _, node := range accountConfigNodes(&document) {
+		left, right := filepath.Clean(node.Value), filepath.Clean(result.AccountPath)
+		if left != right && !(runtime.GOOS == "windows" && strings.EqualFold(left, right)) {
+			continue
+		}
+		// 与昵称、头像同一次原子提交，不将仅保存文件或失败登录视为验证成功。
+		setAccountCookieVerification(node, time.Now().UTC().Format(time.RFC3339Nano))
 	}
 	var out bytes.Buffer
 	encoder := yaml.NewEncoder(&out)

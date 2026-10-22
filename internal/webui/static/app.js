@@ -86,7 +86,7 @@
     titles: '标题列表', titlesFile: '标题文件', messages: '正文列表', messagesFile: '正文文件', imageUrls: '图片地址',
     autoDelete: '自动删除', songId: '歌曲 ID', playlistId: '歌单 ID', imageMode: '图片模式', titleMode: '标题模式',
     topics: '话题', lottery: '抽奖', activityId: '活动 ID', autoRegister: '自动报名',
-    enableGift: '发布赠礼', enableClaim: '领取赠礼', cloud: '云端服务', baseUrl: '服务地址', token: '令牌',
+    enableGift: '发布赠礼', enableGiftSecondaries: '允许辅助账号赠送', enableClaim: '领取赠礼', cloud: '云端服务', baseUrl: '服务地址', token: '令牌',
     webhook: '自定义 Webhook', bark: 'Bark', serverchan: 'Server 酱', telegram: 'Telegram', dingtalk: '钉钉机器人',
     coolpush: 'CoolPush / Qmsg', pushplus: 'PushPlus', wecom_key: '企业微信群机器人', wecom_app: '企业微信应用消息',
     url: '地址', method: '请求方法', headers: '请求头', body_template: '请求体模板', key: 'Key', server: '服务地址',
@@ -111,7 +111,7 @@
     note: { nav: '图文动态', title: '图文动态与笔记素材池', description: '通用随机标题、正文与配图素材池（供推歌与音乐人复用）' },
     dailySongShare: { nav: '每日推歌', title: '每日推歌与抽奖', description: '推歌抽奖、话题标签、封面模式与秒删保护（需 antiCheatToken）' },
     fansgroup: { nav: '乐迷团', title: '乐迷团日常打卡', description: '音乐合伙人与关注歌手乐迷团日常应援打卡' },
-    vipMemberGift: { nav: '会员礼品', title: '黑胶会员礼品卡与云端互助', description: '社区共享库互助赠送与领取黑胶会员天数（需 antiCheatToken）' },
+    vipMemberGift: { nav: '会员礼品', title: '黑胶会员礼品卡与云端互助', description: '社区共享库互助赠送与领取黑胶会员天数，辅助账号赠送默认关闭' },
     notify: { nav: '通知策略', title: '运行失败通知策略', description: '任务异常或跳过时的汇总推送策略（通道凭证见 notify.yaml）' },
     updater: { nav: '自动更新', title: '自动更新与加速镜像', description: '新版本检测、自动替换与 GitHub 代理镜像加速' },
     log: { nav: '日志管理', title: '日志记录与滚动归档策略', description: '日志格式、控制台输出、切割体积与过期保留天数' },
@@ -124,7 +124,7 @@
     'musician-vip': { badge: '每月进阶', tone: 'primary' },
     'music-partner': { badge: '合伙人专属', tone: 'cyan' },
     'daily-song-share': { badge: '需 Token', tone: 'cyan' },
-    'vip-member-gift': { badge: '需 Token', tone: 'success' },
+    'vip-member-gift': { badge: '会员互助', tone: 'success' },
     fansgroup: { badge: '日常打卡', tone: 'amber' },
     note: { badge: '可选', tone: 'primary' },
   };
@@ -706,6 +706,12 @@
   function latestAccountProfile(path) {
     let profile = null;
     let metadataObservedAt = '';
+    // 登录结果必须按完整路径匹配，不能借用同名 Cookie 的验证状态。
+    const normalized = normalizeCookieAccountPath(path);
+    const configured = Object.entries(state.config?.accountProfiles || {}).find(([candidate]) => normalizeCookieAccountPath(candidate) === normalized)?.[1];
+    const verifiedAt = Date.parse(configured?.cookieVerifiedAt || '');
+    let cookieObservedAt = Number.isFinite(verifiedAt) ? verifiedAt : -Infinity;
+    if (Number.isFinite(verifiedAt)) profile = { account: path, cookieKnown: true, cookieValid: true };
     for (const run of state.runs) {
       const reward = accountRewardFrom(run.rewards, path);
       if (!reward || !(reward.cookieKnown || reward.vipKnown || reward.musicianKnown || reward.nickname || reward.uid || reward.identity)) continue;
@@ -717,16 +723,49 @@
           if ((field === 'nickname' || field === 'avatarUrl') && !metadataObservedAt) metadataObservedAt = observedAt;
         }
       });
-      [['cookieKnown', 'cookieValid'], ['vipKnown', 'vip'], ['musicianKnown', 'musician']].forEach(([knownField, valueField]) => {
+      [['vipKnown', 'vip'], ['musicianKnown', 'musician']].forEach(([knownField, valueField]) => {
         if (!profile[knownField] && reward[knownField]) {
           profile[knownField] = true;
           profile[valueField] = !!reward[valueField];
         }
       });
+      const cookieReward = cookieRewardFrom(run.rewards, path);
+      // 登录前启动的任务可能仍使用旧 Cookie，即便结束较晚也不能覆盖新登录。
+      const runAt = Date.parse(run.startedAt || run.triggeredAt || run.finishedAt || '');
+      if (cookieReward?.cookieKnown && ((Number.isFinite(runAt) && runAt > cookieObservedAt) || (!profile.cookieKnown && !Number.isFinite(verifiedAt)))) {
+        profile.cookieKnown = true;
+        profile.cookieValid = !!cookieReward.cookieValid;
+        if (Number.isFinite(runAt)) cookieObservedAt = runAt;
+      }
     }
     if (!profile) return null;
     profile.observedAt = metadataObservedAt || '';
     return profile;
+  }
+
+  function cookieRewardFrom(rewards, path) {
+    const normalized = normalizeCookieAccountPath(path);
+    const basename = normalizeCookieAccountPath(fileBase(path));
+    const accounts = state.config?.data?.accounts || {};
+    const paths = [accounts.main || accounts.primary, ...(accounts.secondary || [])].filter(value => typeof value === 'string' && value.trim());
+    const uniqueBasename = new Set(paths.filter(value => normalizeCookieAccountPath(fileBase(value)) === basename).map(normalizeCookieAccountPath)).size === 1;
+    const direct = (rewards || []).find(reward => normalizeCookieAccountPath(reward.account) === normalized && (normalized.includes('/') || uniqueBasename));
+    if (direct) return direct;
+    if (!uniqueBasename) return null;
+    // 兼容旧日志只记录文件名；不同目录的完整路径永不互相兜底。
+    return (rewards || []).find(reward => normalizeCookieAccountPath(reward.account) === basename);
+  }
+
+  function normalizeCookieAccountPath(value) {
+    const path = String(value || '').trim().replaceAll('\\', '/');
+    const parts = [];
+    for (const part of path.split('/')) {
+      if (!part || part === '.') continue;
+      if (part === '..' && parts.length && parts.at(-1) !== '..') parts.pop();
+      else parts.push(part);
+    }
+    const normalized = `${path.startsWith('/') ? '/' : ''}${parts.join('/')}`;
+    return /^[A-Za-z]:\//.test(normalized) ? normalized.toLowerCase() : normalized;
   }
 
   function todayAccountRewards() {
@@ -1508,7 +1547,7 @@
     const tokens = accounts.antiCheatTokens && typeof accounts.antiCheatTokens === 'object' ? accounts.antiCheatTokens : {};
     const tokenRows = uniquePaths.map((cookiePath, index) => `<div class="form-row"><label class="form-row-label">${index === 0 ? '主账号' : `辅助号 ${index}`} Token (${escapeHTML(cookiePath)})</label><input type="password" class="config-token-control form-control-input" data-token-cookie="${escapeHTML(cookiePath)}" value="${escapeHTML(tokens[cookiePath] || '')}" placeholder="移动端抓包获取，未配置时自动跳过相关任务" autocomplete="off"></div>`).join('');
     const cookieCard = renderFlowCard('Cookie 路径配置', `${renderFlowField('accounts.main', { title: '主账号 Cookie 路径 (main)', description: '' })}${renderFlowField('accounts.secondary', { title: '辅助账号列表 (secondary)', description: '支持多个小号接力，用于做任务与刷播放量。' })}`, '基础凭据', 'cyan');
-    const tokenCard = renderFlowCard('移动端 X-antiCheatToken 凭证', tokenRows || '<p class="form-row-desc">请先配置账号 Cookie 文件。</p>', '推歌 / 领会员必备', 'amber');
+    const tokenCard = renderFlowCard('移动端 X-antiCheatToken 凭证', tokenRows || '<p class="form-row-desc">请先配置账号 Cookie 文件。</p>', '推歌 / 音乐人 VIP 领取', 'amber');
     return `<div class="config-cards-grid">${cookieCard}${tokenCard}</div>`;
   }
 
@@ -1772,7 +1811,7 @@
         { title: '', paths: ['fansgroup.groupIds'] },
       ],
       vipMemberGift: [
-        { title: '', paths: ['vipMemberGift.enableMain', 'vipMemberGift.enableSecondaries', 'vipMemberGift.enableGift', 'vipMemberGift.enableClaim'] },
+        { title: '', paths: ['vipMemberGift.enableMain', 'vipMemberGift.enableSecondaries', 'vipMemberGift.enableGift', 'vipMemberGift.enableGiftSecondaries', 'vipMemberGift.enableClaim'] },
         { title: '自建云端服务 (vipMemberGift.cloud)', paths: ['vipMemberGift.cloud.baseUrl', 'vipMemberGift.cloud.token', 'vipMemberGift.refer'] },
       ],
       notify: [

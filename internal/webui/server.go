@@ -121,6 +121,14 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	defer listener.Close()
 	listen := listener.Addr().String()
+	if host, port, err := net.SplitHostPort(s.opts.Listen); err == nil && port == "0" {
+		_, assignedPort, err := net.SplitHostPort(listen)
+		if err != nil {
+			return fmt.Errorf("resolve WebUI listener %q: %w", listen, err)
+		}
+		// 动态端口用于 Host 校验，保留配置的主机名及其原有访问限制。
+		s.opts.Listen = net.JoinHostPort(host, assignedPort)
+	}
 	metadata, err := instanceLock.writeMetadata(listen, s.opts.Version)
 	if err != nil {
 		return err
