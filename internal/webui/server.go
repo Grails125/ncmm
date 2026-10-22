@@ -41,6 +41,7 @@ type Server struct {
 	qrcode            *qrcodeLoginManager
 	processes         *processSupervisor
 	plugins           PluginManager
+	daemons           *pluginDaemonManager
 	instance          instanceMetadata
 	startedAt         time.Time
 	updateMu          sync.Mutex
@@ -81,6 +82,7 @@ func New(ctx context.Context, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	runner.validateJob = pluginTaskValidator(opts.PluginManager)
 	scheduler, err := newScheduler(ctx, webConfig, runner)
 	if err != nil {
 		return nil, err
@@ -96,6 +98,11 @@ func New(ctx context.Context, opts Options) (*Server, error) {
 			_, updateErr := configRepository.updateAccount(expectedRevision, result)
 			return updateErr
 		}, processes),
+	}
+	s.daemons, err = newPluginDaemonManager(scheduler.ctx, opts, opts.PluginManager, processes)
+	if err != nil {
+		scheduler.close()
+		return nil, err
 	}
 	s.http = &http.Server{
 		Addr:              opts.Listen,
@@ -136,6 +143,9 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	s.instance = metadata
 	s.startedAt = metadata.StartedAt
+	// 只在实例锁和监听端口均取得后启动显式启用的守护插件。
+	s.daemons.startAutomatic()
+	defer s.daemons.close()
 	s.scheduler.start()
 	defer s.scheduler.close()
 	s.opts.Output("[webui] listening on http://%s (instance %s)\n", listen, metadata.InstanceID)
@@ -225,10 +235,17 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/accounts/qrcode/{id}/image", s.handleQRCodeLoginImage)
 	mux.HandleFunc("DELETE /api/v1/accounts/qrcode/{id}", s.handleQRCodeLoginCancel)
 	mux.HandleFunc("GET /api/v1/plugins", s.handlePluginsGet)
+	mux.HandleFunc("GET /api/v1/plugins/market", s.handlePluginMarket)
+	mux.HandleFunc("POST /api/v1/plugins/updates", s.handlePluginUpdates)
+	mux.HandleFunc("POST /api/v1/plugins/{name}/upgrade", s.handlePluginUpgrade)
 	mux.HandleFunc("POST /api/v1/plugins/install", s.handlePluginInstall)
 	mux.HandleFunc("POST /api/v1/plugins/upload", s.handlePluginUpload)
 	mux.HandleFunc("DELETE /api/v1/plugins/{name}", s.handlePluginDelete)
 	mux.HandleFunc("POST /api/v1/plugins/{name}/run", s.handlePluginRun)
+	mux.HandleFunc("GET /api/v1/plugins/{name}/daemon", s.handlePluginDaemon)
+	mux.HandleFunc("GET /api/v1/plugins/{name}/daemon/log", s.handlePluginDaemonLog)
+	mux.HandleFunc("PUT /api/v1/plugins/{name}/daemon", s.handlePluginDaemon)
+	mux.HandleFunc("POST /api/v1/plugins/{name}/{action}", s.handlePluginDaemonAction)
 
 	staticFS, _ := fs.Sub(staticFiles, "static")
 	fileServer := http.FileServer(http.FS(staticFS))
@@ -1076,6 +1093,7 @@ func (s *Server) handlePluginsGet(w http.ResponseWriter, r *http.Request) {
 	if plugins == nil {
 		plugins = []PluginInfo{}
 	}
+	s.daemons.decorate(plugins)
 	writeJSON(w, http.StatusOK, plugins)
 }
 
@@ -1089,6 +1107,7 @@ func (s *Server) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 		RepoOrURL string `json:"repoOrURL"`
 		Tag       string `json:"tag"`
 		Token     string `json:"token"`
+		Proxy     string `json:"proxy"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -1108,7 +1127,7 @@ func (s *Server) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	name, err := s.plugins.InstallPlugin(r.Context(), plugininstall.Options{Target: target, Tag: strings.TrimSpace(req.Tag), Token: strings.TrimSpace(req.Token)}, nil)
+	name, err := s.plugins.InstallPlugin(r.Context(), plugininstall.Options{Target: target, Tag: strings.TrimSpace(req.Tag), Token: strings.TrimSpace(req.Token), Proxy: req.Proxy}, nil)
 
 	if err != nil {
 		if errors.Is(err, plugininstall.ErrInvalidOptions) {
@@ -1161,7 +1180,14 @@ func (s *Server) handlePluginDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "plugin name is required")
 		return
 	}
-	if err := s.plugins.UninstallPlugin(name); err != nil {
+	operation := func() error { return s.plugins.UninstallPlugin(name) }
+	var err error
+	if s.daemons != nil {
+		err = s.daemons.mutate(name, false, operation)
+	} else {
+		err = operation()
+	}
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1172,6 +1198,10 @@ func (s *Server) handlePluginRun(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PathValue("name"))
 	if name == "" {
 		writeError(w, http.StatusBadRequest, "plugin name is required")
+		return
+	}
+	if err := pluginTaskValidator(s.plugins)(Schedule{Command: "plugin", Args: []string{"run", name}}); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	var req struct {

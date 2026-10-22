@@ -62,6 +62,7 @@ type runManager struct {
 	supervisor  *processSupervisor
 	command     runCommandFactory
 	randomDelay func(int) int
+	validateJob func(Schedule) error
 	policy      LogPolicy
 }
 
@@ -138,6 +139,11 @@ func (m *runManager) startScheduled(ctx context.Context, job Schedule) (RunRecor
 }
 
 func (m *runManager) startWithDelay(ctx context.Context, job Schedule, delaySeconds int) (RunRecord, error) {
+	if m.validateJob != nil {
+		if err := m.validateJob(job); err != nil {
+			return RunRecord{}, err
+		}
+	}
 	resources := m.concurrencyKeys(ctx, job)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -237,6 +243,11 @@ func (m *runManager) startWithDelay(ctx context.Context, job Schedule, delaySeco
 }
 
 func (m *runManager) launchLocked(ctx context.Context, job Schedule, record RunRecord, resources []string) (RunRecord, error) {
+	if m.validateJob != nil {
+		if err := m.validateJob(job); err != nil {
+			return m.failBeforeStartLocked(job.ID, record, err), err
+		}
+	}
 	logFile, err := os.OpenFile(record.LogFile, os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return m.failBeforeStartLocked(job.ID, record, err), err

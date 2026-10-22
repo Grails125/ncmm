@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
+
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -195,6 +195,9 @@ func (p *Plugin) DiscoverPlugins() []PluginInfo {
 		}
 
 		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
 			fullPath := filepath.Join(dir, entry.Name())
 			if entry.IsDir() {
 				// Check sub-directory (e.g. plugins/ncmm-demo/ncmm-demo[.exe])
@@ -203,11 +206,11 @@ func (p *Plugin) DiscoverPlugins() []PluginInfo {
 					continue
 				}
 				for _, sub := range subEntries {
-					if sub.IsDir() {
+					if sub.IsDir() || strings.HasPrefix(sub.Name(), ".") {
 						continue
 					}
 					subName := sub.Name()
-					if isExecutableFile(subName) {
+					if isPluginExecutable(sub) {
 						pluginName := parsePluginName(subName)
 						if pluginName != "" && !seenNames[pluginName] {
 							seenNames[pluginName] = true
@@ -218,7 +221,7 @@ func (p *Plugin) DiscoverPlugins() []PluginInfo {
 			} else {
 				// Flat file in plugins directory
 				name := entry.Name()
-				if isExecutableFile(name) {
+				if isPluginExecutable(entry) {
 					pluginName := parsePluginName(name)
 					if pluginName != "" && !seenNames[pluginName] {
 						seenNames[pluginName] = true
@@ -236,6 +239,7 @@ func (p *Plugin) loadPluginInfo(name, path string) PluginInfo {
 	info := PluginInfo{
 		Name: name,
 		Path: path,
+		Type: "task",
 	}
 	dir := filepath.Dir(path)
 	manifestPath := filepath.Join(dir, "plugin.json")
@@ -249,6 +253,9 @@ func (p *Plugin) loadPluginInfo(name, path string) PluginInfo {
 		if data, err := os.ReadFile(manifestPath); err == nil {
 			var m PluginManifest
 			if json.Unmarshal(data, &m) == nil {
+				if m.Type == "daemon" {
+					info.Type = "daemon"
+				}
 				if m.Title != "" {
 					info.Title = m.Title
 				}
@@ -292,6 +299,18 @@ func (p *Plugin) loadPluginInfo(name, path string) PluginInfo {
 	if info.Title == "" {
 		info.Title = info.Name
 	}
+	info.Source = readPluginSource(dir)
+	if info.Source != nil {
+		if info.Version == "" {
+			info.Version = info.Source.Tag
+		}
+		if update, ok := p.readPluginUpdateCache()[strings.ToLower(info.Source.Repository)]; ok {
+			update.Name = name
+			update.CurrentTag = info.Source.Tag
+			update.UpdateAvailable = update.Error == "" && update.LatestTag != "" && update.LatestTag != info.Source.Tag
+			info.Update = &update
+		}
+	}
 	return info
 }
 
@@ -320,6 +339,17 @@ func isExecutableFile(filename string) bool {
 		return false
 	}
 	return true
+}
+
+func isPluginExecutable(entry os.DirEntry) bool {
+	if entry.Type()&os.ModeSymlink != 0 || !isExecutableFile(entry.Name()) {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	info, err := entry.Info()
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0111 != 0
 }
 
 func parsePluginName(filename string) string {
@@ -352,6 +382,9 @@ func (p *Plugin) FindPlugin(name string) (string, error) {
 
 // ExecutePlugin executes a plugin with PluginContext and captures the result.
 func (p *Plugin) ExecutePlugin(ctx context.Context, pluginPath string, pctx *PluginContext, extraArgs ...string) (*PluginResult, error) {
+	if p.loadPluginInfo(parsePluginName(pluginPath), pluginPath).Type == "daemon" {
+		return nil, fmt.Errorf("常驻插件请在插件中心启动，不能作为一次性任务运行")
+	}
 	absPluginPath, err := filepath.Abs(pluginPath)
 	if err != nil {
 		absPluginPath = pluginPath
@@ -537,6 +570,7 @@ func (p *Plugin) installCommand() *cobra.Command {
 	var token string
 	var destDir string
 	var tag string
+	var proxy string
 
 	cmd := &cobra.Command{
 		Use:   "install <url-or-github-repo>",
@@ -557,7 +591,7 @@ Examples:
 				home := utils.Ternary(p.root.Opts.Home != "", p.root.Opts.Home, config.HomeDir)
 				destDir = filepath.Join(home, "plugins")
 			}
-			_, err := p.InstallPlugin(cmd.Context(), PluginInstallOptions{Target: target, Tag: tag, Token: token, DestDir: destDir}, cmd.Printf)
+			_, err := p.InstallPlugin(cmd.Context(), PluginInstallOptions{Target: target, Tag: tag, Token: token, DestDir: destDir, Proxy: proxy}, cmd.Printf)
 			return err
 		},
 	}
@@ -565,19 +599,8 @@ Examples:
 	cmd.Flags().StringVarP(&token, "token", "t", "", "GitHub Personal Access Token (for private repositories)")
 	cmd.Flags().StringVarP(&destDir, "dir", "d", "", "target plugins directory (default: {home}/plugins)")
 	cmd.Flags().StringVar(&tag, "tag", "", "GitHub Release Tag (default: latest)")
+	cmd.Flags().StringVarP(&proxy, "proxy", "p", "", "公开 GitHub 下载镜像（默认直连；私有仓库始终直连）")
 	return cmd
-}
-
-// InstallPlugin 统一处理 CLI 与 WebUI 的仓库、版本和直链输入。
-func (p *Plugin) InstallPlugin(ctx context.Context, options PluginInstallOptions, logFn func(string, ...any)) (string, error) {
-	target, err := options.ParseTarget()
-	if err != nil {
-		return "", err
-	}
-	if target.Repository != "" {
-		return p.installGitHubRelease(ctx, target.Repository, strings.TrimSpace(options.Tag), strings.TrimSpace(options.Token), options.DestDir, logFn)
-	}
-	return p.InstallFromURL(ctx, target.URL, strings.TrimSpace(options.Token), options.DestDir, logFn)
 }
 
 func (p *Plugin) DefaultPluginDir() string {
@@ -586,157 +609,6 @@ func (p *Plugin) DefaultPluginDir() string {
 		home = p.root.Opts.Home
 	}
 	return filepath.Join(home, "plugins")
-}
-
-func (p *Plugin) InstallFromURL(ctx context.Context, targetURL, token, destDir string, logFn func(string, ...any)) (string, error) {
-	if logFn == nil {
-		logFn = func(string, ...any) {}
-	}
-	if destDir == "" {
-		destDir = p.DefaultPluginDir()
-	}
-	req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
-	if err != nil {
-		return "", err
-	}
-	// GitHub 凭据不得随任意下载直链发送给第三方站点。
-	setPluginGitHubToken(req, token)
-
-	logFn("Downloading %s://%s%s...\n", req.URL.Scheme, req.URL.Host, req.URL.EscapedPath())
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("download: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download returned %s", resp.Status)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read body: %w", err)
-	}
-
-	base := filepath.Base(req.URL.Path)
-
-	installedName, err := p.InstallFromArchive(data, base, destDir)
-	if err != nil {
-		return "", fmt.Errorf("extract plugin: %w", err)
-	}
-
-	logFn("✅ Plugin [%s] installed successfully into %s!\n", installedName, destDir)
-	return installedName, nil
-}
-
-func (p *Plugin) InstallFromGitHub(ctx context.Context, repo, token, destDir string, logFn func(string, ...any)) (string, error) {
-	return p.InstallPlugin(ctx, PluginInstallOptions{Target: repo, Token: token, DestDir: destDir}, logFn)
-}
-
-func (p *Plugin) installGitHubRelease(ctx context.Context, repo, tag, token, destDir string, logFn func(string, ...any)) (string, error) {
-	if logFn == nil {
-		logFn = func(string, ...any) {}
-	}
-	if destDir == "" {
-		destDir = p.DefaultPluginDir()
-	}
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
-	if tag != "" && !strings.EqualFold(tag, "latest") {
-		apiURL = fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", repo, url.PathEscape(tag))
-	}
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	setPluginGitHubToken(req, token)
-
-	logFn("Querying GitHub release: %s (%s)...\n", repo, utils.Ternary(tag != "", tag, "latest"))
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("query GitHub releases: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub API returned %s (check repo name or token)", resp.Status)
-	}
-
-	var rel struct {
-		TagName string `json:"tag_name"`
-		Assets  []struct {
-			ID   int64  `json:"id"`
-			Name string `json:"name"`
-			URL  string `json:"url"`
-		} `json:"assets"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return "", fmt.Errorf("decode release JSON: %w", err)
-	}
-
-	osKeyword := strings.ToLower(runtime.GOOS)
-	archKeyword := runtime.GOARCH
-	if archKeyword == "amd64" {
-		archKeyword = "x86_64"
-	}
-
-	var matchedAsset *struct {
-		ID   int64  `json:"id"`
-		Name string `json:"name"`
-		URL  string `json:"url"`
-	}
-
-	for i := range rel.Assets {
-		name := strings.ToLower(rel.Assets[i].Name)
-		if strings.Contains(name, osKeyword) && (strings.Contains(name, archKeyword) || strings.Contains(name, runtime.GOARCH)) {
-			matchedAsset = &rel.Assets[i]
-			break
-		}
-	}
-
-	if matchedAsset == nil && len(rel.Assets) > 0 {
-		for i := range rel.Assets {
-			if strings.Contains(strings.ToLower(rel.Assets[i].Name), osKeyword) {
-				matchedAsset = &rel.Assets[i]
-				break
-			}
-		}
-	}
-
-	if matchedAsset == nil {
-		return "", fmt.Errorf("no matching release asset found for %s/%s in release %s", runtime.GOOS, runtime.GOARCH, rel.TagName)
-	}
-
-	logFn("Downloading %s (%s)...\n", matchedAsset.Name, rel.TagName)
-	dlReq, err := http.NewRequestWithContext(ctx, "GET", matchedAsset.URL, nil)
-	if err != nil {
-		return "", err
-	}
-	dlReq.Header.Set("Accept", "application/octet-stream")
-	setPluginGitHubToken(dlReq, token)
-
-	dlResp, err := p.client.Do(dlReq)
-	if err != nil {
-		return "", fmt.Errorf("download asset: %w", err)
-	}
-	defer dlResp.Body.Close()
-
-	if dlResp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download failed: %s", dlResp.Status)
-	}
-
-	dlBytes, err := io.ReadAll(dlResp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read asset body: %w", err)
-	}
-
-	installedName, err := p.InstallFromArchive(dlBytes, matchedAsset.Name, destDir)
-	if err != nil {
-		return "", fmt.Errorf("extract asset: %w", err)
-	}
-
-	logFn("✅ Plugin [%s] installed successfully into %s!\n", installedName, destDir)
-	return installedName, nil
 }
 
 func setPluginGitHubToken(req *http.Request, token string) {

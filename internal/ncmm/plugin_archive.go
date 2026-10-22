@@ -191,7 +191,7 @@ func (p *Plugin) installArchive(ctx context.Context, data []byte, filename, dest
 		if mode == 0 {
 			mode = 0644
 		}
-		if isExecutableFile(entry.name) {
+		if isExecutableFile(entry.name) && parsePluginName(entry.name) == name {
 			mode |= 0111
 		}
 		if err = os.WriteFile(filepath.Join(stage, entry.name), entry.data, mode); err != nil {

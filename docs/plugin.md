@@ -189,3 +189,9 @@ if __name__ == "__main__":
     main()
 ```
 赋予执行权限后（`chmod +x plugins/ncmm-hello.py`），执行 `ncmm plugin run hello --param1 value1` 即可体验！
+
+## 常驻插件、市场和在线升级
+
+插件中心现已支持 `type: daemon` 的常驻进程、启动/停止/重启、自启动设置、内存尾日志和公开 QQBot 市场入口。常驻插件不会进入一次性定时任务。仓库安装可选择公开下载镜像，实际 Release Tag 写入来源记录；可检查更新并一键升级，保留配置和本地数据。私有 Token 仅本次使用，始终直连。
+
+完整行为、缓存期限、进程恢复及手动上传边界见 [第 3 组插件平台说明](v129-group3-plugin-platform.md)。

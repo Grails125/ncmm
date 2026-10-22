@@ -7,5 +7,17 @@ type Source struct {
 	Repository  string    `json:"repository"`
 	Tag         string    `json:"tag"`
 	Private     bool      `json:"private,omitempty"`
+	Proxy       string    `json:"proxy,omitempty"`
 	InstalledAt time.Time `json:"installedAt"`
+}
+
+// Update 是可重建的版本检查缓存；不会持久化访问令牌。
+type Update struct {
+	Name            string    `json:"name"`
+	Repository      string    `json:"repository"`
+	CurrentTag      string    `json:"currentTag"`
+	LatestTag       string    `json:"latestTag,omitempty"`
+	UpdateAvailable bool      `json:"updateAvailable"`
+	CheckedAt       time.Time `json:"checkedAt"`
+	Error           string    `json:"error,omitempty"`
 }

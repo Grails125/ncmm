@@ -2381,8 +2381,9 @@
           <div class="plugin-card-meta">
             <div class="plugin-card-title-row">
               <span class="plugin-card-name">${escapeHTML(p.title || p.name)}</span>
-              <span class="badge-pill cyan">v${escapeHTML(p.version || '1.0.0')}</span>
-              <span class="badge-pill success">就绪</span>
+              <span class="badge-pill cyan">${escapeHTML(p.source?.tag || p.version || '版本未知')}</span>
+              <span class="badge-pill ${p.running ? 'success' : 'gray'}">${p.type === 'daemon' ? (p.running ? '常驻运行中' : '常驻已停止') : '任务插件'}</span>
+              ${p.update?.updateAvailable ? `<span class="badge-pill primary">可更新 ${escapeHTML(p.update.latestTag)}</span>` : ''}
             </div>
             <p class="plugin-card-desc">${escapeHTML(p.description || '网易云音乐扩展增强插件')}</p>
           </div>
@@ -2393,15 +2394,22 @@
             <span class="plugin-detail-val"><code>${escapeHTML(p.name)}</code></span>
           </div>
           ${p.author ? `<div class="plugin-detail-row"><span>插件作者:</span><span class="plugin-detail-val">${escapeHTML(p.author)}</span></div>` : ''}
-          ${(p.recommendedCron || p.manifest?.recommendedCron) ? `<div class="plugin-detail-row"><span>推荐 Cron:</span><span class="plugin-detail-val"><code>${escapeHTML(p.recommendedCron || p.manifest?.recommendedCron)}</code></span></div>` : ''}
+          ${p.type !== 'daemon' && (p.recommendedCron || p.manifest?.recommendedCron) ? `<div class="plugin-detail-row"><span>推荐 Cron:</span><span class="plugin-detail-val"><code>${escapeHTML(p.recommendedCron || p.manifest?.recommendedCron)}</code></span></div>` : ''}
+          ${p.type === 'daemon' ? `<div class="plugin-detail-row"><span>自动启动:</span><span>${p.autoStart ? '已开启' : '未开启'}</span></div>` : ''}
+          ${p.daemonError ? `<p class="notice warning">${escapeHTML(p.daemonError)}</p>` : ''}
+          ${p.update?.error ? `<p class="muted">${escapeHTML(p.update.error)}</p>` : ''}
         </div>
         <div class="plugin-card-actions">
-          <button type="button" class="btn btn-primary btn-sm" data-plugin-action="schedule" data-name="${escapeHTML(p.name)}">
+          ${p.type === 'daemon' ? `<button type="button" class="btn btn-primary btn-sm" data-plugin-action="${p.running ? 'stop' : 'start'}" data-name="${escapeHTML(p.name)}">${p.running ? '停止' : '启动'}</button>
+            <button type="button" class="btn btn-glass btn-sm" data-plugin-action="restart" data-name="${escapeHTML(p.name)}">重启</button>
+            <button type="button" class="btn btn-glass btn-sm" data-plugin-action="logs" data-name="${escapeHTML(p.name)}">日志</button>
+            <button type="button" class="btn btn-glass btn-sm" data-plugin-action="settings" data-name="${escapeHTML(p.name)}">常驻设置</button>` : `<button type="button" class="btn btn-primary btn-sm" data-plugin-action="schedule" data-name="${escapeHTML(p.name)}">
             <svg><use href="#i-calendar" /></svg>添加到定时任务
           </button>
           <button type="button" class="btn btn-glass btn-sm" data-plugin-action="run" data-name="${escapeHTML(p.name)}">
             <svg><use href="#i-play" /></svg>立即运行
-          </button>
+          </button>`}
+          ${p.source ? `<button type="button" class="btn btn-glass btn-sm" data-plugin-action="upgrade" data-name="${escapeHTML(p.name)}">升级</button>` : ''}
           <button type="button" class="btn btn-glass btn-sm danger" data-plugin-action="delete" data-name="${escapeHTML(p.name)}">
             <svg><use href="#i-trash" /></svg>卸载
           </button>
@@ -2420,7 +2428,48 @@
     }
   }
 
-  async function installPlugin(repoOrURL, tag = '', token = '') {
+  const pluginActionsPending = new Set();
+  async function loadPluginMarket() {
+    try {
+      const items = await api('/api/v1/plugins/market');
+      $('#plugin-market-grid').innerHTML = (Array.isArray(items) ? items : []).map(item => `
+        <article class="plugin-card"><div class="plugin-card-title-row"><strong>${escapeHTML(item.title)}</strong><span class="badge-pill gray">${item.type === 'daemon' ? '常驻插件' : '任务插件'}</span></div>
+        <p>${escapeHTML(item.description)}</p><div class="plugin-card-actions"><a class="btn btn-glass btn-sm" href="https://github.com/${escapeHTML(item.repository)}" target="_blank" rel="noopener noreferrer">项目说明</a><button type="button" class="btn btn-primary btn-sm" data-market-install="${escapeHTML(item.repository)}">安装 / 选择版本</button></div></article>`).join('');
+    } catch (error) { $('#plugin-market-grid').textContent = `市场加载失败：${error.message}`; }
+  }
+
+  async function checkPluginUpdates(force = false) {
+    const button = $('#plugin-check-updates');
+    if (button?.disabled) return;
+    if (button) button.disabled = true;
+    try {
+      await api('/api/v1/plugins/updates', { method: 'POST', body: { force } });
+      await refreshPlugins();
+      if (force) toast('版本检查完成，60 秒内重复检查使用缓存');
+    } catch (error) { if (force) toast(error.message, true); }
+    finally { if (button) button.disabled = false; }
+  }
+
+  async function openDaemonSettings(plugin) {
+    const settings = await api(`/api/v1/plugins/${encodeURIComponent(plugin.name)}/daemon`);
+    const dialog = $('#plugin-daemon-dialog');
+    dialog.dataset.name = plugin.name;
+    $('#plugin-daemon-title').textContent = `${plugin.title || plugin.name} · 常驻设置`;
+    $('#plugin-daemon-autostart').checked = !!settings.autoStart;
+    $('#plugin-daemon-args').value = (settings.args || []).join('\n');
+    dialog.showModal();
+  }
+
+  function openPluginUpgrade(plugin) {
+    const dialog = $('#plugin-upgrade-dialog');
+    dialog.dataset.name = plugin.name;
+    $('#plugin-upgrade-title').textContent = `升级 ${plugin.title || plugin.name}${plugin.update?.latestTag ? ` 至 ${plugin.update.latestTag}` : '至最新发布'}`;
+    $('#plugin-upgrade-token').value = '';
+    $('#plugin-upgrade-proxy').value = '';
+    dialog.showModal();
+  }
+
+  async function installPlugin(repoOrURL, tag = '', token = '', proxy = '') {
     const submitBtn = $('#plugin-install-submit');
     const btnText = $('#plugin-install-btn-text');
     if (submitBtn) submitBtn.disabled = true;
@@ -2428,7 +2477,7 @@
     try {
       const res = await api('/api/v1/plugins/install', {
         method: 'POST',
-        body: { target: repoOrURL.trim(), tag: tag.trim(), token: token.trim() }
+        body: { target: repoOrURL.trim(), tag: tag.trim(), token: token.trim(), proxy }
       });
       toast(res.message || '插件安装成功');
       $('#plugin-install-dialog')?.close();
@@ -2513,7 +2562,8 @@
     const tip = $('#schedule-plugin-tip');
     if (!select || !dynamicContainer) return;
 
-    if (!state.plugins || state.plugins.length === 0) {
+    const taskPlugins = (state.plugins || []).filter(plugin => plugin.type !== 'daemon');
+    if (taskPlugins.length === 0) {
       select.innerHTML = '<option value="">(暂无已安装插件)</option>';
       tip?.classList.add('hidden');
       dynamicContainer.innerHTML = '<div class="notice warning">暂未检测到已安装插件，可前往<a href="javascript:void(0)" id="schedule-go-plugin-center" class="btn-link" style="margin:0 4px;font-weight:600;">插件中心</a>安装插件。</div>';
@@ -2524,13 +2574,13 @@
       return;
     }
 
-    select.innerHTML = state.plugins.map(p => {
+    select.innerHTML = taskPlugins.map(p => {
       const isSel = (selectedPluginName && p.name === selectedPluginName) ? 'selected' : '';
       return `<option value="${escapeHTML(p.name)}" ${isSel}>${escapeHTML(p.title || p.name)} (${escapeHTML(p.name)})</option>`;
     }).join('');
 
     let pluginName = selectedPluginName || select.value;
-    let currentPlugin = state.plugins.find(p => p.name === pluginName) || state.plugins[0];
+    let currentPlugin = taskPlugins.find(p => p.name === pluginName) || taskPlugins[0];
     if (currentPlugin && select.value !== currentPlugin.name) {
       select.value = currentPlugin.name;
     }
@@ -2957,6 +3007,7 @@
 	  await refreshPlayStatsAfterRun(runs);
 	  if (!state.authenticated || generation !== state.pollGeneration) return;
       renderRuns(); renderStatus(); renderSchedules(); renderDashboard();
+      if (state.currentPage === 'plugins') await refreshPlugins();
       if ($('#log-dialog').open && $('#log-dialog').dataset.runId) await refreshOpenLog();
       state.consecutivePollFailures = 0;
       setServiceStatus('online');
@@ -2996,6 +3047,7 @@
     }
     if (page === 'config') requestAnimationFrame(updateConfigFlowActiveSection);
     if (page === 'dashboard') void refreshMusicPartnerPoints();
+    if (page === 'plugins') { void loadPluginMarket(); void checkPluginUpdates(false); }
   }
 
   function updatePageTitle() {
@@ -3673,6 +3725,39 @@
     });
 
     $('#plugin-refresh')?.addEventListener('click', refreshPlugins);
+    $('#plugin-check-updates')?.addEventListener('click', () => checkPluginUpdates(true));
+    $('#plugin-install-proxy')?.addEventListener('change', event => $('#plugin-install-proxy-custom-label').classList.toggle('hidden', event.target.value !== 'custom'));
+    $('#plugin-market-grid')?.addEventListener('click', event => {
+      const button = event.target.closest('[data-market-install]');
+      if (!button) return;
+      $('#plugin-install-open').click();
+      $('#plugin-install-repo').value = button.dataset.marketInstall;
+    });
+    $$('[data-close-dialog]').forEach(button => button.addEventListener('click', () => document.getElementById(button.dataset.closeDialog)?.close()));
+    $('#plugin-daemon-form')?.addEventListener('submit', async event => {
+      event.preventDefault();
+      const button = $('#plugin-daemon-save');
+      if (button.disabled) return;
+      button.disabled = true;
+      try {
+        await api(`/api/v1/plugins/${encodeURIComponent($('#plugin-daemon-dialog').dataset.name)}/daemon`, { method: 'PUT', body: { autoStart: $('#plugin-daemon-autostart').checked, args: $('#plugin-daemon-args').value.split('\n').map(value => value.trim()).filter(Boolean) } });
+        $('#plugin-daemon-dialog').close(); await refreshPlugins(); toast('常驻设置已保存');
+      } catch (error) { toast(error.message, true); }
+      finally { button.disabled = false; }
+    });
+    $('#plugin-upgrade-form')?.addEventListener('submit', async event => {
+      event.preventDefault();
+      const name = $('#plugin-upgrade-dialog').dataset.name;
+      if (pluginActionsPending.has(name)) return;
+      pluginActionsPending.add(name);
+      const button = $('#plugin-upgrade-submit'); button.disabled = true; button.textContent = '正在升级…';
+      try {
+        await api(`/api/v1/plugins/${encodeURIComponent(name)}/upgrade`, { method: 'POST', body: { token: $('#plugin-upgrade-token').value.trim(), proxy: $('#plugin-upgrade-proxy').value } });
+        $('#plugin-upgrade-token').value = ''; $('#plugin-upgrade-dialog').close(); await refreshPlugins(); toast('插件升级完成');
+      } catch (error) { toast(`插件升级失败：${error.message}`, true); }
+      finally { button.disabled = false; button.textContent = '确认升级'; pluginActionsPending.delete(name); }
+    });
+    $('#plugin-upgrade-dialog')?.addEventListener('close', () => { $('#plugin-upgrade-token').value = ''; });
     $('#plugin-search')?.addEventListener('input', event => {
       state.pluginSearch = event.target.value;
       renderPlugins();
@@ -3681,6 +3766,7 @@
       if ($('#plugin-install-repo')) $('#plugin-install-repo').value = '';
       if ($('#plugin-install-tag')) $('#plugin-install-tag').value = '';
       if ($('#plugin-install-token')) $('#plugin-install-token').value = '';
+      $('#plugin-install-proxy').value = ''; $('#plugin-install-proxy-custom').value = ''; $('#plugin-install-proxy-custom-label').classList.add('hidden');
       $('#plugin-install-dialog')?.showModal();
     });
     $$('.plugin-install-close').forEach(btn => btn.addEventListener('click', () => $('#plugin-install-dialog')?.close()));
@@ -3690,7 +3776,8 @@
       const tag = $('#plugin-install-tag')?.value.trim() || '';
       const token = $('#plugin-install-token')?.value.trim() || '';
       if (!repo) return;
-      await installPlugin(repo, tag, token);
+      const proxy = $('#plugin-install-proxy')?.value === 'custom' ? $('#plugin-install-proxy-custom').value.trim() : $('#plugin-install-proxy')?.value || '';
+      await installPlugin(repo, tag, token, proxy);
     });
     $('#plugin-upload-btn')?.addEventListener('click', () => {
       $('#plugin-file-input')?.click();
@@ -3705,6 +3792,18 @@
       const action = btn.dataset.pluginAction;
       const name = btn.dataset.name;
       const plugin = state.plugins.find(p => p.name === name);
+      if (pluginActionsPending.has(name)) return;
+      if (['start', 'stop', 'restart', 'settings', 'upgrade', 'logs'].includes(action)) {
+        if (action === 'upgrade') { openPluginUpgrade(plugin); return; }
+        pluginActionsPending.add(name); btn.disabled = true;
+        try {
+          if (action === 'settings') await openDaemonSettings(plugin);
+          else if (action === 'logs') { const result = await api(`/api/v1/plugins/${encodeURIComponent(name)}/daemon/log`); $('#plugin-daemon-log-output').textContent = result.output || '暂无输出'; $('#plugin-daemon-log-dialog').showModal(); }
+          else { await api(`/api/v1/plugins/${encodeURIComponent(name)}/${action}`, { method: 'POST', body: {} }); await refreshPlugins(); }
+        } catch (error) { toast(error.message, true); }
+        finally { pluginActionsPending.delete(name); btn.disabled = false; }
+        return;
+      }
       if (action === 'schedule') {
         openScheduleDialog(null, plugin || { name });
       } else if (action === 'run') {
