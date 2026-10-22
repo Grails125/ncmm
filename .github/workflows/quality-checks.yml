@@ -53,8 +53,9 @@ jobs:
       - name: Test browser launcher, account status and task configuration
         run: node --test tests/run_webui_browser.test.js tests/webui_cookie_status.test.js tests/webui_music_partner_config.test.js tests/webui_music_partner_points.test.js tests/webui_task_config.test.js tests/webui_update_restart.test.js tests/webui_upgrade_policy.test.js tests/webui_base_fixes.test.js tests/webui_plugin_platform.test.js
 
-      - name: Test updater script behavior
+      - name: Test login, updater and release scripts
         run: |
+          python3 -m unittest discover -s tests -p test_ncmm_login_script.py
           python3 -m unittest discover -s tests -p test_ncmm_update_script.py
           python3 -m unittest discover -s tests -p test_release_guard.py
 

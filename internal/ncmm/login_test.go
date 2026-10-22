@@ -75,7 +75,7 @@ func TestLoginCookieInputFileRemainsRelativeToCaller(t *testing.T) {
 	cwd := t.TempDir()
 	t.Chdir(cwd)
 	home := t.TempDir()
-	if err := os.WriteFile(filepath.Join(cwd, "incoming.json"), []byte("{"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(cwd, "incoming.json"), []byte("[]"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(home, "incoming.json"), []byte("x"), 0600); err != nil {
@@ -91,8 +91,8 @@ func TestLoginCookieInputFileRemainsRelativeToCaller(t *testing.T) {
 	login := &Login{root: &Root{Cfg: cfg, Opts: RootOpts{Home: home}}, cmd: &cobra.Command{}}
 	command := &loginCookieCmd{root: login, cmd: &cobra.Command{}, File: "incoming.json", format: "json"}
 	err = command.execute(context.Background(), nil)
-	if err == nil || !strings.Contains(err.Error(), "EOF") {
-		t.Fatal("-f did not read the caller directory; both fixtures are invalid and must fail before network access")
+	if err == nil || !strings.Contains(err.Error(), "cookie is empty") {
+		t.Fatal("-f did not read the caller directory's empty Cookie array; neither fixture may reach the network")
 	}
 	if actual, _ := os.Getwd(); actual != cwd {
 		t.Fatal("login changed the caller working directory")
