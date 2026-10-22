@@ -10,8 +10,17 @@
 
 `ncmm` 命令支持以下全局通用参数，可以跟在主命令或任意子命令后：
 
-- `-c` / `--config` (String)：指定配置文件 `config.yaml` 的路径。若未指定，且配置了 `--home`，程序将自动尝试加载 `--home` 目录下的 `config.yaml`；若仍未找到，默认尝试加载 `${HOME}/.ncmm/config.yaml`；若该文件不存在，则会使用程序内置的默认配置值。
-- `--home` (String)：指定数据存储的家目录。默认值为当前用户的系统家目录（`${HOME}`）。该家目录将用于存放运行日志（`log/`）、Cookie 状态文件（`cookie.json`）以及本地 Badger 数据库（`database/`）。通过配合不同 `--home` 路径，可以极简、安全地实现多账号数据物理隔离。
+- `-c` / `--config` (String)：精确指定业务配置文件，文件不存在或配置无效时直接报错，不回退到其他配置。此参数不改变 home；配置和数据目录不同时请同时指定 `--home`。
+- `--home` (String)：指定实例数据目录，优先于 `NCMM_HOME` 环境变量；未指定时，普通安装默认使用可执行文件所在目录，官方 Docker 默认使用 `/data`。Cookie、认证、调度及 `${HOME}` 配置变量使用最终选定的 home。
+
+未指定 `--config` 时，配置查找规则如下：
+
+1. 显式 `--home` 或 `NCMM_HOME` 只查对应目录中的 `config.yaml`、`config.yml`；官方 Docker 同样固定在选定 home 查找，不借用其他实例配置。
+2. 普通默认启动先查默认 home，再依次查当前目录、`data/`、`run/`、`.ncmm/`、`config/`、`configs/`、`conf/`。每个目录优先 `config.yaml`，其次 `config.yml`；找到后将该目录作为 home。
+3. 只接受上述标准文件名，不递归扫描其他目录；`backups/config.yaml`、`config.yaml.bak`、`config.tmp.yaml` 等不会被自动采用。自动发现的文件先在内存中兼容旧字段并校验 ncmm 结构（含 `network`、`log`、`database`），空文件、无关应用配置或坏配置均报错，不写入迁移模板，也不悄悄选择后面的配置。通过校验的旧配置继续沿用备份和升级流程。
+4. 没找到时，普通命令使用内置默认配置；WebUI 首次启动才在选定 home 创建 `config.yaml`。已有文件不会被默认模板覆盖。`auth`、`web status`、`web stop` 共用路径选择，但不解析业务配置，坏配置仍可恢复认证或停止对应实例。
+
+多个实例请始终显式传 `--home`。自动发现的 `data/config.yaml` 会以 `data/` 作为 home；显式 `--config data/config.yaml` 则保留默认或显式选择的 home，避免改变既有命令语义。
 - `--debug` (Boolean)：开启命令行调试模式。开启后，日志会强制输出到标准输出（Stdout），日志级别临时设为 `debug`，并输出底层的网络请求调试信息。
 
 ### WebUI (`ncmm web`)

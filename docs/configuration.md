@@ -2,7 +2,7 @@
 
 本分支当前版本为 `1.2.2-grails.1`，完整且匹配源码的配置以 [config/config.yaml](../config/config.yaml) 为准。新增 `task.music-partner` 总开关和 `musicPartner` 配置组，字段及评分规则见 [音乐合伙人评分](music-partner.md)。以下保留的上游示例仅供参考，不能覆盖已有实例的完整配置。
 
-默认配置文件路径为 `~/config.yaml`（支持在运行时通过 `-c` 或 `--config` 指定）。配置字段说明如下：
+支持通过 `-c` 或 `--config` 精确指定配置文件；默认启动先查实例 home，再按有限目录自动发现 `config.yaml` 或 `config.yml`。显式 `--home`、`NCMM_HOME` 和官方 Docker 数据目录保持实例隔离，已有配置不会被新模板覆盖。路径优先级与备份排除规则见 [命令行说明](cli.md)。配置字段说明如下：
 
 ```yaml
 # 配置文件版本
