@@ -38,6 +38,10 @@ type Options struct {
 	Cookies    []*http.Cookie
 	// Sensitive 禁止输出包含登录凭据的请求、响应与底层 URL 错误。
 	Sensitive bool
+	// FansGroupWebSession 仅用于乐迷团播放；请求独立过滤 os，不修改或回写账号 Cookie。
+	FansGroupWebSession bool
+	// NoRetry 禁止自动重发不可安全重放的评论创建请求。
+	NoRetry bool
 }
 
 func (o *Options) SetCookies(c ...*http.Cookie) {

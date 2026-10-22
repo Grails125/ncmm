@@ -42,7 +42,12 @@ ncmm plugin run report --days 7 --format json
 
 # 方式 2：使用 POSIX 标准 -- 分隔符追加参数
 ncmm plugin run report -- --days 7 --format json
+
+# 宿主配置支持放在子命令前或 -- 分隔符之前；分隔符之后均为插件参数。
+ncmm --config /data/config.yaml --home /data plugin run report -- --config /data/report.yaml
 ```
+
+WebUI 立即运行和结构化调度表单会自动给插件参数加上 `--` 边界，避免插件自己的 `--config`、`--home` 覆盖宿主设置。手写定时任务参数时也应保留该边界。既有 `--account` / `-a` 参数仍原样传给插件，并用于账号上下文识别。
 
 ### 2. 环境变量传递
 宿主调用插件时会注入以下环境变量：
@@ -135,7 +140,14 @@ ncmm plugin install https://example.com/ncmm-report_Linux_x86_64.tar.gz
 
 # 2. 从 GitHub 公开或私有仓库远程安装 (配合 Token)
 ncmm plugin install <用户名>/<仓库名> --token ghp_xxxxxxxxxxxx
+
+# 3. 完整 GitHub 仓库链接与指定 Release Tag
+ncmm plugin install https://github.com/owner/repo --tag v2.0.0
 ```
+
+CLI 与 WebUI 使用同一套目标解析：支持 `owner/repo`、GitHub 仓库首页（可带 `.git`）及 HTTP(S) 安装包直链。省略 Tag 或填写 `latest` 时选择最新 Release；显式 Tag 通过对应 Release 查询生效。直链已经确定文件，不接受另一个显式 Tag。GitHub Token 仅发送给 GitHub 仓库/资产接口，不发送到第三方下载站点；Token 不持久化。
+
+WebUI 安装 API 的统一请求为 `{"target":"owner/repo","tag":"v2.0.0","token":"..."}`，仍兼容旧客户端的 `repoOrURL` 字段；两个地址字段同时给出且不同会拒绝请求。
 
 ### 3. WebUI 与调度说明
 - **独立任务设计**：插件与日常打卡任务（`ncmm task`）保持独立解耦，日常打卡不隐式触发插件，确保打卡任务纯粹可控。
@@ -177,3 +189,9 @@ if __name__ == "__main__":
     main()
 ```
 赋予执行权限后（`chmod +x plugins/ncmm-hello.py`），执行 `ncmm plugin run hello --param1 value1` 即可体验！
+
+## 常驻插件、市场和在线升级
+
+插件中心现已支持 `type: daemon` 的常驻进程、启动/停止/重启、自启动设置、内存尾日志和公开 QQBot 市场入口。常驻插件不会进入一次性定时任务。仓库安装可选择公开下载镜像，实际 Release Tag 写入来源记录；可检查更新并一键升级，保留配置和本地数据。私有 Token 仅本次使用，始终直连。
+
+完整行为、缓存期限、进程恢复及手动上传边界见 [第 3 组插件平台说明](v129-group3-plugin-platform.md)。

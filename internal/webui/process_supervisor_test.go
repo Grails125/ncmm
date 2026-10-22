@@ -34,6 +34,13 @@ func TestProcessSupervisorHelperProcess(t *testing.T) {
 		for {
 			time.Sleep(time.Hour)
 		}
+	case "tree-parent-exit":
+		child := exec.Command(os.Args[0], "-test.run=^TestProcessSupervisorHelperProcess$", "--", processSupervisorHelperMarker, "tree-child", args[1])
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		time.Sleep(100 * time.Millisecond)
+		os.Exit(0)
 	case "tree-parent":
 		child := exec.Command(os.Args[0], "-test.run=^TestProcessSupervisorHelperProcess$", "--", processSupervisorHelperMarker, "tree-child", args[2])
 		if err := child.Start(); err != nil {
@@ -185,4 +192,21 @@ func waitForFile(t *testing.T, path string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("helper file %q was not created", path)
+}
+
+func TestProcessSupervisorNormalParentExitCleansDescendants(t *testing.T) {
+	supervisor := newProcessSupervisor()
+	defer supervisor.Close(time.Second)
+	escaped := filepath.Join(t.TempDir(), "escaped")
+	process, err := supervisor.Start(context.Background(), processSpec{Kind: "parent-exit", Command: os.Args[0], Env: append(os.Environ(), "GORACE=atexit_sleep_ms=0"), Args: []string{"-test.run=^TestProcessSupervisorHelperProcess$", "--", processSupervisorHelperMarker, "tree-parent-exit", escaped}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(800 * time.Millisecond)
+	if _, err := os.Stat(escaped); !os.IsNotExist(err) {
+		t.Fatal("normal parent exit left descendants running")
+	}
 }

@@ -4,22 +4,22 @@
 package ncmm
 
 import (
-	"archive/tar"
-	"archive/zip"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/3899/ncmm/config"
+	"github.com/3899/ncmm/internal/plugininstall"
 	"github.com/3899/ncmm/internal/webui"
 	"github.com/3899/ncmm/pkg/log"
 	"github.com/3899/ncmm/pkg/notify"
@@ -29,14 +29,17 @@ import (
 )
 
 type Plugin struct {
-	root *Root
-	l    *log.Logger
-	cmd  *cobra.Command
+	root   *Root
+	l      *log.Logger
+	cmd    *cobra.Command
+	client *http.Client
 }
 
 type PluginParamSchema = webui.PluginParamSchema
 type PluginManifest = webui.PluginManifest
 type PluginInfo = webui.PluginInfo
+
+type PluginInstallOptions = plugininstall.Options
 
 func DefaultWithdrawManifest() PluginManifest {
 	return PluginManifest{
@@ -134,7 +137,7 @@ type PluginNotify struct {
 }
 
 func NewPlugin(root *Root, l *log.Logger) *Plugin {
-	p := &Plugin{root: root, l: l}
+	p := &Plugin{root: root, l: l, client: &http.Client{Timeout: 2 * time.Minute, CheckRedirect: pluginDownloadRedirect}}
 	p.cmd = &cobra.Command{
 		Use:     "plugin",
 		Short:   "Manage and execute external ncmm plugins",
@@ -192,6 +195,9 @@ func (p *Plugin) DiscoverPlugins() []PluginInfo {
 		}
 
 		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
 			fullPath := filepath.Join(dir, entry.Name())
 			if entry.IsDir() {
 				// Check sub-directory (e.g. plugins/ncmm-demo/ncmm-demo[.exe])
@@ -200,11 +206,11 @@ func (p *Plugin) DiscoverPlugins() []PluginInfo {
 					continue
 				}
 				for _, sub := range subEntries {
-					if sub.IsDir() {
+					if sub.IsDir() || strings.HasPrefix(sub.Name(), ".") {
 						continue
 					}
 					subName := sub.Name()
-					if isExecutableFile(subName) {
+					if isPluginExecutable(sub) {
 						pluginName := parsePluginName(subName)
 						if pluginName != "" && !seenNames[pluginName] {
 							seenNames[pluginName] = true
@@ -215,7 +221,7 @@ func (p *Plugin) DiscoverPlugins() []PluginInfo {
 			} else {
 				// Flat file in plugins directory
 				name := entry.Name()
-				if isExecutableFile(name) {
+				if isPluginExecutable(entry) {
 					pluginName := parsePluginName(name)
 					if pluginName != "" && !seenNames[pluginName] {
 						seenNames[pluginName] = true
@@ -233,6 +239,7 @@ func (p *Plugin) loadPluginInfo(name, path string) PluginInfo {
 	info := PluginInfo{
 		Name: name,
 		Path: path,
+		Type: "task",
 	}
 	dir := filepath.Dir(path)
 	manifestPath := filepath.Join(dir, "plugin.json")
@@ -246,6 +253,9 @@ func (p *Plugin) loadPluginInfo(name, path string) PluginInfo {
 		if data, err := os.ReadFile(manifestPath); err == nil {
 			var m PluginManifest
 			if json.Unmarshal(data, &m) == nil {
+				if m.Type == "daemon" {
+					info.Type = "daemon"
+				}
 				if m.Title != "" {
 					info.Title = m.Title
 				}
@@ -289,6 +299,18 @@ func (p *Plugin) loadPluginInfo(name, path string) PluginInfo {
 	if info.Title == "" {
 		info.Title = info.Name
 	}
+	info.Source = readPluginSource(dir)
+	if info.Source != nil {
+		if info.Version == "" {
+			info.Version = info.Source.Tag
+		}
+		if update, ok := p.readPluginUpdateCache()[strings.ToLower(info.Source.Repository)]; ok {
+			update.Name = name
+			update.CurrentTag = info.Source.Tag
+			update.UpdateAvailable = update.Error == "" && update.LatestTag != "" && update.LatestTag != info.Source.Tag
+			info.Update = &update
+		}
+	}
 	return info
 }
 
@@ -317,6 +339,17 @@ func isExecutableFile(filename string) bool {
 		return false
 	}
 	return true
+}
+
+func isPluginExecutable(entry os.DirEntry) bool {
+	if entry.Type()&os.ModeSymlink != 0 || !isExecutableFile(entry.Name()) {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	info, err := entry.Info()
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0111 != 0
 }
 
 func parsePluginName(filename string) string {
@@ -349,6 +382,9 @@ func (p *Plugin) FindPlugin(name string) (string, error) {
 
 // ExecutePlugin executes a plugin with PluginContext and captures the result.
 func (p *Plugin) ExecutePlugin(ctx context.Context, pluginPath string, pctx *PluginContext, extraArgs ...string) (*PluginResult, error) {
+	if p.loadPluginInfo(parsePluginName(pluginPath), pluginPath).Type == "daemon" {
+		return nil, fmt.Errorf("常驻插件请在插件中心启动，不能作为一次性任务运行")
+	}
 	absPluginPath, err := filepath.Abs(pluginPath)
 	if err != nil {
 		absPluginPath = pluginPath
@@ -453,11 +489,18 @@ func (p *Plugin) listCommand() *cobra.Command {
 }
 
 func (p *Plugin) runCommand() *cobra.Command {
+	var pluginArgs []string
 	cmd := &cobra.Command{
 		Use:                "run <plugin-name> [-- extra args...]",
 		Short:              "Run a specific plugin with forwarded arguments",
 		DisableFlagParsing: true,
+		Args: func(cmd *cobra.Command, args []string) error {
+			var err error
+			pluginArgs, err = parsePluginRunHostFlags(cmd, args)
+			return err
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args = pluginArgs
 			if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 				return cmd.Help()
 			}
@@ -471,10 +514,12 @@ func (p *Plugin) runCommand() *cobra.Command {
 			// Extract forwarded arguments and detect optional account file
 			var accountFile string
 			var extraArgs []string
+			forwardOnly := false
 			rawArgs := args[1:]
 			for i := 0; i < len(rawArgs); i++ {
 				arg := rawArgs[i]
-				if i == 0 && arg == "--" {
+				if !forwardOnly && arg == "--" {
+					forwardOnly = true
 					continue
 				}
 				if arg == "-a" || arg == "--account" {
@@ -524,6 +569,8 @@ func (p *Plugin) runCommand() *cobra.Command {
 func (p *Plugin) installCommand() *cobra.Command {
 	var token string
 	var destDir string
+	var tag string
+	var proxy string
 
 	cmd := &cobra.Command{
 		Use:   "install <url-or-github-repo>",
@@ -544,20 +591,15 @@ Examples:
 				home := utils.Ternary(p.root.Opts.Home != "", p.root.Opts.Home, config.HomeDir)
 				destDir = filepath.Join(home, "plugins")
 			}
-			if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-				_, err := p.InstallFromURL(cmd.Context(), target, token, destDir, cmd.Printf)
-				return err
-			}
-			if strings.Contains(target, "/") {
-				_, err := p.InstallFromGitHub(cmd.Context(), target, token, destDir, cmd.Printf)
-				return err
-			}
-			return fmt.Errorf("invalid install target %q: expected URL or 'owner/repo'", target)
+			_, err := p.InstallPlugin(cmd.Context(), PluginInstallOptions{Target: target, Tag: tag, Token: token, DestDir: destDir, Proxy: proxy}, cmd.Printf)
+			return err
 		},
 	}
 
 	cmd.Flags().StringVarP(&token, "token", "t", "", "GitHub Personal Access Token (for private repositories)")
 	cmd.Flags().StringVarP(&destDir, "dir", "d", "", "target plugins directory (default: {home}/plugins)")
+	cmd.Flags().StringVar(&tag, "tag", "", "GitHub Release Tag (default: latest)")
+	cmd.Flags().StringVarP(&proxy, "proxy", "p", "", "公开 GitHub 下载镜像（默认直连；私有仓库始终直连）")
 	return cmd
 }
 
@@ -569,294 +611,26 @@ func (p *Plugin) DefaultPluginDir() string {
 	return filepath.Join(home, "plugins")
 }
 
-func (p *Plugin) InstallFromURL(ctx context.Context, targetURL, token, destDir string, logFn func(string, ...any)) (string, error) {
-	if logFn == nil {
-		logFn = func(string, ...any) {}
-	}
-	if destDir == "" {
-		destDir = p.DefaultPluginDir()
-	}
-	req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
-	if err != nil {
-		return "", err
-	}
-	if token != "" {
+func setPluginGitHubToken(req *http.Request, token string) {
+	if token != "" && req.URL.Scheme == "https" && req.URL.User == nil && (req.URL.Port() == "" || req.URL.Port() == "443") && (strings.EqualFold(req.URL.Hostname(), "github.com") || strings.EqualFold(req.URL.Hostname(), "api.github.com")) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
-
-	logFn("Downloading %s...\n", targetURL)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("download: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download returned %s", resp.Status)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read body: %w", err)
-	}
-
-	base := filepath.Base(targetURL)
-	if idx := strings.Index(base, "?"); idx != -1 {
-		base = base[:idx]
-	}
-
-	installedName, err := p.InstallFromArchive(data, base, destDir)
-	if err != nil {
-		return "", fmt.Errorf("extract plugin: %w", err)
-	}
-
-	logFn("✅ Plugin [%s] installed successfully into %s!\n", installedName, destDir)
-	return installedName, nil
 }
 
-func (p *Plugin) InstallFromGitHub(ctx context.Context, repo, token, destDir string, logFn func(string, ...any)) (string, error) {
-	if logFn == nil {
-		logFn = func(string, ...any) {}
+// 每一跳重新限定认证范围，避免默认重定向向降级 HTTP、子域名或 CDN 传播令牌。
+func pluginDownloadRedirect(req *http.Request, via []*http.Request) error {
+	req.Header.Del("Authorization")
+	if len(via) >= 10 {
+		return fmt.Errorf("插件下载重定向次数超过限制")
 	}
-	if destDir == "" {
-		destDir = p.DefaultPluginDir()
+	if req.URL.User != nil {
+		return fmt.Errorf("插件下载重定向不能包含认证信息")
 	}
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	logFn("Querying latest release from GitHub: %s...\n", repo)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("query GitHub releases: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub API returned %s (check repo name or token)", resp.Status)
-	}
-
-	var rel struct {
-		TagName string `json:"tag_name"`
-		Assets  []struct {
-			ID   int64  `json:"id"`
-			Name string `json:"name"`
-			URL  string `json:"url"`
-		} `json:"assets"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return "", fmt.Errorf("decode release JSON: %w", err)
-	}
-
-	osKeyword := strings.ToLower(runtime.GOOS)
-	archKeyword := runtime.GOARCH
-	if archKeyword == "amd64" {
-		archKeyword = "x86_64"
-	}
-
-	var matchedAsset *struct {
-		ID   int64  `json:"id"`
-		Name string `json:"name"`
-		URL  string `json:"url"`
-	}
-
-	for i := range rel.Assets {
-		name := strings.ToLower(rel.Assets[i].Name)
-		if strings.Contains(name, osKeyword) && (strings.Contains(name, archKeyword) || strings.Contains(name, runtime.GOARCH)) {
-			matchedAsset = &rel.Assets[i]
-			break
+	if len(via) > 0 {
+		auth := via[0].Header.Get("Authorization")
+		if strings.HasPrefix(auth, "Bearer ") {
+			setPluginGitHubToken(req, strings.TrimPrefix(auth, "Bearer "))
 		}
 	}
-
-	if matchedAsset == nil && len(rel.Assets) > 0 {
-		for i := range rel.Assets {
-			if strings.Contains(strings.ToLower(rel.Assets[i].Name), osKeyword) {
-				matchedAsset = &rel.Assets[i]
-				break
-			}
-		}
-	}
-
-	if matchedAsset == nil {
-		return "", fmt.Errorf("no matching release asset found for %s/%s in release %s", runtime.GOOS, runtime.GOARCH, rel.TagName)
-	}
-
-	logFn("Downloading %s (%s)...\n", matchedAsset.Name, rel.TagName)
-	dlReq, err := http.NewRequestWithContext(ctx, "GET", matchedAsset.URL, nil)
-	if err != nil {
-		return "", err
-	}
-	dlReq.Header.Set("Accept", "application/octet-stream")
-	if token != "" {
-		dlReq.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	dlResp, err := http.DefaultClient.Do(dlReq)
-	if err != nil {
-		return "", fmt.Errorf("download asset: %w", err)
-	}
-	defer dlResp.Body.Close()
-
-	if dlResp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download failed: %s", dlResp.Status)
-	}
-
-	dlBytes, err := io.ReadAll(dlResp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read asset body: %w", err)
-	}
-
-	installedName, err := p.InstallFromArchive(dlBytes, matchedAsset.Name, destDir)
-	if err != nil {
-		return "", fmt.Errorf("extract asset: %w", err)
-	}
-
-	logFn("✅ Plugin [%s] installed successfully into %s!\n", installedName, destDir)
-	return installedName, nil
-}
-
-func (p *Plugin) InstallFromArchive(data []byte, filename, destDir string) (string, error) {
-	if destDir == "" {
-		destDir = p.DefaultPluginDir()
-	}
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return "", err
-	}
-	lower := strings.ToLower(filename)
-	if strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz") {
-		return unpackTarGz(data, destDir)
-	} else if strings.HasSuffix(lower, ".zip") {
-		return unpackZip(data, destDir)
-	} else if isExecutableFile(filename) {
-		pluginName := parsePluginName(filename)
-		subDir := filepath.Join(destDir, "ncmm-"+pluginName)
-		_ = os.MkdirAll(subDir, 0755)
-		targetFile := filepath.Join(subDir, filename)
-		if err := os.WriteFile(targetFile, data, 0755); err != nil {
-			return "", err
-		}
-		return pluginName, nil
-	}
-	return "", fmt.Errorf("unsupported file format: %s (expected .zip, .tar.gz, .tgz, or executable)", filename)
-}
-
-func unpackTarGz(data []byte, destDir string) (string, error) {
-	gr, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return "", err
-	}
-	defer gr.Close()
-
-	tr := tar.NewReader(gr)
-	type fileEntry struct {
-		name string
-		data []byte
-		mode os.FileMode
-	}
-	var entries []fileEntry
-	var exeName string
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return "", err
-		}
-		if hdr.Typeflag == tar.TypeReg {
-			base := filepath.Base(hdr.Name)
-			content, err := io.ReadAll(tr)
-			if err != nil {
-				return "", err
-			}
-			mode := os.FileMode(0644)
-			if isExecutableFile(base) {
-				mode = 0755
-				if exeName == "" {
-					exeName = base
-				}
-			}
-			entries = append(entries, fileEntry{name: base, data: content, mode: mode})
-		}
-	}
-	if exeName == "" {
-		return "", fmt.Errorf("no executable found in archive")
-	}
-
-	pluginName := parsePluginName(exeName)
-	pluginDir := filepath.Join(destDir, "ncmm-"+pluginName)
-	if err := os.MkdirAll(pluginDir, 0755); err != nil {
-		return "", err
-	}
-
-	for _, entry := range entries {
-		targetPath := filepath.Join(pluginDir, entry.name)
-		if err := os.WriteFile(targetPath, entry.data, entry.mode); err != nil {
-			return "", err
-		}
-	}
-	return pluginName, nil
-}
-
-func unpackZip(data []byte, destDir string) (string, error) {
-	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
-	if err != nil {
-		return "", err
-	}
-
-	type fileEntry struct {
-		name string
-		data []byte
-		mode os.FileMode
-	}
-	var entries []fileEntry
-	var exeName string
-
-	for _, file := range zr.File {
-		if file.FileInfo().IsDir() {
-			continue
-		}
-		base := filepath.Base(file.Name)
-		rc, err := file.Open()
-		if err != nil {
-			return "", err
-		}
-		content, err := io.ReadAll(rc)
-		_ = rc.Close()
-		if err != nil {
-			return "", err
-		}
-		mode := os.FileMode(0644)
-		if isExecutableFile(base) {
-			mode = 0755
-			if exeName == "" {
-				exeName = base
-			}
-		}
-		entries = append(entries, fileEntry{name: base, data: content, mode: mode})
-	}
-	if exeName == "" {
-		return "", fmt.Errorf("no executable found in archive")
-	}
-
-	pluginName := parsePluginName(exeName)
-	pluginDir := filepath.Join(destDir, "ncmm-"+pluginName)
-	if err := os.MkdirAll(pluginDir, 0755); err != nil {
-		return "", err
-	}
-
-	for _, entry := range entries {
-		targetPath := filepath.Join(pluginDir, entry.name)
-		if err := os.WriteFile(targetPath, entry.data, entry.mode); err != nil {
-			return "", err
-		}
-	}
-	return pluginName, nil
+	return nil
 }

@@ -252,7 +252,7 @@
       <footer class="login-footer">
         <a href="https://github.com/3899/ncmm" target="_blank" rel="noopener noreferrer">Copyright © 2026 GitHub
           3899</a>
-        <span>|</span><span id="auth-version">v1.2.0</span>
+        <span>|</span><span id="auth-version">NCMM</span>
       </footer>
     </div>
   </section>
@@ -725,19 +725,24 @@
               <button id="plugin-upload-btn" class="btn btn-glass"><svg>
                   <use href="#i-plus" />
                 </svg>上传插件包</button>
-              <input id="plugin-file-input" type="file" accept=".zip,.tar.gz,.gz" style="display:none">
+              <input id="plugin-file-input" type="file" accept=".zip,.tar.gz,.gz" class="hidden">
               <div class="schedule-search-box">
                 <span class="schedule-search-icon">🔍</span>
                 <input id="plugin-search" class="schedule-search-input" type="text" placeholder="搜索已安装插件...">
               </div>
             </div>
             <div class="plugin-toolbar-right">
+				<button id="plugin-check-updates" class="btn btn-glass">检查插件更新</button>
               <button id="plugin-refresh" class="btn btn-glass btn-icon" title="刷新插件列表"><svg>
                   <use href="#i-refresh" />
                 </svg></button>
             </div>
           </div>
 
+		  <details class="plugin-market-panel" open><summary>在线市场</summary>
+			<p class="muted">公开插件由各作者维护，安装后自行配置。音乐合伙人评分继续使用内置任务。</p>
+			<div id="plugin-market-grid" class="plugin-cards-grid"></div>
+		  </details>
           <div id="plugin-cards-grid" class="plugin-cards-grid">
             <div class="plugin-empty-box">
               <svg class="plugin-empty-icon" aria-hidden="true"><use href="#i-plugin" /></svg>
@@ -1126,8 +1131,11 @@
           <h3>在线安装插件</h3>
         </div><button type="button" class="icon-button plugin-install-close" title="关闭">×</button>
       </div>
-      <p class="field-note" style="margin-bottom:12px;">支持填写 GitHub 仓库名 (如 <code>3899/ncmm-withdraw</code>) 或 Release 安装包直链 URL。</p>
+      <p class="field-note" style="margin-bottom:12px;">支持 owner/repo、完整 GitHub 仓库链接或 Release 安装包直链。版本 Tag 仅用于仓库安装，直链请留空。</p>
       <label class="form-group"><span class="form-label">仓库或下载地址</span><input id="plugin-install-repo" class="form-input" placeholder="3899/ncmm-withdraw 或 https://..." required autocomplete="off"></label>
+	  <label class="form-group"><span class="form-label">公开下载镜像</span><select id="plugin-install-proxy" class="form-select"><option value="">直连 GitHub</option><option value="https://gh-proxy.com">gh-proxy.com</option><option value="https://ghproxy.net">ghproxy.net</option><option value="https://githubproxy.cc">githubproxy.cc</option><option value="custom">自定义 HTTPS 镜像</option></select></label>
+	  <label id="plugin-install-proxy-custom-label" class="form-group hidden"><span class="form-label">自定义镜像地址</span><input id="plugin-install-proxy-custom" class="form-input" type="url" placeholder="https://mirror.example.com"></label>
+	  <p class="muted">镜像失败后自动尝试直连；提供 Token 时始终直连，Token 仅用于本次安装。</p>
       <div class="form-grid two">
         <label class="form-group"><span class="form-label">版本 Tag (可选)</span><input id="plugin-install-tag" class="form-input" placeholder="默认最新 (latest)" autocomplete="off"></label>
         <label class="form-group"><span class="form-label">GitHub Token (私有库可选)</span><input id="plugin-install-token" class="form-input" type="password" placeholder="ghp_xxx" autocomplete="off"></label>
@@ -1141,6 +1149,25 @@
     </form>
   </dialog>
 
+	<dialog id="plugin-daemon-dialog" class="dialog compact-dialog">
+	  <form id="plugin-daemon-form" method="dialog">
+		<h2 id="plugin-daemon-title">常驻插件设置</h2>
+		<p class="muted">保存后下次启动生效；已运行插件可使用“重启”。</p>
+		<label class="form-group"><span class="form-label"><input id="plugin-daemon-autostart" type="checkbox"> 随 NCMM WebUI 自动启动</span></label>
+		<label class="form-group"><span class="form-label">启动参数（每行一个参数）</span><textarea id="plugin-daemon-args" class="form-input" rows="5" placeholder="--port&#10;5606"></textarea></label>
+		<div class="dialog-actions"><button type="button" class="btn btn-glass" data-close-dialog="plugin-daemon-dialog">取消</button><button id="plugin-daemon-save" type="submit" class="btn btn-primary">保存设置</button></div>
+	  </form>
+	</dialog>
+	<dialog id="plugin-upgrade-dialog" class="dialog compact-dialog">
+	  <form id="plugin-upgrade-form" method="dialog">
+		<h2 id="plugin-upgrade-title">升级插件</h2>
+		<p class="muted">升级保留 config.yaml 与本地数据。运行中的常驻插件会先停止，替换完成后恢复；失败时保留原版本。</p>
+		<label class="form-group"><span class="form-label">公开下载镜像</span><select id="plugin-upgrade-proxy" class="form-select"><option value="">直连 GitHub</option><option value="https://gh-proxy.com">gh-proxy.com</option><option value="https://ghproxy.net">ghproxy.net</option><option value="https://githubproxy.cc">githubproxy.cc</option></select></label>
+		<label class="form-group"><span class="form-label">私有仓库 Token（仅本次使用）</span><input id="plugin-upgrade-token" class="form-input" type="password" autocomplete="off"></label>
+		<div class="dialog-actions"><button type="button" class="btn btn-glass" data-close-dialog="plugin-upgrade-dialog">取消</button><button id="plugin-upgrade-submit" type="submit" class="btn btn-primary">确认升级</button></div>
+	  </form>
+	</dialog>
+	<dialog id="plugin-daemon-log-dialog" class="dialog compact-dialog"><h2>常驻插件日志</h2><p class="muted">保留本次服务期间最近 1 MB 输出，重启插件后显示新进程日志。</p><pre id="plugin-daemon-log-output"></pre><div class="dialog-actions"><button type="button" class="btn btn-glass" data-close-dialog="plugin-daemon-log-dialog">关闭</button></div></dialog>
   <div id="toast-region" class="toast-region toast-container" aria-live="polite"></div>
   <script src="/upgrade-policy.js?v=1" defer></script>
   <script src="/app.js?v=3.1" defer></script>

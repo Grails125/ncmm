@@ -3,6 +3,8 @@ package webui
 import (
 	"context"
 	"time"
+
+	"github.com/3899/ncmm/internal/plugininstall"
 )
 
 const (
@@ -41,6 +43,7 @@ type PluginParamSchema struct {
 }
 
 type PluginManifest struct {
+	Type            string              `json:"type,omitempty"`
 	Name            string              `json:"name"`
 	Title           string              `json:"title,omitempty"`
 	Version         string              `json:"version,omitempty"`
@@ -51,20 +54,27 @@ type PluginManifest struct {
 }
 
 type PluginInfo struct {
-	Name            string              `json:"name"`
-	Path            string              `json:"path"`
-	Title           string              `json:"title,omitempty"`
-	Version         string              `json:"version,omitempty"`
-	Description     string              `json:"description,omitempty"`
-	Author          string              `json:"author,omitempty"`
-	RecommendedCron string              `json:"recommendedCron,omitempty"`
-	Params          []PluginParamSchema `json:"params,omitempty"`
+	Type            string                `json:"type"`
+	Running         bool                  `json:"running"`
+	AutoStart       bool                  `json:"autoStart"`
+	DaemonError     string                `json:"daemonError,omitempty"`
+	Source          *plugininstall.Source `json:"source,omitempty"`
+	Update          *plugininstall.Update `json:"update,omitempty"`
+	Name            string                `json:"name"`
+	Path            string                `json:"path"`
+	Title           string                `json:"title,omitempty"`
+	Version         string                `json:"version,omitempty"`
+	Description     string                `json:"description,omitempty"`
+	Author          string                `json:"author,omitempty"`
+	RecommendedCron string                `json:"recommendedCron,omitempty"`
+	Params          []PluginParamSchema   `json:"params,omitempty"`
 }
 
 type PluginManager interface {
+	CheckPluginUpdates(ctx context.Context, force bool) ([]plugininstall.Update, error)
+	UpgradePlugin(ctx context.Context, name, token, proxy string) (string, error)
 	DiscoverPlugins() []PluginInfo
-	InstallFromURL(ctx context.Context, targetURL, token, destDir string, logFn func(string, ...any)) (string, error)
-	InstallFromGitHub(ctx context.Context, repo, token, destDir string, logFn func(string, ...any)) (string, error)
+	InstallPlugin(ctx context.Context, options plugininstall.Options, logFn func(string, ...any)) (string, error)
 	InstallFromArchive(data []byte, filename, destDir string) (string, error)
 	UninstallPlugin(name string) error
 	DefaultPluginDir() string
