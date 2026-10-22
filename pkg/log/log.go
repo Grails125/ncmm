@@ -26,7 +26,7 @@ var (
 		Stdout: true,
 		Rotate: lumberjack.Logger{
 			Filename:   "./log/info.log",
-			MaxSize:    100,
+			MaxSize:    5,
 			MaxAge:     7,
 			MaxBackups: 10,
 			LocalTime:  true,

@@ -10,6 +10,7 @@ import (
 	"io"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -144,6 +145,14 @@ func (c *FansGroup) ExecuteForCookie(ctx context.Context, cookieFile string) err
 	}
 	syncSessionConfig(ctx, cli, cookieFile, user.Account.Id, nil, c.root.Cfg.Database)
 	c.cmd.Printf("[fansgroup] 当前账号: uid=%v nickname=%q\n", user.Account.Id, user.Profile.Nickname)
+	commentCheckToken := ""
+	if c.root.Cfg.FansGroup != nil {
+		commentCheckToken = c.root.Cfg.FansGroup.CommentCheckTokenFor(cookieFile)
+	}
+	if err := recoverFansGroupComment(ctx, c.commentReceiptPath(user.Account.Id), user.Account.Id, fansGroupCommentClient{api: weapiCli, token: commentCheckToken}); err != nil {
+		c.cmd.Printf("[fansgroup] 评论清理恢复：%v\n", err)
+		c.root.ReportFailure(cookieFile, "fansgroup", err)
+	}
 
 	groupIds := c.fansGroupIDs()
 	c.cmd.Printf("[fansgroup] 乐迷团任务数: %d\n", len(groupIds))
@@ -151,7 +160,7 @@ func (c *FansGroup) ExecuteForCookie(ctx context.Context, cookieFile string) err
 	var firstErr error
 	for i, fansGroupId := range groupIds {
 		c.cmd.Printf("[fansgroup] 开始处理乐迷团 [%d/%d]: groupId=%s\n", i+1, len(groupIds), fansGroupId)
-		if err := c.executeOneFansGroup(ctx, cli, eapiCli, weapiCli, user.Account.Id, fansGroupId); err != nil {
+		if err := c.executeOneFansGroup(ctx, cli, eapiCli, weapiCli, user.Account.Id, fansGroupId, commentCheckToken); err != nil {
 			failed++
 			if firstErr == nil {
 				firstErr = err
@@ -192,7 +201,7 @@ func configuredFansGroupIDs(cfg *config.FansGroupConf) []string {
 	return ids
 }
 
-func (c *FansGroup) executeOneFansGroup(ctx context.Context, cli *api.Client, eapiCli *eapi.Api, weapiCli *weapi.Api, currentUserId int64, fansGroupId string) error {
+func (c *FansGroup) executeOneFansGroup(ctx context.Context, cli *api.Client, eapiCli *eapi.Api, weapiCli *weapi.Api, currentUserId int64, fansGroupId, commentCheckToken string) error {
 	c.cmd.Println("[fansgroup] 查询粉丝团详情...")
 	detail, err := eapiCli.FansGroupDetailGet(ctx, &eapi.FansGroupDetailGetReq{GroupId: fansGroupId})
 	if err != nil {
@@ -259,10 +268,30 @@ func (c *FansGroup) executeOneFansGroup(ctx context.Context, cli *api.Client, ea
 	}
 
 	if orig.Title != "" && !missionCompleted(orig.Status, orig.CurrentProgress, orig.AllProgress) {
-		c.doAccelerateTask(ctx, eapiCli, missions, orig)
+		c.doAccelerateTask(ctx, eapiCli, weapiCli, currentUserId, commentCheckToken, missions, orig)
 	}
 
-	c.cmd.Println("[fansgroup] 所有任务处理完成")
+	c.cmd.Println("[fansgroup] 本轮请求处理结束，重新读取实际任务进度")
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	updated, err := eapiCli.FansGroupMissionAll(ctx, &eapi.FansGroupMissionAllReq{FansGroupId: fansGroupId})
+	if err != nil {
+		return fmt.Errorf("刷新乐迷团实际进度失败：%w", err)
+	}
+	if updated.Code != 200 {
+		return fmt.Errorf("刷新乐迷团实际进度失败：code=%d", updated.Code)
+	}
+	before := make(map[int64]int)
+	for _, m := range missions.Data.Normal.Data {
+		before[m.MissionId] = m.CurrentProgress
+	}
+	for _, m := range updated.Data.Normal.Data {
+		c.cmd.Printf("  [%s] %s：%d → %d/%d\n", fmtMissionStatus(m.Status, m.CurrentProgress, m.AllProgress), m.Title, before[m.MissionId], m.CurrentProgress, m.AllProgress)
+	}
+	if after := updated.Data.Originality.Data; after.MissionId == orig.MissionId && after.Title != "" {
+		c.cmd.Printf("  [%s] %s：%d → %d/%d\n", fmtMissionStatus(after.Status, after.CurrentProgress, after.AllProgress), after.Subtitle, orig.CurrentProgress, after.CurrentProgress, after.AllProgress)
+	}
 	return nil
 }
 
@@ -289,137 +318,153 @@ func missionRemaining(current, total int) int {
 }
 
 func (c *FansGroup) doPlaySong(ctx context.Context, cli *api.Client, weapiCli *weapi.Api, m eapi.FansGroupMissionItem) {
-	remaining := missionRemaining(m.CurrentProgress, m.AllProgress)
-	c.cmd.Printf("[fansgroup] 处理播放任务 [%s]（剩余 %d/%d）\n", m.Title, remaining, m.AllProgress)
-
-	songIds := parseSongIdsFromMission(m)
-	if len(songIds) == 0 {
-		c.cmd.Println("  无法从任务中解析歌曲列表")
+	if c.root == nil || c.root.Cfg == nil || c.root.Cfg.FansGroup == nil || !c.root.Cfg.FansGroup.WebSession {
+		c.cmd.Println("[fansgroup] 未开启 fansgroup.webSession，仅跳过播放歌曲；其他任务继续执行")
 		return
 	}
-
+	remaining := missionRemaining(m.CurrentProgress, m.AllProgress)
+	songIDs := parseSongIdsFromMission(m)
+	if len(songIDs) == 0 {
+		c.cmd.Println("[fansgroup] 无法从播放任务解析歌曲，跳过")
+		return
+	}
 	for i := 0; i < remaining; i++ {
-		songId := songIds[c.rng.Intn(len(songIds))]
-		songIdStr := fmt.Sprintf("%d", songId)
-		c.cmd.Printf("  [%d/%d] 准备真实播放歌曲 %s\n", i+1, remaining, songIdStr)
-
-		songName, source, sourceId, songTime := c.fetchFansGroupSongPlaybackMeta(ctx, weapiCli, songIdStr)
-		if songName != "" {
-			c.cmd.Printf("  [%d/%d] 歌曲：%s，时长=%d秒\n", i+1, remaining, songName, songTime)
+		if ctx.Err() != nil {
+			return
 		}
-
-		resp, err := weapiCli.WebLog(ctx, &weapi.WebLogReq{
-			Logs: []map[string]interface{}{
-				{
-					"action": "startplay",
-					"json": map[string]interface{}{
-						"id":       songId,
-						"type":     "song",
-						"content":  fmt.Sprintf("id=%s", songIdStr),
-						"mainsite": "1",
-					},
-				},
-			},
-		})
+		songID := songIDs[c.rng.Intn(len(songIDs))]
+		songName, source, sourceID, _ := c.fetchFansGroupSongPlaybackMeta(ctx, weapiCli, strconv.FormatInt(songID, 10))
+		c.cmd.Printf("[fansgroup] [%d/%d] 播放作品「%s」(songId=%d)\n", i+1, remaining, songName, songID)
+		player, err := weapiCli.FansGroupPlayerURL(ctx, &weapi.SongPlayerV1Req{Ids: types.IntsString([]int64{songID}), Level: types.LevelExhigh, EncodeType: "aac"})
 		if err != nil {
-			c.cmd.Printf("  上报 startplay 失败: %v\n", err)
+			c.cmd.Printf("  获取网页播放地址失败：%v\n", err)
 			continue
 		}
-		if resp.Code != 200 {
-			c.cmd.Printf("  startplay 返回异常 code=%d\n", resp.Code)
+		if player.Code != 200 || len(player.Data) == 0 || player.Data[0].Code != 200 {
+			c.cmd.Printf("  播放地址接口拒绝 code=%d\n", player.Code)
 			continue
 		}
-		c.cmd.Printf("  [%d/%d] 已上报 startplay\n", i+1, remaining)
-
-		playerResp, err := weapiCli.SongPlayerV1(ctx, &weapi.SongPlayerV1Req{
-			Ids:        types.IntsString([]int64{songId}),
-			Level:      types.LevelExhigh,
-			EncodeType: "aac",
-		})
+		mediaURL, err := fansGroupMediaURL(player.Data[0].Url)
 		if err != nil {
-			c.cmd.Printf("  [%d/%d] 获取播放地址失败: %v\n", i+1, remaining, err)
+			c.cmd.Printf("  %v，跳过本首上报\n", err)
 			continue
 		}
-		if playerResp.Code != 200 || len(playerResp.Data) == 0 || playerResp.Data[0].Url == "" || playerResp.Data[0].Code != 200 {
-			c.cmd.Printf("  [%d/%d] 播放地址返回异常 code=%d dataLen=%d\n", i+1, remaining, playerResp.Code, len(playerResp.Data))
-			continue
-		}
-
-		playerData := playerResp.Data[0]
-		if playerData.Time > 0 {
-			songTime = int(playerData.Time / 1000)
-		}
-		c.cmd.Printf("  [%d/%d] 已获取播放地址，开始拉取音频资源\n", i+1, remaining)
-		if err := fetchFansGroupAudioProbe(ctx, cli, playerData.Url); err != nil {
-			c.cmd.Printf("  [%d/%d] 拉取音频资源失败: %v\n", i+1, remaining, err)
-			continue
-		}
-		c.cmd.Printf("  [%d/%d] 音频资源拉取完成\n", i+1, remaining)
-
-		playSeconds := 3 + c.rng.Intn(3)
-		if songTime > 0 && songTime < playSeconds {
-			playSeconds = songTime
-		}
-		playResp, err := weapiCli.WebLog(ctx, &weapi.WebLogReq{
-			Logs: []map[string]interface{}{
-				{
-					"action": "play",
-					"json": map[string]interface{}{
-						"type":     "song",
-						"wifi":     0,
-						"download": 0,
-						"id":       songId,
-						"time":     playSeconds,
-						"end":      "interrupt",
-						"source":   source,
-						"sourceId": sourceId,
-						"mainsite": "1",
-						"content":  fmt.Sprintf("id=%s", sourceId),
-					},
-				},
-			},
-		})
+		entries := weapi.FansGroupPlaybackLogs(songID, source, sourceID, 0)
+		started := time.Now()
+		response, err := weapiCli.FansGroupWebLog(ctx, entries[0])
 		if err != nil {
-			c.cmd.Printf("  [%d/%d] 上报 play 失败: %v\n", i+1, remaining, err)
+			c.cmd.Printf("  startplay 请求失败：%v\n", err)
 			continue
 		}
-		if playResp.Code != 200 {
-			c.cmd.Printf("  [%d/%d] play 返回异常 code=%d\n", i+1, remaining, playResp.Code)
+		if response.Code != 200 {
+			c.cmd.Printf("  startplay 拒绝 code=%d\n", response.Code)
 			continue
 		}
-
-		c.cmd.Printf("  [%d/%d] 播放链路完成\n", i+1, remaining)
-		if i < remaining-1 {
-			time.Sleep(time.Duration(2+c.rng.Intn(4)) * time.Second)
+		if err := fetchFansGroupAudio(ctx, cli, mediaURL); err != nil {
+			c.cmd.Printf("  完整音频拉取失败：%v\n", err)
+			continue
+		}
+		// 按实际拉取耗时上报，不伪造整首播放时长，也不影响普通刷歌的整首等待。
+		entries = weapi.FansGroupPlaybackLogs(songID, source, sourceID, int(time.Since(started).Round(time.Second)/time.Second))
+		response, err = weapiCli.FansGroupWebLog(ctx, entries[1])
+		if err != nil {
+			c.cmd.Printf("  play 请求失败：%v\n", err)
+			continue
+		}
+		if response.Code != 200 {
+			c.cmd.Printf("  play 拒绝 code=%d\n", response.Code)
+			continue
+		}
+		c.cmd.Println("  音频完整拉取，上报接口已接受；是否计入任务以随后刷新进度为准")
+		if i < remaining-1 && !waitFansGroup(ctx, time.Duration(2+c.rng.Intn(4))*time.Second) {
+			return
 		}
 	}
 }
 
-func fetchFansGroupAudioProbe(ctx context.Context, cli *api.Client, songURL string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, songURL, nil)
-	if err != nil {
-		return fmt.Errorf("new audio request: %w", err)
+func waitFansGroup(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
-	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Accept", "*/*")
+}
+
+func fansGroupMediaURL(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.User != nil || u.Host == "" {
+		return "", fmt.Errorf("媒体地址格式无效")
+	}
+	if u.Scheme == "http" {
+		u.Scheme = "https"
+	}
+	host := strings.ToLower(u.Hostname())
+	if u.Scheme != "https" || u.Port() != "" || (!strings.HasSuffix(host, ".music.126.net") && !strings.HasSuffix(host, ".music.163.com")) {
+		return "", fmt.Errorf("媒体地址不属于支持的网易云 CDN")
+	}
+	if u.Query().Get("authSecret") == "" {
+		return "", fmt.Errorf("网页媒体地址缺少 authSecret，可能未取得有效网页会话")
+	}
+	return u.String(), nil
+}
+
+func fetchFansGroupAudio(ctx context.Context, cli *api.Client, songURL string) error {
+	mediaURL, err := fansGroupMediaURL(songURL)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mediaURL, nil)
+	if err != nil {
+		return fmt.Errorf("无法构造音频请求")
+	}
 	req.Header.Set("Referer", "https://music.163.com/")
 	req.Header.Set("Accept-Encoding", "identity")
-	req.Header.Set("Accept-Language", "zh-CN,zh-Hans;q=0.9")
 	req.Header.Set("User-Agent", cli.UserAgent(api.CryptoModeWEAPI))
-	req.Header.Set("Range", "bytes=0-")
-
-	resp, err := cli.GetClient().Do(req)
-	if err != nil {
+	// 媒体域只使用签名 URL；不携带账号 Cookie，并限制重定向目标。
+	httpClient := *cli.GetClient()
+	httpClient.Jar = nil
+	httpClient.CheckRedirect = func(r *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return fmt.Errorf("音频重定向次数过多")
+		}
+		if r.URL.Scheme != "https" {
+			return fmt.Errorf("拒绝音频重定向到非 HTTPS 地址")
+		}
+		_, err := fansGroupMediaURL(r.URL.String())
 		return err
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("音频请求失败（已隐藏签名地址）")
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("http status code: %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("音频 HTTP 状态码：%d", resp.StatusCode)
 	}
-
-	_, err = io.CopyN(io.Discard, resp.Body, 512*1024)
-	if err != nil && err != io.EOF {
-		return err
+	const limit = int64(100 * 1024 * 1024)
+	if resp.ContentLength > limit {
+		return fmt.Errorf("音频超过 100 MB 安全上限")
+	}
+	n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("音频读取中断")
+	}
+	if n > limit {
+		return fmt.Errorf("音频超过 100 MB 安全上限")
+	}
+	if n == 0 || (resp.ContentLength >= 0 && n != resp.ContentLength) {
+		return fmt.Errorf("音频下载不完整")
 	}
 	return nil
 }
@@ -741,8 +786,36 @@ func (c *FansGroup) collectOneSong(ctx context.Context, eapiCli *eapi.Api, songI
 	return true
 }
 
-func (c *FansGroup) doAccelerateTask(ctx context.Context, eapiCli *eapi.Api, missions *eapi.FansGroupMissionAllResp, orig eapi.FansGroupMissionOriginality) {
+func (c *FansGroup) doAccelerateTask(ctx context.Context, eapiCli *eapi.Api, weapiCli *weapi.Api, uid int64, commentCheckToken string, missions *eapi.FansGroupMissionAllResp, orig eapi.FansGroupMissionOriginality) {
 	c.cmd.Printf("[fansgroup] 处理加速任务 [%s] %s...\n", orig.Title, orig.Subtitle)
+	if strings.Contains(orig.Subtitle, "评论") {
+		if strings.TrimSpace(commentCheckToken) == "" {
+			c.cmd.Println("[fansgroup] 当前账号未配置 fansgroup.commentCheckTokens 网页评论短效令牌，跳过新建评论；其他任务继续")
+			return
+		}
+		target, err := fansGroupCommentTarget(orig)
+		if err != nil {
+			c.cmd.Printf("[fansgroup] %v\n", err)
+			return
+		}
+		if target.MlogID != "" {
+			videoID, code, err := weapiCli.FansGroupMlogVideo(ctx, target.MlogID)
+			if err != nil || code != 200 || !fansGroupResourceID.MatchString(videoID) {
+				c.cmd.Printf("[fansgroup] 无法确认笔记对应的视频目标，跳过评论（code=%d）\n", code)
+				return
+			}
+			target.ThreadID = "R_VI_62_" + videoID
+		}
+		delay := time.Duration(3+c.rng.Intn(5)) * time.Second
+		c.cmd.Printf("[fansgroup] 评论任务指定视频笔记 %s，%d 秒后删除\n", target.ThreadID, int(delay/time.Second))
+		if err := runFansGroupComment(ctx, c.commentReceiptPath(uid), uid, target.ThreadID, fansGroupCommentClient{api: weapiCli, token: commentCheckToken}, delay); err != nil {
+			c.cmd.Printf("[fansgroup] 评论任务：%v\n", err)
+			c.root.ReportFailure(strconv.FormatInt(uid, 10), "fansgroup", err)
+		} else {
+			c.cmd.Println("[fansgroup] 评论已发表并删除，实际任务进度随后刷新确认")
+		}
+		return
+	}
 
 	if strings.Contains(orig.Subtitle, "收藏") || strings.Contains(orig.Subtitle, "红心") {
 		songIds := parseSongIdsFromOriginality(orig)

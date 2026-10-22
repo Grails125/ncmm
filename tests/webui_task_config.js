@@ -42,6 +42,18 @@ async function saveConfig(page) {
     await page.locator('#config-block-task').waitFor({ state: 'visible' });
     assert.equal(await page.locator('[data-task-card="task.fansgroup"] input').isChecked(), false);
 
+    await page.locator('#config-sections [data-section="fansgroup"]').click();
+    assert.equal(await input(page, ['fansgroup', 'webSession']).isChecked(), false);
+    await input(page, ['fansgroup', 'webSession']).check();
+    const commentTokens = page.locator('.schema-map[data-schema-path=\'["fansgroup","commentCheckTokens"]\']');
+    await commentTokens.locator('.schema-map-add').click();
+    await commentTokens.locator('.schema-map-key').fill('test-account.json');
+    assert.equal(await commentTokens.locator('.schema-map-value').getAttribute('type'), 'password');
+    await commentTokens.locator('.schema-map-value').fill('test-web-check-token');
+    const fansSaved = await saveConfig(page);
+    assert.equal(fansSaved.fansgroup.webSession, true);
+    assert.deepEqual(fansSaved.fansgroup.commentCheckTokens, { 'test-account.json': 'test-web-check-token' });
+
     await page.locator('#config-sections [data-section="musicPartner"]').click();
     await input(page, ['musicPartner', 'scoreMin']).fill('2');
     await input(page, ['musicPartner', 'comments', '4']).fill('保留我的评分乐评\n第二条乐评');
@@ -50,6 +62,8 @@ async function saveConfig(page) {
       await page.locator(`[data-preset="${preset}"]`).click();
       const saved = await saveConfig(page);
       assert.equal(saved.task.fansgroup, false, preset);
+      assert.equal(saved.fansgroup.webSession, true, `${preset} changed explicit fansgroup session choice`);
+      assert.deepEqual(saved.fansgroup.commentCheckTokens, fansSaved.fansgroup.commentCheckTokens);
       assert.deepEqual(saved.musicPartner, seeded.musicPartner, `${preset} changed partner configuration`);
       if (preset === 'musician') {
         assert.equal(saved.task.note, false);
@@ -117,7 +131,7 @@ async function saveConfig(page) {
     await page.screenshot({ path: path.join(outputDir, 'schedule-random-delay.png'), fullPage: true });
     assert.deepEqual(errors, []);
     assert.deepEqual(blockedRuns, []);
-    console.log(JSON.stringify({ passed: true, checks: ['safe defaults and four presets', 'partner configuration preserved', 'playlist and commented IDs save/reload', 'delay create/edit/reload', 'invalid delay form validation', 'toggle preserves delay'], screenshots: outputDir }));
+    console.log(JSON.stringify({ passed: true, checks: ['fansgroup session default/save and masked independent comment credentials', 'safe defaults and four presets', 'partner configuration preserved', 'playlist and commented IDs save/reload', 'delay create/edit/reload', 'invalid delay form validation', 'toggle preserves delay'], screenshots: outputDir }));
   } catch (error) {
     await page.screenshot({ path: path.join(outputDir, 'failure.png'), fullPage: true }).catch(() => {});
     throw error;

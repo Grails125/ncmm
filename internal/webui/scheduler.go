@@ -67,6 +67,10 @@ func (s *scheduler) reload() error {
 	jobs := append(cfg.Jobs, environmentSchedules()...)
 	for _, job := range jobs {
 		normalizeSchedule(&job)
+		// 旧配置中的守护插件任务保留在文件内，但不加入调度和立即运行列表。
+		if s.runner != nil && s.runner.validateJob != nil && s.runner.validateJob(job) != nil {
+			continue
+		}
 		if err := validateSchedule(job, s.parser); err != nil {
 			if job.Source == "environment" {
 				continue
@@ -209,6 +213,11 @@ func (s *scheduler) upsert(job Schedule) (Schedule, error) {
 		return Schedule{}, fmt.Errorf("environment schedules are read-only")
 	}
 	normalizeSchedule(&job)
+	if s.runner != nil && s.runner.validateJob != nil {
+		if err := s.runner.validateJob(job); err != nil {
+			return Schedule{}, err
+		}
+	}
 	if err := validateSchedule(job, s.parser); err != nil {
 		return Schedule{}, err
 	}

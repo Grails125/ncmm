@@ -51,7 +51,7 @@ jobs:
         run: node --check internal/webui/static/app.js
 
       - name: Test browser launcher, account status and task configuration
-        run: node --test tests/run_webui_browser.test.js tests/webui_cookie_status.test.js tests/webui_music_partner_config.test.js tests/webui_music_partner_points.test.js tests/webui_task_config.test.js tests/webui_update_restart.test.js
+        run: node --test tests/run_webui_browser.test.js tests/webui_cookie_status.test.js tests/webui_music_partner_config.test.js tests/webui_music_partner_points.test.js tests/webui_task_config.test.js tests/webui_update_restart.test.js tests/webui_base_fixes.test.js tests/webui_plugin_platform.test.js
 
       - name: Test updater script behavior
         run: python3 -m unittest discover -s tests -p test_ncmm_update_script.py
@@ -87,6 +87,12 @@ jobs:
 
       - name: Test update and restart flow in Chromium
         run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_update_restart.js "$RUNNER_TEMP/webui-update-restart"
+
+      - name: Test base compatibility UI in Chromium
+        run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_base_fixes.js "$RUNNER_TEMP/webui-base-fixes"
+
+      - name: Test plugin platform UI in Chromium
+        run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_plugin_platform.js "$RUNNER_TEMP/webui-plugin-platform"
 
       - name: Race test high-risk services
         run: go test -race ./api/... ./config ./internal/webui ./internal/ncmm ./internal/partnerpoints ./internal/selfupdate ./internal/filelock ./internal/atomicfile ./pkg/cookie
