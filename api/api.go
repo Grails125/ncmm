@@ -1,0 +1,722 @@
+// Copyright (c) 2026 @3899. All rights reserved.
+// Use of this source code is governed by a MIT-style license that can be found in the LICENSE file.
+
+package api
+
+import (
+	"bytes"
+	"compress/gzip"
+	"compress/zlib"
+	"context"
+	"crypto/tls"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httputil"
+	neturl "net/url"
+	"strings"
+	"time"
+
+	xeapipkg "github.com/3899/ncmm/api/xeapi"
+	"github.com/3899/ncmm/pkg/cookie"
+	"github.com/3899/ncmm/pkg/crypto"
+	"github.com/3899/ncmm/pkg/log"
+
+	"github.com/andybalholm/brotli"
+	"github.com/cheggaaa/pb/v3"
+	"github.com/go-resty/resty/v2"
+)
+
+const (
+	DefaultWEAPIUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) NeteaseMusicDesktop/2.3.17.1034"
+	DefaultEAPIUserAgent  = "NeteaseMusic 9.4.95/6806 (iPhone; iOS 16.6.1; zh_CN)"
+)
+
+type UserAgentConfig struct {
+	Default string `json:"default" yaml:"default"`
+	WEAPI   string `json:"weapi" yaml:"weapi"`
+	EAPI    string `json:"eapi" yaml:"eapi"`
+	XEAPI   string `json:"xeapi" yaml:"xeapi"`
+}
+
+type Config struct {
+	Debug     bool            `json:"debug" yaml:"debug"`
+	Timeout   time.Duration   `json:"timeout" yaml:"timeout"`
+	Retry     int             `json:"retry" yaml:"retry"`
+	Cookie    cookie.Config   `json:"cookie" yaml:"cookie"`
+	UserAgent UserAgentConfig `json:"user_agent" yaml:"user_agent"`
+	// Agent   *Agent                     `json:"agent" yaml:"agent"`
+}
+
+func (c *Config) Validate() error {
+	if c.Retry < 0 {
+		return errors.New("retry is < 0")
+	}
+	if c.Timeout < 0 {
+		return errors.New("timeout is < 0")
+	}
+	return nil
+}
+
+type Client struct {
+	cfg    *Config
+	cli    *resty.Client
+	cookie *cookie.Cookie
+	l      *log.Logger
+	xeapi  *xeapipkg.Manager
+	// agent  *Agent
+}
+
+func New(cfg *Config) *Client {
+	client, err := NewClient(cfg, log.Default)
+	if err != nil {
+		panic(err)
+	}
+	return client
+}
+
+func NewClient(cfg *Config, l *log.Logger) (*Client, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("validate: %w", err)
+	}
+
+	var opts = []cookie.Option{
+		cookie.WithSyncInterval(cfg.Cookie.Interval),
+	}
+	if cfg.Cookie.Filepath != "" {
+		opts = append(opts, cookie.WithFilePath(cfg.Cookie.Filepath))
+	}
+	if opt := cfg.Cookie.Options; opt != nil && opt.PublicSuffixList != nil {
+		opts = append(opts, cookie.WithPublicSuffixList(cfg.Cookie.PublicSuffixList))
+	}
+	jar, err := cookie.NewCookie(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("NewCookie: %w", err)
+	}
+
+	cli := resty.New()
+	cli.SetRetryCount(cfg.Retry)
+	cli.SetTimeout(cfg.Timeout)
+	cli.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true})
+	cli.SetDebug(cfg.Debug)
+	cli.SetCookieJar(jar)
+	cli.OnAfterResponse(contentEncoding)
+	// cli.OnAfterResponse(dump)
+	// cli.OnBeforeRequest(encrypt)
+	// cli.SetLogger(l)
+	// cli.AddRetryHook(func(resp *resty.Response, err error) {
+	// 	l.Warnf("URL:%s,RetryCount:%d,RequestBody:%+v StatusCode:%d,ResponseBody:%s CusumeTime:%s Err:%s",
+	// 		resp.Request.URL, resp.Request.Attempt, resp.Request.Body, resp.StatusCode(), resp.Body(), resp.Time(), err)
+	// })
+
+	c := Client{
+		cfg:    cfg,
+		cli:    cli,
+		cookie: jar,
+		l:      l,
+		xeapi:  xeapipkg.NewManager(xeapipkg.ManagerOptions{HTTPClient: cli.GetClient()}),
+		// agent:  NewAgent(),
+	}
+	return &c, nil
+}
+
+func (c *Client) Ping(ctx context.Context) error {
+	return nil
+}
+
+func (c *Client) Close(ctx context.Context) error {
+	c.cli.SetCloseConnection(true)
+	return c.cookie.Close(ctx)
+}
+
+func (c *Client) UserAgent(mode CryptoMode) string {
+	ua := c.cfg.UserAgent.Default
+	switch mode {
+	case CryptoModeWEAPI:
+		if c.cfg.UserAgent.WEAPI != "" {
+			return c.cfg.UserAgent.WEAPI
+		}
+		if ua != "" {
+			return ua
+		}
+		return DefaultWEAPIUserAgent
+	case CryptoModeEAPI:
+		if c.cfg.UserAgent.EAPI != "" {
+			return c.cfg.UserAgent.EAPI
+		}
+		if ua != "" {
+			return ua
+		}
+		return DefaultEAPIUserAgent
+	case CryptoModeXEAPI:
+		return strings.TrimSpace(c.cfg.UserAgent.XEAPI)
+	default:
+		if ua != "" {
+			return ua
+		}
+		return DefaultWEAPIUserAgent
+	}
+}
+
+func (c *Client) NewRequest(mode ...CryptoMode) *resty.Request {
+	m := CryptoModeWEAPI
+	if len(mode) > 0 {
+		m = mode[0]
+	}
+	return c.cli.NewRequest().SetHeader("User-Agent", c.UserAgent(m))
+}
+
+func (c *Client) GetClient() *http.Client {
+	return c.cli.GetClient()
+}
+
+// Cookie 根据url和cookie name获取cookie.
+func (c *Client) Cookie(url, name string) (http.Cookie, bool) {
+	uri, err := neturl.Parse(url)
+	if err != nil {
+		log.Warn("cookie parse(%v) err: %s", url, err)
+		return http.Cookie{}, false
+	}
+	for _, c := range c.cookie.Cookies(uri) {
+		if c.Name == name {
+			return *c, true
+		}
+	}
+	return http.Cookie{}, false
+}
+
+// GetCookies 获取cookies.
+func (c *Client) cookieValue(url string, names ...string) string {
+	for _, name := range names {
+		if ck, ok := c.Cookie(url, name); ok && strings.TrimSpace(ck.Value) != "" {
+			value, err := neturl.QueryUnescape(ck.Value)
+			if err != nil {
+				value = ck.Value
+			}
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func (c *Client) MusicU() string {
+	for _, url := range []string{"https://music.163.com", "https://interface3.music.163.com"} {
+		if token := c.cookieValue(url, "MUSIC_U", "MUSIC_R_U"); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
+func (c *Client) applyXEAPIHeaders(request *resty.Request) {
+	ua := request.Header.Get("User-Agent")
+	if ua == "" {
+		ua = c.UserAgent(CryptoModeXEAPI)
+	}
+	appver, buildver := neteaseAndroidVersionFromUA(ua)
+	osver := neteaseAndroidOSVersionFromUA(ua)
+
+	setDefault := func(key, value string) {
+		if strings.TrimSpace(value) != "" && request.Header.Get(key) == "" {
+			request.SetHeader(key, value)
+		}
+	}
+	cookieValue := func(names ...string) string {
+		for _, url := range []string{"https://music.163.com", "https://interface3.music.163.com"} {
+			if value := c.cookieValue(url, names...); value != "" {
+				return value
+			}
+		}
+		return ""
+	}
+
+	if contentType := requestHeaderValue(request, "Content-Type"); contentType == "" || strings.EqualFold(strings.TrimSpace(contentType), "application/x-www-form-urlencoded") {
+		request.SetHeader("Content-Type", "application/x-www-form-urlencoded;charset=utf-8")
+	}
+	setDefault("X-Client-Enc-State", "ENCRYPTED")
+	setDefault("x-aeapi", "true")
+	setDefault("X-MAM-CustomMark", "cronet")
+	setDefault("x-os", firstNonEmpty(cookieValue("os"), "android"))
+	setDefault("x-osver", firstNonEmpty(cookieValue("osver"), osver))
+	setDefault("x-appver", firstNonEmpty(cookieValue("appver"), appver))
+	setDefault("x-buildver", firstNonEmpty(cookieValue("buildver"), buildver))
+	deviceID := firstNonEmpty(cookieValue("deviceId"), cookieValue("sDeviceId", "sdeviceId"), c.GetDeviceId())
+	setDefault("x-deviceid", deviceID)
+	setDefault("x-sdeviceid", cookieValue("sDeviceId", "sdeviceId"))
+	setDefault("x-music-u", c.MusicU())
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func neteaseAndroidVersionFromUA(ua string) (string, string) {
+	const prefix = "NeteaseMusic/"
+	idx := strings.Index(ua, prefix)
+	if idx < 0 {
+		return "", ""
+	}
+	version := ua[idx+len(prefix):]
+	if cut := strings.IndexAny(version, "(; "); cut >= 0 {
+		version = version[:cut]
+	}
+	parts := strings.Split(version, ".")
+	if len(parts) < 4 {
+		return version, ""
+	}
+	return strings.Join(parts[:3], "."), parts[3]
+}
+
+func neteaseAndroidOSVersionFromUA(ua string) string {
+	const marker = "Android "
+	idx := strings.Index(ua, marker)
+	if idx < 0 {
+		return ""
+	}
+	osver := ua[idx+len(marker):]
+	if cut := strings.IndexAny(osver, ";)"); cut >= 0 {
+		osver = osver[:cut]
+	}
+	return strings.TrimSpace(osver)
+}
+
+func (c *Client) GetCookies(url *neturl.URL) []*http.Cookie {
+	return c.cookie.Cookies(url)
+}
+
+// SetCookies 设置cookies.
+func (c *Client) SetCookies(url *neturl.URL, cookies []*http.Cookie) {
+	c.cookie.SetCookies(url, cookies)
+}
+
+// GetCSRF 获取csrf 一般用于weapi接口中使用.
+func (c *Client) GetCSRF(url string) (string, bool) {
+	uri, err := neturl.Parse(url)
+	if err != nil {
+		log.Warn("GetCSRF parse(%v) err: %s", url, err)
+		return "", false
+	}
+	for _, c := range c.cookie.Cookies(uri) {
+		if c.Name == "__csrf_token" && c.Value != "" {
+			return c.Value, true
+		}
+		if c.Name == "__csrf" && c.Value != "" {
+			return c.Value, true
+		}
+	}
+	return "", false
+}
+
+// Request 接口请求.
+func (c *Client) Request(ctx context.Context, url string, req, resp interface{}, opts *Options) (*resty.Response, error) {
+	if url == "" || req == nil || resp == nil {
+		return nil, errors.New("request args invalid")
+	}
+	if opts == nil {
+		opts = NewOptions()
+	}
+	if opts.Method == "" {
+		opts.Method = http.MethodPost
+	}
+
+	var (
+		encryptData map[string]string
+		err         error
+		response    *resty.Response
+	)
+
+	uri, err := neturl.Parse(url)
+	if err != nil {
+		return nil, err
+	}
+
+	ua := c.UserAgent(opts.CryptoMode)
+	if opts.CryptoMode == CryptoModeXEAPI && strings.TrimSpace(ua) == "" {
+		return nil, fmt.Errorf("network.user_agent.xeapi is required for xeapi requests")
+	}
+
+	request := c.cli.R().
+		SetContext(ctx).
+		SetHeader("Host", uri.Host).
+		SetHeader("Connection", "keep-alive").
+		SetHeader("Accept", "*/*").
+		SetHeader("Accept-Encoding", "gzip, deflate, br").
+		SetHeader("Content-Type", "application/x-www-form-urlencoded").
+		SetHeader("Accept-language", "zh-CN,zh-Hans;q=0.9").
+		SetHeader("Referer", "https://music.163.com").
+		SetHeader("User-Agent", ua).
+		SetCookie(&http.Cookie{Name: "__remember_me", Value: "true", Domain: ""})
+	// SetHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/25.1 Chrome/121.0.0.0 Mobile Safari/537.36")
+
+	// append
+	if len(opts.Headers) > 0 {
+		request.SetHeaders(opts.Headers)
+	}
+	if len(opts.Cookies) > 0 {
+		request.SetCookies(opts.Cookies)
+	}
+
+	// 针对 163.com 的子域名请求 (如 interface3.music.163.com)，手动将 music.163.com 下的 cookies (如 HostOnly 的 MUSIC_U) 附加到 Request
+	if strings.HasSuffix(uri.Host, ".163.com") && uri.Host != "music.163.com" {
+		mURL, _ := neturl.Parse("https://music.163.com")
+		if mURL != nil {
+			request.SetCookies(c.GetCookies(mURL))
+		}
+	}
+	if opts.CryptoMode == CryptoModeXEAPI || opts.CryptoMode == CryptoModeEAPI {
+		c.applyXEAPIHeaders(request)
+	}
+
+	switch opts.CryptoMode {
+	case CryptoModeEAPI:
+		// todo: set common params
+		// var dataHeader = http.Header{}
+		// dataHeader.Add("osver", getCookie(options.cookies, "osver"))
+		// dataHeader.Add("deviceId", getCookie(options.cookies, "deviceId"))
+		// dataHeader.Add("appver", getCookie(options.cookies, "appver", "6.1.1"))
+		// dataHeader.Add("versioncode", getCookie(options.cookies, "versioncode", "140"))
+		// dataHeader.Add("mobilename", getCookie(options.cookies, "mobilename"))
+		// dataHeader.Add("buildver", getCookie(options.cookies, "buildver"))
+		// dataHeader.Add("resolution", getCookie(options.cookies, "resolution", "1920x1080"))
+		// dataHeader.Add("__csrf", getCookie(options.cookies, "__csrf"))
+		// dataHeader.Add("os", getCookie(options.cookies, "os", "android"))
+		// dataHeader.Add("channel", getCookie(options.cookies, "channel"))
+		// dataHeader.Add("requestId", fmt.Sprintf("%d_%04d", time.Now().UnixNano()/1000000, r.Intn(1000)))
+		// if c := getCookie(options.cookies, "MUSIC_U"); c != "" {
+		// 	dataHeader.Add("MUSIC_U", c)
+		// }
+		// if c := getCookie(options.cookies, "MUSIC_A"); c != "" {
+		// 	dataHeader.Add("MUSIC_A", c)
+		// }
+		// req.Header.Set("Cookie", "")
+		// for k, v := range dataHeader {
+		// 	req.AddCookie(&http.Cookie{
+		// 		Name:  k,
+		// 		Value: v[0],
+		// 	})
+		// }
+		// data["header"] = dataHeader
+
+		encryptData, err = crypto.EApiEncrypt(uri.Path, req)
+		if err != nil {
+			return nil, fmt.Errorf("EApiEncrypt: %w", err)
+		}
+	case CryptoModeXEAPI:
+		encryptData, err = c.xeapi.Encrypt(ctx, xeapipkg.EncryptRequest{
+			URI:         uri.RequestURI(),
+			Data:        req,
+			Method:      opts.Method,
+			ContentType: requestHeaderValue(request, "Content-Type"),
+			OS:          requestHeaderValue(request, "x-os"),
+			AppVersion:  requestHeaderValue(request, "x-appver"),
+			DeviceID:    firstNonEmpty(requestHeaderValue(request, "x-deviceid"), c.GetDeviceId()),
+			UserAgent:   requestHeaderValue(request, "User-Agent"),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("XEApiEncrypt: %w", err)
+		}
+	case CryptoModeWEAPI:
+		// todo: 需要替换？因为有些 https://interface.music.163.com/api 得接口也会走这个逻辑
+		// reg, _ := regexp.Compile(`\w*api`)
+		// url = reg.ReplaceAllString(url, "weapi")
+		// url = strings.ReplaceAll(url, "api", "weapi")
+
+		csrf, has := c.GetCSRF(url)
+		if !has {
+			log.Debug("get csrf token not found")
+		}
+		request.SetQueryParam("csrf_token", csrf)
+
+		// // request.SetCookie(&http.Cookie{Name: "appver", Value: "2.3.17"})
+		// request.SetCookie(&http.Cookie{Name: "appver", Value: "9.0.95"})
+		// // request.SetCookie(&http.Cookie{Name: "os", Value: "osx"})
+		// request.SetCookie(&http.Cookie{Name: "os", Value: "android"})
+		// // request.SetCookie(&http.Cookie{Name: "deviceId", Value: "7A8EB581-E60B-5230-BB5B-E6DAB1FBFA62%7C5FD718A3-0602-4389-B612-EBEFAA7F108B"})
+		// // request.SetCookie(&http.Cookie{Name: "WEVNSM", Value: "1.0.0"})
+		// // request.SetCookie(&http.Cookie{Name: "channel", Value: "netease"})
+		// // request.SetHeader("nm-gcore-status", "1")
+		// request.SetHeader("appver", "9.0.95")
+		// request.SetHeader("os", "android")
+
+		encryptData, err = crypto.WeApiEncrypt(req)
+		if err != nil {
+			return nil, fmt.Errorf("WeApiEncrypt: %w", err)
+		}
+	case CryptoModeLinux:
+		encryptData, err = crypto.LinuxApiEncrypt(req)
+		if err != nil {
+			return nil, fmt.Errorf("LinuxApiEncrypt: %w", err)
+		}
+	case CryptoModeAPI:
+		// 不需要加密处理请求
+		// todo: 待处理,在/api/xx/接口请求时则不需要参数加密处理,此处需要对结构体转换成map[string]string类型
+		// b, err := json.Marshal(req)
+		// if err != nil {
+		// 	return nil, fmt.Errorf("json.Marshal: %w", err)
+		// }
+		// var m map[string]interface{}
+		// if err := json.Unmarshal(b, &m); err != nil {
+		// 	return nil, fmt.Errorf("json.Unmarshal: %w", err)
+		// }
+		// encryptData = make(map[string]string)
+		// for k, v := range m {
+		// 	encryptData[k] = fmt.Sprint(v)
+		// }
+	default:
+		return nil, fmt.Errorf("%s crypto mode unknown", opts.CryptoMode)
+	}
+	log.Debug("[request]: %+v encrypt: %+v", req, encryptData)
+
+	switch opts.Method {
+	case http.MethodPost:
+		response, err = request.SetFormData(encryptData).Post(url)
+	case http.MethodGet:
+		response, err = request.Get(url)
+	default:
+		return nil, fmt.Errorf("%s not surpport http method", opts.Method)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("do request: %w", err)
+	}
+	log.Debug("[response.raw]: %s", string(response.Body()))
+
+	var decryptData []byte
+	switch opts.CryptoMode {
+	case CryptoModeAPI:
+		// tips: api接口返回数据是明文
+		decryptData = response.Body()
+	case CryptoModeEAPI, CryptoModeXEAPI:
+		decryptData = response.Body()
+		if len(decryptData) > 0 && decryptData[0] != '{' {
+			var decrypted []byte
+			if opts.CryptoMode == CryptoModeXEAPI {
+				if ssid, sskey := response.Header().Get("x-encr-ssid"), response.Header().Get("x-encr-sskey"); ssid != "" && sskey != "" {
+					c.xeapi.SetSession(ssid, sskey)
+				}
+				decrypted, err = xeapipkg.DecryptResponse(decryptData)
+			} else {
+				decrypted, err = crypto.EApiDecrypt(string(decryptData), "")
+			}
+			if err == nil {
+				decryptData = decrypted
+				if opts.CryptoMode == CryptoModeEAPI {
+					if unzipped, unzipErr := gunzipPayload(decryptData); unzipErr == nil {
+						decryptData = unzipped
+					} else {
+						log.Warn("EAPI gzip payload decode failed: %s", unzipErr)
+					}
+				} else if unzipped, unzipErr := gunzipPayload(decryptData); unzipErr == nil {
+					decryptData = unzipped
+				}
+			} else {
+				log.Warn("%s decrypt failed: %s", opts.CryptoMode, err)
+			}
+		}
+		log.Debug("[response.decrypt]: %s", string(decryptData))
+	case CryptoModeWEAPI:
+		// tips: weapi接口返回数据是明文
+		decryptData = response.Body()
+	case CryptoModeLinux:
+		decryptData, err = crypto.LinuxApiDecrypt(string(response.Body()))
+		if err != nil {
+			return nil, fmt.Errorf("LinuxApiDecrypt: %w", err)
+		}
+		log.Debug("[response.decrypt]: %s", string(decryptData))
+	default:
+		return nil, fmt.Errorf("%s crypto mode unknown", opts.CryptoMode)
+	}
+
+	decode := json.NewDecoder(bytes.NewReader(decryptData))
+	// decode.DisallowUnknownFields()
+	if err := decode.Decode(&resp); err != nil {
+		return nil, fmt.Errorf("json.NewDecoder: %w", err)
+	}
+	if response.StatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("http status code: %d detail: %s", response.StatusCode(), string(decryptData))
+	}
+	return response, nil
+}
+
+func (c *Client) Upload(ctx context.Context, url string, headers map[string]string, data io.Reader, resp interface{}, bar *pb.ProgressBar) (*resty.Response, error) {
+	var body any = data
+	if bar != nil {
+		body = bar.NewProxyReader(data)
+	}
+
+	ua := c.UserAgent(CryptoModeWEAPI)
+
+	response, err := c.cli.R().
+		SetContext(ctx).
+		SetHeaders(headers).
+		SetHeader("Connection", "keep-alive").
+		SetHeader("Accept", "*/*").
+		SetHeader("Referer", "https://music.163.com").
+		SetHeader("User-Agent", ua).
+		SetBody(body).
+		Post(url)
+	if err != nil {
+		return nil, err
+	}
+	log.Debug("response: %+v", string(response.Body()))
+	if err := json.Unmarshal(response.Body(), &resp); err != nil {
+		return nil, fmt.Errorf("json.Unmarshal: %w", err)
+	}
+	if response.StatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("http status code: %d detail: %s", response.StatusCode(), string(response.Body()))
+	}
+	return response, nil
+}
+
+func (c *Client) Download(ctx context.Context, url string, headers map[string]string, reqBody io.Reader, resp io.Writer, bar *pb.ProgressBar) (*http.Response, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("NewRequestWithContext: %w", err)
+	}
+	request.Header.Set("Connection", "keep-alive")
+	request.Header.Set("Accept", "*/*")
+	request.Header.Set("Referer", "https://music.163.com")
+	request.Header.Set("Accept-Encoding", "gzip")
+	request.Header.Set("Accept-Language", "zh-CN,zh-Hans;q=0.9")
+	ua := c.UserAgent(CryptoModeWEAPI)
+	request.Header.Set("User-Agent", ua)
+	request.Header.Set("Range", "bytes=0-")
+	for k, v := range headers {
+		request.Header.Set(k, v)
+	}
+
+	response, err := c.cli.GetClient().Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode/100 != 2 {
+		return nil, fmt.Errorf("http status code: %d", response.StatusCode)
+	}
+
+	var body io.Reader = response.Body
+	if bar != nil {
+		body = bar.NewProxyReader(response.Body)
+	}
+	n, err := io.Copy(resp, body)
+	if err != nil {
+		return nil, err
+	}
+	if n != response.ContentLength {
+		return nil, errors.New("file transfer interrupted")
+	}
+	return response, nil
+}
+
+func contentEncoding(c *resty.Client, resp *resty.Response) error {
+	var kind = resp.Header().Get("Content-Encoding")
+	// log.Debug("Content-Encoding: %s Uncompressed: %v", kind, resp.RawResponse.Uncompressed)
+	switch kind {
+	case "deflate":
+		// 为何使用zlib库: https://zlib.net/zlib_faq.html#faq39
+		data, err := zlib.NewReader(bytes.NewReader(resp.Body()))
+		if err != nil {
+			return fmt.Errorf("zlib.NewReader: %w", err)
+		}
+		defer data.Close()
+		bodyBytes, err := io.ReadAll(data)
+		if err != nil {
+			return fmt.Errorf("deflate.ReadAll: %w", err)
+		}
+		resp.SetBody(bodyBytes)
+	case "br":
+		r := brotli.NewReader(bytes.NewReader(resp.Body()))
+		bodyBytes, err := io.ReadAll(r)
+		if err != nil {
+			return fmt.Errorf("cbrotli.Decode: %w", err)
+		}
+		resp.SetBody(bodyBytes)
+	case "gzip":
+		// tips: restry 自身已经实现gzip解压缩
+	case "":
+		// 空则代表是gzip,golang底层会做相应得解压缩处理,为空得原因是,
+		// 收到请求后进行解压, 同时删除 Content-Encoding: gzip请求头。
+		// 如果想关闭自动解压缩,则可以设置Transport.DisableCompression=true
+	default:
+		return fmt.Errorf("not supported yet Content-Encoding: %s", kind)
+	}
+	return nil
+}
+
+func requestHeaderValue(request *resty.Request, key string) string {
+	if request == nil {
+		return ""
+	}
+	if value := request.Header.Get(key); value != "" {
+		return value
+	}
+	for name, values := range request.Header {
+		if strings.EqualFold(name, key) && len(values) > 0 {
+			return values[0]
+		}
+	}
+	return ""
+}
+
+// gunzipPayload 解开 EAPI 加密载荷内部可能包裹的 gzip 数据。
+func gunzipPayload(data []byte) ([]byte, error) {
+	if len(data) < 2 || data[0] != 0x1f || data[1] != 0x8b {
+		return data, nil
+	}
+	r, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	bodyBytes, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	return bodyBytes, nil
+}
+
+func dump(c *resty.Client, resp *resty.Response) error {
+	// d, err := io.ReadAll(resp.RawBody())
+	// if err != nil {
+	// 	return fmt.Errorf("ReadAll: %w", err)
+	// }
+	// log.Debug("rawbody:%s", string(d))
+
+	resp.RawResponse.Body = io.NopCloser(bytes.NewReader(resp.Body()))
+	log.Debug("############### http dump ################")
+
+	dumpReq, err := httputil.DumpRequest(resp.Request.RawRequest, true)
+	if err != nil {
+		return fmt.Errorf("DumpRequest: %w", err)
+	}
+	log.Debug("---------------- request ----------------\n%s", string(dumpReq))
+
+	dumpResp, err := httputil.DumpResponse(resp.RawResponse, true)
+	if err != nil {
+		return fmt.Errorf("DumpResponse: %w", err)
+	}
+	log.Debug("---------------- response ----------------\n%s\n", string(dumpResp))
+	return nil
+}
+
+// GetDeviceId 从当前客户端的 Cookie 中获取设备 ID
+func (c *Client) GetDeviceId() string {
+	var deviceId string
+	if ck, ok := c.Cookie("https://music.163.com", "deviceId"); ok && ck.Value != "" {
+		deviceId = ck.Value
+	} else if ck, ok := c.Cookie("https://interface3.music.163.com", "deviceId"); ok && ck.Value != "" {
+		deviceId = ck.Value
+	} else if ck, ok := c.Cookie("https://music.163.com", "sDeviceId"); ok && ck.Value != "" {
+		deviceId = ck.Value
+	} else if ck, ok := c.Cookie("https://interface3.music.163.com", "sDeviceId"); ok && ck.Value != "" {
+		deviceId = ck.Value
+	}
+	return deviceId
+}

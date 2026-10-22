@@ -1,0 +1,294 @@
+// Copyright (c) 2026 @3899. All rights reserved.
+// Use of this source code is governed by a MIT-style license that can be found in the LICENSE file.
+
+package eapi
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/3899/ncmm/api"
+	"github.com/3899/ncmm/api/types"
+)
+
+type YunBeiSignInReq struct {
+	// Type 签到类型 0:安卓(默认)3点经验 1:web/PC2点经验
+	Type int64 `json:"type"`
+}
+
+// YunBeiSignInResp 签到返回
+type YunBeiSignInResp struct {
+	// Code 错误码 -2:重复签到 200:成功(会有例外会出现“功能暂不支持”) 301:未登录
+	types.RespCommon[any]
+	// Point 签到获得积分奖励数量
+	Point int64 `json:"point"`
+}
+
+// YunBeiSignIn 用户每日签到
+// url:
+// needLogin: 是
+// todo:目前传0会出现功能暂不支持不知为何(可能请求头或cookie问题)待填坑
+func (a *Api) YunBeiSignIn(ctx context.Context, req *YunBeiSignInReq) (*YunBeiSignInResp, error) {
+	var (
+		url   = "https://music.163.com/eapi/point/dailyTask"
+		reply YunBeiSignInResp
+		opts  = api.NewOptions()
+	)
+	opts.CryptoMode = api.CryptoModeEAPI
+	resp, err := a.client.Request(ctx, url, req, &reply, opts)
+	if err != nil {
+		return nil, fmt.Errorf("Request: %w", err)
+	}
+	_ = resp
+	return &reply, nil
+}
+
+type YunbeiClickTaskReq struct {
+	TaskId     int64  `json:"taskId"`
+	SubAction  string `json:"subAction"`
+	Type       string `json:"type"`
+	CheckToken string `json:"checkToken"`
+}
+
+type YunbeiClickTaskResp struct {
+	Code    int    `json:"code"`
+	Data    bool   `json:"data"`
+	Message string `json:"message"`
+}
+
+// YunbeiClickTask 宣告浏览会员中心等任务开始
+func (a *Api) YunbeiClickTask(ctx context.Context, req *YunbeiClickTaskReq) (*YunbeiClickTaskResp, error) {
+	var (
+		url   = "https://interface3.music.163.com/eapi/yunbei/click/task"
+		reply YunbeiClickTaskResp
+		opts  = api.NewOptions()
+	)
+	opts.CryptoMode = api.CryptoModeEAPI
+	resp, err := a.client.Request(ctx, url, req, &reply, opts)
+	if err != nil {
+		return nil, fmt.Errorf("Request: %w", err)
+	}
+	_ = resp
+	return &reply, nil
+}
+
+type YunbeiDistributionRecommendSongReq struct {
+	Offset int `json:"offset"`
+	Limit  int `json:"limit"`
+}
+
+type YunbeiDistributionRecommendSongResp struct {
+	Code int `json:"code"`
+	Data []struct {
+		SongId   int64 `json:"songId"`
+		AlbumId  int64 `json:"albumId"`
+		ArtistId int64 `json:"artistId"`
+	} `json:"data"`
+}
+
+// YunbeiDistributionRecommendSong 获取探索小众歌曲推荐列表
+func (a *Api) YunbeiDistributionRecommendSong(ctx context.Context, req *YunbeiDistributionRecommendSongReq) (*YunbeiDistributionRecommendSongResp, error) {
+	var (
+		url   = "https://interface3.music.163.com/eapi/ad/power/yunbei/distribution/recommend/song"
+		reply YunbeiDistributionRecommendSongResp
+		opts  = api.NewOptions()
+	)
+	opts.CryptoMode = api.CryptoModeEAPI
+	resp, err := a.client.Request(ctx, url, req, &reply, opts)
+	if err != nil {
+		return nil, fmt.Errorf("Request: %w", err)
+	}
+	_ = resp
+	return &reply, nil
+}
+
+type YunbeiDistributionCreateReq struct {
+	YunbeiAmount int64 `json:"yunbeiAmount"`
+}
+
+type YunbeiDistributionCreateResp struct {
+	Code    int    `json:"code"`
+	Data    bool   `json:"data"`
+	Message string `json:"message"`
+}
+
+// YunbeiDistributionCreate 完成小众歌曲听歌任务并申请云贝分配
+func (a *Api) YunbeiDistributionCreate(ctx context.Context, req *YunbeiDistributionCreateReq) (*YunbeiDistributionCreateResp, error) {
+	var (
+		url   = "https://interface3.music.163.com/eapi/ad/power/yunbei/distribution/create"
+		reply YunbeiDistributionCreateResp
+		opts  = api.NewOptions()
+	)
+	opts.CryptoMode = api.CryptoModeEAPI
+	resp, err := a.client.Request(ctx, url, req, &reply, opts)
+	if err != nil {
+		return nil, fmt.Errorf("Request: %w", err)
+	}
+	_ = resp
+	return &reply, nil
+}
+
+type YunbeiReserveInfoReq struct {
+}
+
+type YunbeiReserveInfoResp struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Success bool   `json:"success"`
+	Data    struct {
+		Type          string `json:"type"`
+		ReqId         string `json:"reqId"`
+		CurrentAmount int64  `json:"currentAmount"`
+	} `json:"data"`
+}
+
+// YunbeiReserveInfo 获取预约活动领云贝信息
+func (a *Api) YunbeiReserveInfo(ctx context.Context, req *YunbeiReserveInfoReq) (*YunbeiReserveInfoResp, error) {
+	var (
+		url   = "https://interface3.music.163.com/eapi/new/yunbei/activity/reserve/info"
+		reply YunbeiReserveInfoResp
+		opts  = api.NewOptions()
+	)
+	opts.CryptoMode = api.CryptoModeEAPI
+	resp, err := a.client.Request(ctx, url, req, &reply, opts)
+	if err != nil {
+		return nil, fmt.Errorf("Request: %w", err)
+	}
+	_ = resp
+	return &reply, nil
+}
+
+type YunbeiReserveBookedReq struct {
+	ReqId string `json:"reqId"`
+}
+
+type YunbeiReserveBookedResp struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Success bool   `json:"success"`
+}
+
+// YunbeiReserveBooked 预约领云贝
+func (a *Api) YunbeiReserveBooked(ctx context.Context, req *YunbeiReserveBookedReq) (*YunbeiReserveBookedResp, error) {
+	var (
+		url   = "https://interface3.music.163.com/eapi/new/yunbei/activity/reserve/booked"
+		reply YunbeiReserveBookedResp
+		opts  = api.NewOptions()
+	)
+	opts.CryptoMode = api.CryptoModeEAPI
+	resp, err := a.client.Request(ctx, url, req, &reply, opts)
+	if err != nil {
+		return nil, fmt.Errorf("Request: %w", err)
+	}
+	_ = resp
+	return &reply, nil
+}
+
+type YunbeiReserveRewardReceiveReq struct {
+	ReqId      string `json:"reqId"`
+	CheckToken string `json:"checkToken"`
+}
+
+type YunbeiReserveRewardReceiveResp struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Success bool   `json:"success"`
+	Data    struct {
+		CurrentAmount int64 `json:"currentAmount"`
+	} `json:"data"`
+}
+
+// YunbeiReserveRewardReceive 领取预约奖励云贝
+func (a *Api) YunbeiReserveRewardReceive(ctx context.Context, req *YunbeiReserveRewardReceiveReq) (*YunbeiReserveRewardReceiveResp, error) {
+	var (
+		url   = "https://interface3.music.163.com/eapi/new/yunbei/activity/reserve/reward/receive"
+		reply YunbeiReserveRewardReceiveResp
+		opts  = api.NewOptions()
+	)
+	opts.CryptoMode = api.CryptoModeEAPI
+	resp, err := a.client.Request(ctx, url, req, &reply, opts)
+	if err != nil {
+		return nil, fmt.Errorf("Request: %w", err)
+	}
+	_ = resp
+	return &reply, nil
+}
+
+type YunbeiReceiptReq struct {
+	types.EApiReqCommon
+	Limit  int64 `json:"limit"`
+	Offset int64 `json:"offset"`
+	Total  bool  `json:"total"`
+	UserId int64 `json:"userId"`
+}
+
+type YunbeiReceiptResp struct {
+	Code    int                 `json:"code"`
+	Count   int64               `json:"count"`
+	Data    []YunbeiReceiptData `json:"data"`
+	Message string              `json:"message"`
+}
+
+type YunbeiReceiptData struct {
+	Date          string      `json:"date"`
+	Fixed         string      `json:"fixed"`
+	Id            int64       `json:"id"`
+	OrderId       interface{} `json:"orderId"`
+	PointCost     int64       `json:"pointCost"`
+	SpecialStatus interface{} `json:"specialStatus"`
+	Type          int64       `json:"type"`
+	Variable      string      `json:"variable"`
+}
+
+// YunbeiReceipt 获取云贝收入流水。收入与支出是两个独立接口，本接口只返回收入。
+func (a *Api) YunbeiReceipt(ctx context.Context, req *YunbeiReceiptReq) (*YunbeiReceiptResp, error) {
+	var (
+		url   = "https://interface3.music.163.com/eapi/new/yunbei/point/receipt"
+		reply YunbeiReceiptResp
+		opts  = api.NewOptions()
+	)
+	if req.Limit <= 0 {
+		req.Limit = 50
+	}
+	opts.CryptoMode = api.CryptoModeEAPI
+	resp, err := a.client.Request(ctx, url, req, &reply, opts)
+	if err != nil {
+		return nil, fmt.Errorf("Request: %w", err)
+	}
+	_ = resp
+	return &reply, nil
+}
+
+type YunBeiTaskTodoReq struct{}
+
+type YunBeiTaskTodoResp struct {
+	types.RespCommon[[]YunBeiTaskTodoRespData]
+}
+
+type YunBeiTaskTodoRespData struct {
+	Completed   bool   `json:"completed"`
+	DepositCode int64  `json:"depositCode"`
+	ExpireTime  int64  `json:"expireTime"`
+	Link        string `json:"link"`
+	Period      int64  `json:"period"`
+	TaskId      int64  `json:"taskId"`
+	TaskName    string `json:"taskName"`
+	TaskPoint   int64  `json:"taskPoint"`
+	UserTaskId  int64  `json:"userTaskId"`
+}
+
+// YunBeiTaskTodo 返回待完成的任务列表
+func (a *Api) YunBeiTaskTodo(ctx context.Context, req *YunBeiTaskTodoReq) (*YunBeiTaskTodoResp, error) {
+	var (
+		url   = "https://interface3.music.163.com/eapi/usertool/task/todo/query"
+		reply YunBeiTaskTodoResp
+		opts  = api.NewOptions()
+	)
+	opts.CryptoMode = api.CryptoModeEAPI
+	resp, err := a.client.Request(ctx, url, req, &reply, opts)
+	if err != nil {
+		return nil, fmt.Errorf("Request: %w", err)
+	}
+	_ = resp
+	return &reply, nil
+}
