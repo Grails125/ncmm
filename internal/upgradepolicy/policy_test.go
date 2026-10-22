@@ -92,7 +92,7 @@ func TestReleaseMarkerAndRequiredFloorPersist(t *testing.T) {
 }
 
 func TestRecoveryCommandsStayAvailable(t *testing.T) {
-	for _, path := range []string{"ncmm update", "ncmm web", "ncmm web stop", "ncmm auth reset-password", "ncmm login qrcode", "ncmm help", "ncmm version", "ncmm"} {
+	for _, path := range []string{"ncmm update", "ncmm web", "ncmm web stop", "ncmm auth reset-password", "ncmm login qrcode", "ncmm help", "ncmm version", "ncmm plugin list", "ncmm plugin install", "ncmm"} {
 		if !AllowsCommand(path) {
 			t.Fatalf("recovery command blocked: %s", path)
 		}

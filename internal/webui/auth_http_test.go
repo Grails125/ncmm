@@ -93,6 +93,51 @@ func TestAuthStatusContainsOnlyNewSetupContract(t *testing.T) {
 	}
 }
 
+func TestPublicUpgradeStatusLeavesSetupAndLoginAvailable(t *testing.T) {
+	home := t.TempDir()
+	server := newAuthTestServer(t, home)
+	server.opts.Version = "1.2.9-grails.1"
+	writeRequiredUpgrade(t, home)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
+	request.Host = "localhost:3899"
+	response := httptest.NewRecorder()
+	server.routes().ServeHTTP(response, request)
+	var payload authStatusResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || !payload.SetupRequired || !payload.UpgradePolicy.Required || payload.Version != server.opts.Version {
+		t.Fatalf("public upgrade status = %d %s", response.Code, response.Body.String())
+	}
+	for _, secret := range []string{"must-not-be-exposed", "/private/home", "github_token", "private_path"} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("public status contains private field %q", secret)
+		}
+	}
+	for _, endpoint := range []string{"/api/v1/auth/setup", "/api/v1/auth/login"} {
+		request = httptest.NewRequest(http.MethodPost, endpoint, strings.NewReader(`{"password":"UpgradeTest#2026"}`))
+		request.Host = "localhost:3899"
+		response = httptest.NewRecorder()
+		server.routes().ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("recovery auth %s = %d %s", endpoint, response.Code, response.Body.String())
+		}
+	}
+	if err := os.WriteFile(filepath.Join(home, "ncmm-update.json"), []byte(`{"last_check_failed":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/auth/status", nil)
+	request.Host = "localhost:3899"
+	response = httptest.NewRecorder()
+	server.routes().ServeHTTP(response, request)
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.UpgradePolicy.Required {
+		t.Fatal("failed check must clear blocking policy")
+	}
+}
+
 func TestPasswordProtectionToggleChangesMiddlewareBehavior(t *testing.T) {
 	server := newAuthTestServer(t, t.TempDir())
 	credentials, err := server.authManager.Setup(context.Background(), "a", requestClientInfo(httptest.NewRequest(http.MethodGet, "/", nil)))

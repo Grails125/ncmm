@@ -255,11 +255,11 @@ func Confirm(root string, slot Slot) error {
 		if state.Current.Path != slot.Path {
 			state.Previous = state.Current
 			state.Current = slot
+			state.LastError = ""
 		}
 		if state.Pending.Path == slot.Path {
 			state.Pending = Slot{}
 		}
-		state.LastError = ""
 		return nil
 	}, false)
 	if err == nil {
@@ -343,6 +343,10 @@ func Prune(root string) error {
 			}
 		}
 		versions := filepath.Join(root, "versions")
+		info, err := os.Lstat(versions)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("版本父目录不是普通目录，停止清理")
+		}
 		entries, err := os.ReadDir(versions)
 		if err != nil {
 			return err
@@ -379,12 +383,10 @@ func Prune(root string) error {
 			if err != nil {
 				continue
 			}
-			removeErr := os.Remove(path)
+			_ = os.Remove(path)
 			lease.Close()
-			if removeErr == nil {
-				_ = os.Remove(path + ".update.lock")
-				_ = os.Remove(dir)
-			}
+			// 锁文件保持同一 inode，避免等待中的旧进程与新建锁分别取得互斥权。
+			// 目录仅留下微小锁文件，不保留旧程序，也不删除用户附加文件。
 		}
 		return nil
 	}, false)

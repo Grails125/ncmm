@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/3899/ncmm/internal/loginresult"
+	"github.com/3899/ncmm/internal/upgradepolicy"
 	webauth "github.com/3899/ncmm/internal/webui/auth"
 	"github.com/3899/ncmm/pkg/notify"
 	"gopkg.in/yaml.v3"
@@ -758,7 +759,7 @@ func (s *Server) handleScheduleRun(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, os.ErrNotExist) {
 			status = http.StatusNotFound
 		}
-		writeError(w, status, err.Error())
+		writeAPIError(w, status, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, record)
@@ -1060,6 +1061,19 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
 }
 
+// 保留任务准入错误的类型，供页面提示升级；其它错误沿用调用方状态。
+func writeAPIError(w http.ResponseWriter, status int, err error) {
+	var required *upgradepolicy.RequiredError
+	if errors.As(err, &required) {
+		writeJSON(w, http.StatusUpgradeRequired, struct {
+			Error         string               `json:"error"`
+			UpgradePolicy upgradepolicy.Status `json:"upgradePolicy"`
+		}{required.Error(), required.Status})
+		return
+	}
+	writeError(w, status, err.Error())
+}
+
 func (s *Server) handlePluginsGet(w http.ResponseWriter, r *http.Request) {
 	if s.plugins == nil {
 		writeJSON(w, http.StatusOK, []PluginInfo{})
@@ -1176,7 +1190,7 @@ func (s *Server) handlePluginRun(w http.ResponseWriter, r *http.Request) {
 	}
 	record, err := s.runner.start(r.Context(), job)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeAPIError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "runId": record.ID})

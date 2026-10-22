@@ -1,0 +1,30 @@
+.upgrade-policy[hidden] { display: none; }
+.upgrade-policy {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-shrink: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--border-hover);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-elevated);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.workspace > .upgrade-policy { margin: 12px 24px 0; }
+.upgrade-policy-required { border-left-color: var(--danger); }
+.upgrade-policy-copy { flex: 1; min-width: 0; }
+.upgrade-policy strong { font-size: 13px; }
+.upgrade-policy p { margin-top: 2px; color: var(--text-muted); }
+.upgrade-policy-actions { display: flex; gap: 10px; flex-wrap: wrap; flex-shrink: 0; align-items: center; }
+.upgrade-policy-actions a { color: var(--accent-cyan); min-height: 36px; display: inline-flex; align-items: center; }
+.upgrade-policy-actions a:focus-visible { outline: 2px solid var(--accent-cyan); outline-offset: 3px; }
+.login-stack > .upgrade-policy { width: 100%; flex-direction: column; align-items: stretch; }
+@media (max-width: 760px) {
+  .workspace > .upgrade-policy { margin: 10px 12px 0; }
+  .upgrade-policy { flex-direction: column; align-items: stretch; gap: 6px; padding: 10px 12px; }
+  .upgrade-policy-actions a { min-height: 40px; }
+}

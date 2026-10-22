@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/3899/ncmm/internal/managedruntime"
 	"github.com/3899/ncmm/internal/selfupdate"
 )
 
@@ -146,12 +147,19 @@ func (s *Server) makeUpdateView(state updateState) updateView {
 	containerUpdate := !docker || selfupdate.RuntimeManaged(s.opts.Executable)
 	available := compareUpdateVersions(state.CurrentVersion, state.LatestVersion) < 0
 	// 版本缓存不能证明磁盘程序仍是已安装版本，手工降级后允许再次更新。
-	installed := available && state.UpdatedVersion != "" && compareUpdateVersions(state.UpdatedVersion, state.LatestVersion) >= 0 && selfupdate.Matches(s.opts.Executable, state.InstalledSHA256)
+	installedDigest := state.InstalledSHA256
+	installed := available && state.UpdatedVersion != "" && compareUpdateVersions(state.UpdatedVersion, state.LatestVersion) >= 0 && managedruntime.InstalledMatches(s.opts.Executable, state.LatestVersion, state.InstalledSHA256)
 	if available && !installed {
 		state.UpdatedVersion = ""
 		state.InstalledSHA256 = ""
 		if state.UpdateStatus == "success" {
 			state.UpdateStatus = "idle"
+		}
+	}
+	if containerUpdate && docker && installedDigest != "" {
+		if runtimeState, err := managedruntime.Read(managedruntime.Directory()); err == nil && runtimeState.RejectedSHA256 == installedDigest {
+			state.UpdateStatus = "failed"
+			state.LastError = "候选程序未通过健康检查，已保留原运行版本。" + runtimeState.LastError
 		}
 	}
 	restartRequired := installed

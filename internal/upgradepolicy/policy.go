@@ -108,6 +108,8 @@ func AllowsCommand(path string) bool {
 	switch parts[1] {
 	case "update", "version", "web", "login", "auth", "help":
 		return true
+	case "plugin":
+		return len(parts) == 2 || parts[2] == "list" || parts[2] == "install"
 	default:
 		return false
 	}

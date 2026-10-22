@@ -132,6 +132,15 @@ func (c *Root) loadUpdateState(statePath, execPath string) UpdateState {
 		log.Warn("[updater] 更新缓存无效，重新检查本分支发布")
 		return c.initDefaultUpdateState()
 	}
+	if selfupdate.RuntimeManaged(execPath) {
+		if runtimeState, err := managedruntime.Read(managedruntime.Directory()); err == nil && state.InstalledSHA256 != "" && runtimeState.RejectedSHA256 == state.InstalledSHA256 {
+			state.UpdateStatus = "failed"
+			state.UpdatedVersion = ""
+			state.LastError = "候选程序未通过健康检查，已保留原运行版本。" + runtimeState.LastError
+			state.CurrentVersion = c.AppVersion
+			return state
+		}
+	}
 	installed := managedruntime.InstalledMatches(execPath, state.LatestVersion, state.InstalledSHA256)
 	if state.UpdateStatus == "updating" {
 		if installed {
@@ -259,13 +268,21 @@ func (c *Root) CheckForUpdatesPreRun() {
 		log.Warn("[updater] 检查失败: %v", err)
 		return
 	}
-	if needAutoUpdate && CompareVersions(currentVer, state.LatestVersion) < 0 && state.UpdatedVersion != state.LatestVersion {
+	if needAutoUpdate && CompareVersions(currentVer, state.LatestVersion) < 0 && state.UpdatedVersion != state.LatestVersion && !(state.UpdateStatus == "failed" && state.InstalledSHA256 != "") {
 		_ = c.performSelfUpdateFromState(&state, statePath, execPath)
 	}
 }
 
-func (c *Root) checkNewVersionSync(statePath string, currentVer string, execPath string) (UpdateState, error) {
-	state := c.loadUpdateState(statePath, execPath)
+func (c *Root) checkNewVersionSync(statePath string, currentVer string, execPath string) (state UpdateState, resultErr error) {
+	state = c.loadUpdateState(statePath, execPath)
+	defer func() {
+		if resultErr != nil {
+			state.LastCheckFailed = true
+			if err := c.saveUpdateState(statePath, &state); err != nil {
+				log.Warn("[updater] 保存检查失败状态: %v", err)
+			}
+		}
+	}()
 	proxyMirrors := []string{"https://gh-proxy.com/", "https://ghproxy.net/", "https://githubproxy.cc/"}
 	if c.Cfg != nil && c.Cfg.Updater != nil && len(c.Cfg.Updater.ProxyMirrors) > 0 {
 		proxyMirrors = c.Cfg.Updater.ProxyMirrors
@@ -313,10 +330,6 @@ func (c *Root) checkNewVersionSync(statePath string, currentVer string, execPath
 
 	if !succeeded {
 		log.Debug("[updater] 获取最新版本信息失败: %v", lastErr)
-		state.LastCheckFailed = true
-		if err := c.saveUpdateState(statePath, &state); err != nil {
-			log.Warn("[updater] 保存检查失败状态: %v", err)
-		}
 		return state, fmt.Errorf("获取最新版本信息失败: %w", lastErr)
 	}
 	defer responseCancel()
@@ -325,10 +338,6 @@ func (c *Root) checkNewVersionSync(statePath string, currentVer string, execPath
 	var rel githubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
 		log.Warn("[updater] 解析版本信息失败: %v", err)
-		state.LastCheckFailed = true
-		if saveErr := c.saveUpdateState(statePath, &state); saveErr != nil {
-			log.Warn("[updater] 保存检查失败状态: %v", saveErr)
-		}
 		return state, fmt.Errorf("解析版本信息失败: %w", err)
 	}
 
@@ -360,6 +369,9 @@ func (c *Root) checkNewVersionSync(statePath string, currentVer string, execPath
 	state.RequiredVersion = policyCache.RequiredVersion
 	state.RequiredPublishedAt = policyCache.RequiredPublishedAt
 	state.CurrentVersion = currentVer
+	if state.LatestVersion != tag && state.UpdateStatus == "failed" {
+		state.InstalledSHA256 = ""
+	}
 	state.LatestVersion = tag
 	state.ReleaseNotes = rel.Body
 	state.OS = osPart

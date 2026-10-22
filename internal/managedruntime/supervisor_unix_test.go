@@ -39,9 +39,17 @@ func TestSupervisorHelperProcess(t *testing.T) {
 		os.Exit(2)
 	}
 	http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/restart" {
+			go func() { time.Sleep(20 * time.Millisecond); os.Exit(RestartExitCode) }()
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
 		if r.URL.Path != "/api/v1/instance" {
 			http.NotFound(w, r)
 			return
+		}
+		if version == os.Getenv("NCMM_LAUNCHER_WRONG_HEALTH") {
+			version = "0.0.0"
 		}
 		json.NewEncoder(w).Encode(map[string]string{"instanceId": id, "version": version})
 	}))
@@ -152,5 +160,77 @@ func TestSupervisorRollsBackCrashAndRejectsSecondLauncher(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("rollback child not stopped")
+	}
+}
+
+func TestSupervisorRestartActivatesPendingAndVersionMismatchRollsBack(t *testing.T) {
+	for _, mismatch := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mismatch-%v", mismatch), func(t *testing.T) {
+			options, data := supervisorFixture(t)
+			options.StartupTimeout = 400 * time.Millisecond
+			if mismatch {
+				t.Setenv("NCMM_LAUNCHER_WRONG_HEALTH", "1.2.2-grails.2")
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- Serve(ctx, options) }()
+			var meta struct {
+				PID    int    `json:"pid"`
+				Listen string `json:"listen"`
+			}
+			deadline := time.Now().Add(3 * time.Second)
+			ready := false
+			for time.Now().Before(deadline) {
+				bytes, _ := os.ReadFile(filepath.Join(options.Home, "webui.instance.lock"))
+				json.Unmarshal(bytes, &meta)
+				if meta.PID != 0 && healthy(&http.Client{Timeout: time.Second}, options.Home, meta.PID, options.ImageVersion) {
+					ready = true
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if !ready {
+				t.Fatal("initial child did not start")
+			}
+			// Wait for the second probe/confirmation before requesting restart.
+			time.Sleep(60 * time.Millisecond)
+			old, _ := CurrentExecutable(options.Root)
+			candidate, err := Stage(options.Root, "1.2.2-grails.2", append(data, []byte("restart-candidate")...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if path, _ := CurrentExecutable(options.Root); path != old {
+				t.Fatal("CLI switched before health confirmation")
+			}
+			response, err := http.Post("http://"+meta.Listen+"/restart", "application/json", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			state := waitState(t, options.Root, func(state State) bool {
+				if mismatch {
+					return state.RejectedSHA256 == candidate.SHA256
+				}
+				return state.Current.Path == candidate.Path && state.Pending.Path == ""
+			})
+			if mismatch && (state.Current.Version != options.ImageVersion || state.LastError == "") {
+				t.Fatalf("rollback = %+v", state)
+			}
+			if !mismatch {
+				if path, _ := CurrentExecutable(options.Root); path == old {
+					t.Fatal("CLI did not switch after confirmation")
+				}
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("child did not stop")
+			}
+		})
 	}
 }

@@ -176,7 +176,42 @@ func TestOnlyCurrentAndPreviousProgramsAreRetained(t *testing.T) {
 		}
 	}
 	entries, err := os.ReadDir(filepath.Join(root, "versions"))
-	if err != nil || len(entries) != 2 {
-		t.Fatalf("retained directories: %v, %v", entries, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	programs := 0
+	for _, entry := range entries {
+		if _, err := os.Stat(filepath.Join(root, "versions", entry.Name(), "ncmm")); err == nil {
+			programs++
+		}
+	}
+	if programs != 2 {
+		t.Fatalf("retained programs = %d", programs)
+	}
+}
+
+func TestPruneRejectsLinkedVersionsDirectory(t *testing.T) {
+	root, _ := fixture(t)
+	versions := filepath.Join(root, "versions")
+	if err := os.Rename(versions, versions+"-original"); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	slot := filepath.Join(outside, "1.2.2-grails.99-0123456789abcdef")
+	if err := os.Mkdir(slot, 0755); err != nil {
+		t.Fatal(err)
+	}
+	protected := filepath.Join(slot, "ncmm")
+	if err := os.WriteFile(protected, []byte("outside file"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, versions); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := Prune(root); err == nil {
+		t.Fatal("linked versions directory accepted")
+	}
+	if data, err := os.ReadFile(protected); err != nil || string(data) != "outside file" {
+		t.Fatalf("outside file changed: %q %v", data, err)
 	}
 }

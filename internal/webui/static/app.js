@@ -264,6 +264,11 @@
     };
   }
 
+  function applyUpgradePolicy(policy) {
+    state.auth = { ...(state.auth || {}), upgradePolicy: policy };
+    globalThis.NCMMUpgradePolicy?.render(policy);
+  }
+
   async function api(path, options = {}) {
     const method = (options.method || 'GET').toUpperCase();
     const headers = { ...(options.headers || {}) };
@@ -277,6 +282,7 @@
     const payload = type.includes('application/json') ? await response.json() : await response.text();
     if (!response.ok) {
       if (response.status === 401) clearSession(true);
+      if (response.status === 426 && payload?.upgradePolicy) applyUpgradePolicy(payload.upgradePolicy);
       const error = new Error(payload?.error || payload || `HTTP ${response.status}`);
       error.status = response.status;
       error.details = payload;
@@ -448,6 +454,7 @@
     state.musicPartnerFinishedRuns = new Set(musicPartnerFinishedRunKeys(runs));
     state.settings = settings;
     state.auth = auth;
+    applyUpgradePolicy(auth.upgradePolicy);
     state.csrf = auth.csrfToken || state.csrf;
     state.configDirty = false;
     state.configDirtyMode = '';
@@ -3027,11 +3034,13 @@
     state.pollInFlight = true;
     const generation = ++state.pollGeneration;
     try {
-      const [runs, status, schedules] = await Promise.all([
+      const [runs, status, schedules, auth] = await Promise.all([
         api('/api/v1/runs'), api('/api/v1/status'), api('/api/v1/schedules'),
+        publicApi('/api/v1/auth/status'),
       ]);
       if (!state.authenticated || generation !== state.pollGeneration) return;
       state.runs = runs; state.status = status; state.schedules = schedules;
+      applyUpgradePolicy(auth.upgradePolicy);
 	  refreshMusicPartnerPointsAfterRun(runs);
 	  await refreshPlayStatsAfterRun(runs);
 	  if (!state.authenticated || generation !== state.pollGeneration) return;
@@ -3974,6 +3983,7 @@
       catch { toast('复制失败，请手动复制地址', true); }
     });
     $('#system-restart').addEventListener('click', () => restartService());
+    $('#upgrade-policy-system').addEventListener('click', event => { event.preventDefault(); navigate('system'); });
     window.addEventListener('popstate', () => navigate(routePages[location.pathname] || 'dashboard', { history: false }));
     if ('ResizeObserver' in window) {
       dashboardChartObserver = new ResizeObserver(entries => {
@@ -3993,6 +4003,8 @@
     bindEvents();
     try {
       const auth = await publicApi('/api/v1/auth/status');
+      state.auth = auth;
+      applyUpgradePolicy(auth.upgradePolicy);
       if (auth.setupRequired) {
         showSetupView(auth);
         return;
