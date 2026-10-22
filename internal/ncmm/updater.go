@@ -251,7 +251,7 @@ func (c *Root) CheckForUpdatesPreRun() {
 	// 1. 命中已有的状态记录：如果记录的最新版本大于当前版本
 	if state.LatestVersion != "" && CompareVersions(currentVer, state.LatestVersion) < 0 {
 		log.Info("[updater] 发现可用新版本: %s (当前版本: %s)", state.LatestVersion, currentVer)
-		if needAutoUpdate && state.UpdatedVersion != state.LatestVersion {
+		if needAutoUpdate && state.UpdatedVersion != state.LatestVersion && !(state.UpdateStatus == "failed" && state.InstalledSHA256 != "") {
 			_ = c.performSelfUpdateFromState(&state, statePath, execPath)
 			return
 		}

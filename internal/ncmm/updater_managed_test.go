@@ -79,7 +79,7 @@ func TestManagedUpdateStagesAndRetainsRollbackReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fakeUpdateRelease(t, "v1.2.2-grails.2", false)
+	downloads := fakeUpdateRelease(t, "v1.2.2-grails.2", false)
 	state, err := root.applyAvailableUpdateAt(executable)
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +107,15 @@ func TestManagedUpdateStagesAndRetainsRollbackReceipt(t *testing.T) {
 	after, _ := managedruntime.Read(runtimeRoot)
 	if after.LastError == "" {
 		t.Fatal("fallback confirmation discarded diagnostic")
+	}
+	oldPath, oldPathErr := runningUpdateExecutable, runningUpdateExecutableErr
+	runningUpdateExecutable, runningUpdateExecutableErr = executable, nil
+	t.Cleanup(func() { runningUpdateExecutable, runningUpdateExecutableErr = oldPath, oldPathErr })
+	t.Setenv("NCMM_UPDATER_CHECK", "true")
+	t.Setenv("NCMM_UPDATER_AUTO_UPDATE", "true")
+	root.CheckForUpdatesPreRun()
+	if downloads.Load() != 1 {
+		t.Fatalf("rejected cached binary downloaded again: %d", downloads.Load())
 	}
 	if _, err := root.applyAvailableUpdateAt(executable); err == nil {
 		t.Fatal("known bad update retried")
