@@ -10,6 +10,7 @@ const outputDir = path.join(testRoot, 'screenshots');
 fs.mkdirSync(outputDir, { recursive: true });
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const field = (page, name) => page.locator(`input[data-path='["musicPartner","${name}"]']`);
+const commentField = (page, score) => page.locator(`textarea[data-path='["musicPartner","comments","${score}"]']`);
 const taskSwitch = page => page.locator('[data-task-card="task.music-partner"] input');
 
 async function saveConfig(page, expectedStatus = 200) {
@@ -17,6 +18,8 @@ async function saveConfig(page, expectedStatus = 200) {
   await page.locator('#config-save').click();
   const result = await response;
   assert(result.status() === expectedStatus, `configuration save returned ${result.status()}: ${await result.text()}`);
+  await page.waitForFunction(() => !document.querySelector('#config-save').disabled);
+  return result.request().postDataJSON().data;
 }
 
 async function noOverflow(page) {
@@ -58,30 +61,53 @@ async function noOverflow(page) {
     assert(await field(page, 'enableMain').isChecked() && !await field(page, 'enableSecondaries').isChecked(), 'default account selection changed');
     assert(await field(page, 'extraTasks').isChecked() && !await field(page, 'fullExtraTasks').isChecked(), 'extra task defaults changed');
     assert(!await field(page, 'syncYunCircle').isChecked(), 'YunCircle publication must default off');
-    for (const [name, value] of [['extraLimit', '7'], ['waitMin', '15'], ['waitMax', '20']]) {
+    const defaultRanges = [['scoreMin', '3', '5'], ['scoreMax', '4', '5'], ['extraLimitMin', '7', '500'], ['extraLimitMax', '7', '500'], ['waitMin', '15', '300'], ['waitMax', '20', '300']];
+    for (const [name, value, max] of defaultRanges) {
       assert(await field(page, name).inputValue() === value, `${name} default changed`);
+      assert(await field(page, name).getAttribute('min') === '1' && await field(page, name).getAttribute('max') === max && await field(page, name).getAttribute('step') === '1', `${name} range limits missing`);
     }
-    assert(await page.locator('#config-block-musicPartner .schema-segment').count() === 4, 'four scoring strategies missing');
-    assert((await page.locator('#config-block-musicPartner .schema-segment.active').innerText()).includes('3：3–4 分'), 'strategy 3 must be default');
+    assert(await page.locator('#config-block-musicPartner .range-inputs-row').count() === 3, 'paired scoring, quantity and wait ranges missing');
+    assert(await page.locator('#config-block-musicPartner .schema-segment').count() === 0 && await field(page, 'score').count() === 0 && await field(page, 'extraLimit').count() === 0, 'legacy scoring controls remain visible');
+    for (const score of [1, 2, 3, 4, 5]) {
+      assert(await commentField(page, score).inputValue() === '', `score ${score} comment pool must default empty`);
+      assert(await commentField(page, score).getAttribute('data-kind') === 'array', `score ${score} comment pool must be an array`);
+    }
     assert((await page.locator('#config-block-musicPartner').innerText()).includes('不分析音频质量'), 'rule-based scoring explanation missing');
 
     await page.locator('[data-preset="music_partner"]').click();
     assert(await taskSwitch(page).isChecked(), 'partner preset did not enable native task');
+    for (const [name, value] of defaultRanges) {
+      assert(await field(page, name).inputValue() === value, `preset did not set ${name}`);
+    }
     await page.locator('#config-sections [data-section="musicPartner"]').click();
-    await page.locator('#config-block-musicPartner [data-schema-value="4"]').click();
-    await field(page, 'extraLimit').fill('9');
-    await field(page, 'waitMin').fill('21');
-    await field(page, 'waitMax').fill('23');
-    await saveConfig(page);
+    const configuredRanges = [['scoreMin', '2'], ['scoreMax', '5'], ['extraLimitMin', '8'], ['extraLimitMax', '11'], ['waitMin', '21'], ['waitMax', '23']];
+    for (const [name, value] of configuredRanges) await field(page, name).fill(value);
+    const comments = { '1': ['节奏还可以继续打磨', '期待更多变化'], '2': [], '3': ['旋律自然流畅', '<层次 & "细节">'], '4': ['很喜欢这首作品'], '5': ['出色的听感', '值得反复聆听'] };
+    await commentField(page, '2').fill('待清除');
+    for (const [score, lines] of Object.entries(comments)) await commentField(page, score).fill(lines.join('\n'));
+    const saved = await saveConfig(page);
+    assert(JSON.stringify(saved.musicPartner.comments) === JSON.stringify(comments), 'comment lines were not submitted as per-score arrays');
     await page.reload({ waitUntil: 'networkidle' });
     await page.locator('#config-block-musicPartner').waitFor({ state: 'visible' });
     assert(await taskSwitch(page).isChecked(), 'native task switch was not persisted');
-    assert((await page.locator('#config-block-musicPartner .schema-segment.active').innerText()).includes('4：固定 4 分'), 'strategy did not survive reload');
-    assert(await field(page, 'waitMin').inputValue() === '21' && await field(page, 'waitMax').inputValue() === '23', 'wait range was not persisted');
+    for (const [name, value] of configuredRanges) assert(await field(page, name).inputValue() === value, `${name} did not survive reload`);
+    for (const [score, lines] of Object.entries(comments)) assert(await commentField(page, score).inputValue() === lines.join('\n'), `score ${score} comment pool did not survive reload`);
     await page.locator('#config-sections [data-section="musicPartner"]').click();
-    await field(page, 'waitMax').fill('20');
-    await saveConfig(page, 400);
-    await field(page, 'waitMax').fill('23');
+    for (const [name, invalid, valid] of [['scoreMax', '1', '5'], ['scoreMax', '6', '5'], ['extraLimitMax', '7', '11'], ['extraLimitMax', '501', '11'], ['waitMax', '20', '23']]) {
+      await field(page, name).fill(invalid);
+      await saveConfig(page, 400);
+      await field(page, name).fill(valid);
+    }
+    await commentField(page, '4').fill('');
+    await saveConfig(page);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.locator('#config-block-musicPartner').waitFor({ state: 'visible' });
+    assert(await commentField(page, '4').inputValue() === '', 'cleared comment pool did not stay empty');
+    assert(await commentField(page, '3').inputValue() === comments['3'].join('\n'), 'clearing one score changed another comment pool');
+    await page.locator('[data-preset="music_partner"]').click();
+    assert(await commentField(page, '3').inputValue() === comments['3'].join('\n'), 'preset erased custom comment pools');
+    for (const [name, value] of defaultRanges) assert(await field(page, name).inputValue() === value, `preset did not restore ${name}`);
+    assert(!await field(page, 'syncYunCircle').isChecked(), 'preset enabled YunCircle publication');
     await saveConfig(page);
     await page.locator('#config-sections [data-section="musicPartner"]').click();
     await page.waitForFunction(() => Math.abs(document.querySelector('#config-block-musicPartner').getBoundingClientRect().top - document.querySelector('#config-visual').getBoundingClientRect().top - 12) < 4);
@@ -118,11 +144,12 @@ async function noOverflow(page) {
     await page.locator('#config-sections [data-section="musicPartner"]').click();
     await page.waitForFunction(() => Math.abs(document.querySelector('#config-block-musicPartner').getBoundingClientRect().top - document.querySelector('#config-visual').getBoundingClientRect().top - 12) < 4);
     await noOverflow(page);
-    assert(await page.locator('#config-block-musicPartner .schema-segmented').evaluate(element => element.scrollWidth <= element.clientWidth), 'mobile scoring choices were clipped');
+    assert(await page.locator('#config-block-musicPartner .range-inputs-row').evaluateAll(elements => elements.every(element => element.scrollWidth <= element.clientWidth)), 'mobile range inputs were clipped');
+    assert(await page.locator('#config-block-musicPartner .partner-comment-pools').evaluate(element => element.scrollWidth <= element.clientWidth), 'mobile comment pools were clipped');
     await page.screenshot({ path: path.join(outputDir, 'music-partner-mobile.png'), fullPage: true });
     assert(errors.length === 0, `browser errors: ${errors.join('; ')}`);
     assert(blockedRuns.length === 0, 'test attempted to run a real task');
-    console.log(JSON.stringify({ passed: true, checks: ['native batch toggle', 'config defaults', 'four scoring strategies', 'preset', 'save/reload', 'invalid wait range', 'schedule argument validation', 'disabled native schedule', 'failure display', 'desktop/mobile layout'], screenshots: outputDir }));
+    console.log(JSON.stringify({ passed: true, checks: ['native batch toggle', 'config defaults', 'three paired ranges', 'five comment pools', 'preset preserves comments', 'save/reload and clear', 'invalid ranges', 'schedule argument validation', 'disabled native schedule', 'failure display', 'desktop/mobile layout'], screenshots: outputDir }));
   } finally {
     await browser.close();
   }

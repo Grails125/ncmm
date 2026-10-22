@@ -148,7 +148,8 @@ func mainConfigSchema() configTargetSchema {
 			schemaGroup("musician-play", "进阶专属播放参数", "可继承", "gray")),
 		schemaCategory("musicPartner", "音乐合伙人评分", "", "使用已登录且具备合伙人资格的账号，按配置规则提交基础和额外评分。",
 			schemaGroup("partner-main", "账号与评分策略", "合伙人专属", "cyan"),
-			schemaGroup("partner-extra", "额外评分与等待", "每日", "gray")),
+			schemaGroup("partner-extra", "额外评分与等待", "每日", "gray"),
+			schemaGroup("partner-comments", "各分值乐评", "选填", "gray")),
 		schemaCategory("note", "动态笔记", "", "公共笔记标题、正文、图片池和发布方式。",
 			schemaGroup("note-mode", "发布方式", "通用", "primary"),
 			schemaGroup("note-content", "随机素材库", "内容", "cyan")),
@@ -382,16 +383,25 @@ func mainConfigSchema() configTargetSchema {
 		schemaField("musicPartner.enableMain", "主账号自动评分", "复用主账号 Cookie；账号需要具备音乐合伙人资格。", "partner-main", "boolean", "switch"),
 		schemaField("musicPartner.enableSecondaries", "辅助账号自动评分", "为已具备合伙人资格的辅助账号执行评分。", "partner-main", "boolean", "switch"),
 		func() configSchemaField {
-			f := schemaField("musicPartner.score", "评分策略", "策略 1–3 在歌曲名或作者名含 ASCII 英文字母时取较高分，否则取较低分；这是规则评分，不分析音频质量。", "partner-main", "integer", "segmented")
-			f.Options = []configSchemaOption{schemaOption(1, "1：1–2 分"), schemaOption(2, "2：2–3 分"), schemaOption(3, "3：3–4 分"), schemaOption(4, "4：固定 4 分")}
-			f.Min, f.Max, f.Step = number(1), number(4), number(1)
+			f := schemaField("musicPartner.scoreMin", "评分下限", "每首歌曲在评分区间内随机取整数分，不分析音频质量。", "partner-main", "integer", "number")
+			f.Unit, f.Min, f.Max, f.Step = "分", number(1), number(5), number(1)
+			return f
+		}(),
+		func() configSchemaField {
+			f := schemaField("musicPartner.scoreMax", "评分上限", "不得小于评分下限；上下限相同则使用固定分值。", "partner-main", "integer", "number")
+			f.Unit, f.Min, f.Max, f.Step = "分", number(1), number(5), number(1)
 			return f
 		}(),
 		schemaField("musicPartner.syncYunCircle", "同步评分到云圈", "开启后评分请求允许同步到云圈，默认关闭。", "partner-main", "boolean", "switch"),
 		schemaField("musicPartner.extraTasks", "执行额外评分", "基础任务完成后继续处理额外评分任务。", "partner-extra", "boolean", "switch"),
 		schemaField("musicPartner.fullExtraTasks", "完成当前全部额外任务", "开启后以本次返回的额外任务列表为准；关闭时使用每日额外评分目标。", "partner-extra", "boolean", "switch"),
 		func() configSchemaField {
-			f := schemaField("musicPartner.extraLimit", "每日额外评分目标", "已完成数量计入目标；仅在开启额外评分且未选择全部任务时使用。", "partner-extra", "integer", "number")
+			f := schemaField("musicPartner.extraLimitMin", "每日额外评分目标下限", "从区间内随机选取目标，已完成数量计入目标；仅在开启额外评分且未选择全部任务时使用。", "partner-extra", "integer", "number")
+			f.Unit, f.Min, f.Max, f.Step = "首", number(1), number(500), number(1)
+			return f
+		}(),
+		func() configSchemaField {
+			f := schemaField("musicPartner.extraLimitMax", "每日额外评分目标上限", "不得小于额外评分目标下限；上下限相同则使用固定数量。", "partner-extra", "integer", "number")
 			f.Unit, f.Min, f.Max, f.Step = "首", number(1), number(500), number(1)
 			return f
 		}(),
@@ -405,6 +415,11 @@ func mainConfigSchema() configTargetSchema {
 			f.Unit, f.Min, f.Max, f.Step = "秒", number(1), number(300), number(1)
 			return f
 		}(),
+		schemaField("musicPartner.comments.1", "1 分乐评", "每行一条，评分为 1 分时随机选取；留空不填写乐评。", "partner-comments", "string-list", "textarea-list"),
+		schemaField("musicPartner.comments.2", "2 分乐评", "每行一条，评分为 2 分时随机选取；留空不填写乐评。", "partner-comments", "string-list", "textarea-list"),
+		schemaField("musicPartner.comments.3", "3 分乐评", "每行一条，评分为 3 分时随机选取；留空不填写乐评。", "partner-comments", "string-list", "textarea-list"),
+		schemaField("musicPartner.comments.4", "4 分乐评", "每行一条，评分为 4 分时随机选取；留空不填写乐评。", "partner-comments", "string-list", "textarea-list"),
+		schemaField("musicPartner.comments.5", "5 分乐评", "每行一条，评分为 5 分时随机选取；留空不填写乐评。", "partner-comments", "string-list", "textarea-list"),
 
 		schemaField("fansgroup.enableMain", "主账号执行乐迷团", "主账号执行配置的乐迷团打卡。", "fans", "boolean", "switch"),
 		schemaField("fansgroup.enableSecondaries", "辅助账号执行乐迷团", "辅助账号依次执行乐迷团打卡。", "fans", "boolean", "switch"),
@@ -480,6 +495,12 @@ func mainConfigSchema() configTargetSchema {
 			return f
 		}(),
 		schemaField("database.path", "数据存储目录", "保存任务进度和播放状态。", "database", "string", "text"),
+	}
+	// 默认配置可省略各分值的乐评池，表单仍需提供可编辑的空数组。
+	for index := range fields {
+		if fields[index].Group == "partner-comments" {
+			fields[index].Default = []string{}
+		}
 	}
 	return configTargetSchema{Categories: categories, Fields: fields}
 }

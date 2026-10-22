@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -45,18 +46,23 @@ func TestSensitiveRequestDoesNotExposeCredentials(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/error" {
 			w.WriteHeader(403)
+			_, _ = w.Write([]byte(`{"code":405,"message":"` + secret + `","secret":"` + secret + `"}`))
+			return
 		}
 		_, _ = w.Write([]byte(`{"code":200,"secret":"` + secret + `"}`))
 	}))
 	defer server.Close()
 	for _, path := range []string{"/success", "/error"} {
 		var resp map[string]any
-		_, err := c.Request(context.Background(), server.URL+path, map[string]string{"csrf_token": secret}, &resp, &Options{CryptoMode: CryptoModeWEAPI, Sensitive: true})
+		_, err := c.Request(context.Background(), server.URL+path+"?token="+secret, map[string]string{"csrf_token": secret}, &resp, &Options{CryptoMode: CryptoModeWEAPI, Sensitive: true})
 		if path == "/success" && err != nil {
 			t.Fatal(err)
 		}
 		if path == "/error" && (err == nil || strings.Contains(err.Error(), secret)) {
 			t.Fatalf("unsafe HTTP error: %v", err)
+		}
+		if path == "/error" && (!strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "405")) {
+			t.Fatalf("HTTP and service codes must both be preserved: %v", err)
 		}
 	}
 	c.cli.SetTransport(sensitiveTransport(func(*http.Request) (*http.Response, error) { return nil, errors.New(secret) }))
@@ -75,6 +81,59 @@ func TestSensitiveRequestDoesNotExposeCredentials(t *testing.T) {
 	b, _ := os.ReadFile(logPath)
 	if strings.Contains(string(b), secret) || strings.Contains(restyLog.String(), secret) {
 		t.Fatal("sensitive request leaked to debug log")
+	}
+}
+
+func TestSensitiveHTTPErrorDiagnostic(t *testing.T) {
+	const secret = "private-response-and-url-value"
+	for _, test := range []struct {
+		name string
+		body string
+		code int64
+	}{
+		{name: "numeric top-level code", body: `{"code":405,"message":"` + secret + `","data":{"token":"` + secret + `"}}`, code: 405},
+		{name: "negative code", body: `{"code":-1,"message":"` + secret + `"}`, code: -1},
+		{name: "missing code", body: `{"message":"` + secret + `"}`},
+		{name: "nested code only", body: `{"data":{"code":405},"message":"` + secret + `"}`},
+		{name: "string code", body: `{"code":"405","message":"` + secret + `"}`},
+		{name: "fractional code", body: `{"code":405.5,"message":"` + secret + `"}`},
+		{name: "overflowing code", body: `{"code":9223372036854775808,"message":"` + secret + `"}`},
+		{name: "null code", body: `{"code":null,"message":"` + secret + `"}`},
+		{name: "nested object code", body: `{"code":{"value":405},"message":"` + secret + `"}`},
+		{name: "array response", body: `[{"code":405,"message":"` + secret + `"}]`},
+		{name: "malformed after code", body: `{"code":405,"message":"` + secret},
+		{name: "trailing content", body: `{"code":405} ` + secret},
+		{name: "HTML response", body: `<html>` + secret + `</html>`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, err := NewClient(&Config{Cookie: cookie.Config{Filepath: filepath.Join(t.TempDir(), "cookie.json")}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close(context.Background())
+			c.cli.SetTransport(sensitiveTransport(func(request *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(test.body)), Request: request}, nil
+			}))
+			var reply map[string]any
+			response, err := c.Request(context.Background(), "https://offline.invalid/error?token="+secret, map[string]string{"token": secret}, &reply, &Options{CryptoMode: CryptoModeAPI, Sensitive: true})
+			var statusErr *HTTPStatusError
+			if !errors.As(err, &statusErr) || statusErr.StatusCode != http.StatusForbidden {
+				t.Fatalf("HTTP error type or status lost: %v", err)
+			}
+			if statusErr.ServiceCode != test.code {
+				t.Fatalf("service code = %d; want %d", statusErr.ServiceCode, test.code)
+			}
+			want := "音乐接口 HTTP 状态码：403"
+			if test.code != 0 {
+				want += fmt.Sprintf("，服务码：%d", test.code)
+			}
+			if err.Error() != want {
+				t.Fatalf("diagnostic = %q; want %q", err.Error(), want)
+			}
+			if response != nil || len(reply) != 0 || strings.Contains(fmt.Sprintf("%#v", err), secret) {
+				t.Fatal("HTTP rejection retained response payload or credentials")
+			}
+		})
 	}
 }
 

@@ -119,3 +119,54 @@ func TestConfigSchemaAPI(t *testing.T) {
 		t.Fatalf("unexpected schema response: %+v", got)
 	}
 }
+
+func TestMusicPartnerSchemaRangesAndCommentPools(t *testing.T) {
+	fields := make(map[string]configSchemaField)
+	for _, field := range configurationSchema().Targets["config"].Fields {
+		fields[field.Path] = field
+	}
+	for _, legacy := range []string{"musicPartner.score", "musicPartner.extraLimit"} {
+		if _, exists := fields[legacy]; exists {
+			t.Fatalf("legacy control %q must remain hidden", legacy)
+		}
+	}
+	for _, want := range []struct {
+		path         string
+		defaultValue int
+		max          float64
+		unit         string
+	}{
+		{"musicPartner.scoreMin", 3, 5, "分"},
+		{"musicPartner.scoreMax", 4, 5, "分"},
+		{"musicPartner.extraLimitMin", 7, 500, "首"},
+		{"musicPartner.extraLimitMax", 7, 500, "首"},
+		{"musicPartner.waitMin", 15, 300, "秒"},
+		{"musicPartner.waitMax", 20, 300, "秒"},
+	} {
+		t.Run(want.path, func(t *testing.T) {
+			field, exists := fields[want.path]
+			if !exists || field.Type != "integer" || field.Widget != "number" || field.Unit != want.unit {
+				t.Fatalf("unexpected range control: %+v", field)
+			}
+			if field.Min == nil || *field.Min != 1 || field.Max == nil || *field.Max != want.max || field.Step == nil || *field.Step != 1 {
+				t.Fatalf("invalid range constraints: %+v", field)
+			}
+			if field.Default != want.defaultValue {
+				t.Fatalf("default = %#v, want %d", field.Default, want.defaultValue)
+			}
+		})
+	}
+	for _, score := range []string{"1", "2", "3", "4", "5"} {
+		field, exists := fields["musicPartner.comments."+score]
+		if !exists || field.Type != "string-list" || field.Widget != "textarea-list" || field.Group != "partner-comments" {
+			t.Fatalf("missing editable comment pool for score %s: %+v", score, field)
+		}
+		encoded, err := json.Marshal(field.Default)
+		if err != nil || string(encoded) != "[]" {
+			t.Fatalf("score %s comment default = %s, want empty array; error = %v", score, encoded, err)
+		}
+	}
+	if fields["musicPartner.syncYunCircle"].Default != false {
+		t.Fatal("YunCircle publication must remain disabled by default")
+	}
+}

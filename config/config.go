@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/3899/ncmm/api"
 	"github.com/3899/ncmm/internal/atomicfile"
@@ -145,17 +146,93 @@ type TaskConf struct {
 	SlowTasks      []string `json:"slow_tasks" yaml:"slow_tasks"`
 }
 
-// MusicPartnerConf 音乐合伙人评分配置，评分采用作品名称规则，不分析音频。
+// MusicPartnerConf 音乐合伙人随机评分及乐评配置，不分析音频。
 type MusicPartnerConf struct {
-	EnableMain        bool `json:"enableMain" yaml:"enableMain"`
-	EnableSecondaries bool `json:"enableSecondaries" yaml:"enableSecondaries"`
-	Score             int  `json:"score" yaml:"score"`
-	ExtraTasks        bool `json:"extraTasks" yaml:"extraTasks"`
-	FullExtraTasks    bool `json:"fullExtraTasks" yaml:"fullExtraTasks"`
-	ExtraLimit        int  `json:"extraLimit" yaml:"extraLimit"`
-	WaitMin           int  `json:"waitMin" yaml:"waitMin"`
-	WaitMax           int  `json:"waitMax" yaml:"waitMax"`
-	SyncYunCircle     bool `json:"syncYunCircle" yaml:"syncYunCircle"`
+	EnableMain        bool                `json:"enableMain" yaml:"enableMain"`
+	EnableSecondaries bool                `json:"enableSecondaries" yaml:"enableSecondaries"`
+	Score             int                 `json:"score,omitempty" yaml:"score,omitempty"` // 兼容旧版策略，仅在缺少分值范围时读取。
+	ScoreMin          int                 `json:"scoreMin" yaml:"scoreMin"`
+	ScoreMax          int                 `json:"scoreMax" yaml:"scoreMax"`
+	ExtraTasks        bool                `json:"extraTasks" yaml:"extraTasks"`
+	FullExtraTasks    bool                `json:"fullExtraTasks" yaml:"fullExtraTasks"`
+	ExtraLimit        int                 `json:"extraLimit,omitempty" yaml:"extraLimit,omitempty"` // 兼容旧版固定目标。
+	ExtraLimitMin     int                 `json:"extraLimitMin" yaml:"extraLimitMin"`
+	ExtraLimitMax     int                 `json:"extraLimitMax" yaml:"extraLimitMax"`
+	WaitMin           int                 `json:"waitMin" yaml:"waitMin"`
+	WaitMax           int                 `json:"waitMax" yaml:"waitMax"`
+	SyncYunCircle     bool                `json:"syncYunCircle" yaml:"syncYunCircle"`
+	Comments          map[string][]string `json:"comments" yaml:"comments"`
+}
+
+// Validate 补全缺省范围、兼容旧字段，并校验用户乐评；不改写乐评文本。
+func (p *MusicPartnerConf) Validate() error {
+	if p.ScoreMin == 0 && p.ScoreMax == 0 {
+		switch p.Score {
+		case 0:
+			p.ScoreMin, p.ScoreMax = 3, 4
+		case 1, 2, 3:
+			p.ScoreMin, p.ScoreMax = p.Score, p.Score+1
+		case 4:
+			p.ScoreMin, p.ScoreMax = 4, 4
+		default:
+			return fmt.Errorf("音乐合伙人旧版评分策略必须为 1 至 4")
+		}
+	}
+	if p.ScoreMin < 1 || p.ScoreMax < p.ScoreMin || p.ScoreMax > 5 {
+		return fmt.Errorf("音乐合伙人评分范围必须完整填写 1 至 5 分，且上限不得小于下限")
+	}
+	if p.ExtraLimitMin == 0 && p.ExtraLimitMax == 0 {
+		target := p.ExtraLimit
+		if target == 0 {
+			target = 7
+		}
+		p.ExtraLimitMin, p.ExtraLimitMax = target, target
+	}
+	if p.ExtraLimitMin < 1 || p.ExtraLimitMax < p.ExtraLimitMin || p.ExtraLimitMax > 500 {
+		return fmt.Errorf("音乐合伙人额外评分目标范围必须完整填写 1 至 500 首，且上限不得小于下限")
+	}
+	if p.WaitMin == 0 && p.WaitMax == 0 {
+		p.WaitMin, p.WaitMax = 15, 20
+	}
+	if p.WaitMin < 1 || p.WaitMax < p.WaitMin || p.WaitMax > 300 {
+		return fmt.Errorf("音乐合伙人等待范围必须完整填写 1 至 300 秒，且上限不得小于下限")
+	}
+	if p.Comments == nil {
+		p.Comments = make(map[string][]string)
+	}
+	for score, comments := range p.Comments {
+		if len(score) != 1 || score[0] < '1' || score[0] > '5' {
+			return fmt.Errorf("音乐合伙人乐评分值键只能为 1、2、3、4、5")
+		}
+		if len(comments) > 50 {
+			return fmt.Errorf("音乐合伙人每个分值最多配置 50 条乐评")
+		}
+		for _, comment := range comments {
+			if strings.TrimSpace(comment) == "" || utf8.RuneCountInString(comment) > 500 {
+				return fmt.Errorf("音乐合伙人每条乐评必须为 1 至 500 个字符，不能仅包含空白")
+			}
+		}
+	}
+	return nil
+}
+
+func validateMusicPartnerRangePresence(rawValue func(string) (string, bool)) error {
+	for _, bounds := range []struct {
+		minKey, maxKey string
+	}{
+		{"scoreMin", "scoreMax"},
+		{"extraLimitMin", "extraLimitMax"},
+		{"waitMin", "waitMax"},
+	} {
+		minValue, hasMin := rawValue(bounds.minKey)
+		maxValue, hasMax := rawValue(bounds.maxKey)
+		min, minErr := strconv.Atoi(minValue)
+		max, maxErr := strconv.Atoi(maxValue)
+		if hasMin != hasMax || (hasMin && (minErr != nil || maxErr != nil || min <= 0 || max <= 0)) {
+			return fmt.Errorf("音乐合伙人 %s 和 %s 必须同时填写有效的正整数", bounds.minKey, bounds.maxKey)
+		}
+	}
+	return nil
 }
 
 // FansGroupConf 乐迷团任务配置
@@ -344,27 +421,8 @@ func (c *Config) Validate() error {
 	if c.MusicPartner == nil {
 		c.MusicPartner = &MusicPartnerConf{EnableMain: true, ExtraTasks: true}
 	}
-	p := c.MusicPartner
-	if p.Score == 0 {
-		p.Score = 3
-	}
-	if p.ExtraLimit == 0 {
-		p.ExtraLimit = 7
-	}
-	if p.WaitMin == 0 {
-		p.WaitMin = 15
-	}
-	if p.WaitMax == 0 {
-		p.WaitMax = 20
-	}
-	if p.Score < 1 || p.Score > 4 {
-		return fmt.Errorf("音乐合伙人评分策略必须为 1 至 4")
-	}
-	if p.ExtraLimit < 1 || p.ExtraLimit > 500 {
-		return fmt.Errorf("音乐合伙人额外任务上限必须为 1 至 500")
-	}
-	if p.WaitMin < 1 || p.WaitMax < p.WaitMin || p.WaitMax > 300 {
-		return fmt.Errorf("音乐合伙人等待时间必须为 1 至 300 秒，且上限不得小于下限")
+	if err := c.MusicPartner.Validate(); err != nil {
+		return err
 	}
 	if c.Updater == nil {
 		c.Updater = &UpdaterConf{}
@@ -583,6 +641,15 @@ func New(cfgPath ...string) (*Config, error) {
 	if err := v.UnmarshalExact(&conf, opts); err != nil {
 		return nil, fmt.Errorf("UnmarshalExact: %w", err)
 	}
+	partnerValues := v.GetStringMap("musicPartner")
+	if err := validateMusicPartnerRangePresence(func(key string) (string, bool) {
+		// IsSet 将显式 null 视为未设置，键存在性还需从配置映射读取。
+		_, present := partnerValues[strings.ToLower(key)]
+		key = "musicPartner::" + key
+		return fmt.Sprint(v.Get(key)), present || v.IsSet(key)
+	}); err != nil {
+		return nil, err
+	}
 	conf.syncMainCookie()
 	if err := conf.Validate(); err != nil {
 		return nil, err
@@ -681,7 +748,15 @@ func AutoUpgradeConfigIfNeeded(cfgPath string) error {
 		return err
 	}
 
-	if v.Version != defaultConfig.Version {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	partnerUpgrade, err := migrateMusicPartnerRangeNodes(&root)
+	if err != nil {
+		return err
+	}
+	if v.Version != defaultConfig.Version || partnerUpgrade {
 		if _, err := BackupConfigFile(cfgPath, 2); err != nil {
 			log.Warn("[config] 升级前自动备份配置文件失败: %v", err)
 		}
@@ -721,6 +796,9 @@ func AutoUpgradeConfig(cfgPath string) error {
 	if err := yaml.Unmarshal(userData, &userRoot); err != nil {
 		return err
 	}
+	if _, err := migrateMusicPartnerRangeNodes(&userRoot); err != nil {
+		return err
+	}
 
 	var defaultRoot yaml.Node
 	if err := yaml.Unmarshal(defaultConfigByte, &defaultRoot); err != nil {
@@ -737,6 +815,44 @@ func AutoUpgradeConfig(cfgPath string) error {
 	}
 
 	return atomicfile.Write(cfgPath, output, 0644)
+}
+
+// 合并新模板前先展开旧字段，防止模板默认范围覆盖用户原有策略和目标。
+func migrateMusicPartnerRangeNodes(root *yaml.Node) (bool, error) {
+	if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
+		root = root.Content[0]
+	}
+	node := mappingNodeValue(root, "musicPartner")
+	if node == nil || node.Tag == "!!null" {
+		return false, nil
+	}
+	var partner MusicPartnerConf
+	if err := node.Decode(&partner); err != nil {
+		return false, fmt.Errorf("音乐合伙人配置格式无效: %w", err)
+	}
+	if err := validateMusicPartnerRangePresence(func(key string) (string, bool) {
+		value := mappingNodeValue(node, key)
+		if value == nil {
+			return "", false
+		}
+		return value.Value, true
+	}); err != nil {
+		return false, err
+	}
+	if err := partner.Validate(); err != nil {
+		return false, err
+	}
+	changed := false
+	for _, field := range []struct {
+		key   string
+		value int
+	}{{"scoreMin", partner.ScoreMin}, {"scoreMax", partner.ScoreMax}, {"extraLimitMin", partner.ExtraLimitMin}, {"extraLimitMax", partner.ExtraLimitMax}} {
+		if mappingNodeValue(node, field.key) == nil {
+			ensureMappingNodeValue(node, field.key, yaml.ScalarNode, "!!int").Value = strconv.Itoa(field.value)
+			changed = true
+		}
+	}
+	return changed, nil
 }
 
 // 本分支恢复自 1.2.2，拒绝将未公开源码版本的配置降级写回。
@@ -795,7 +911,7 @@ func mergeYAMLNodes(dest, src *yaml.Node) {
 				if destKey == "version" {
 					continue
 				}
-				if destKey == "antiCheatTokens" {
+				if destKey == "antiCheatTokens" || destKey == "comments" {
 					destVal.Kind = srcVal.Kind
 					destVal.Tag = srcVal.Tag
 					destVal.Style = srcVal.Style

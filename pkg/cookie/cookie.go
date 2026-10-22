@@ -22,6 +22,7 @@ type Config struct {
 	*Options
 	Filepath string        `json:"filepath" yaml:"filepath"`
 	Interval time.Duration `yaml:"interval" yaml:"interval"`
+	ReadOnly bool          `json:"-" yaml:"-"` // 仅用于进程内查询会话，禁止持久化。
 	// crypto
 }
 
@@ -62,7 +63,7 @@ func NewCookie(opts ...Option) (*Cookie, error) {
 		done:  make(chan struct{}),
 		async: true,
 	}
-	if cfg.Interval <= 0 {
+	if cfg.Interval <= 0 || cfg.ReadOnly {
 		p.async = false
 	}
 	if err := p.init(); err != nil {
@@ -116,6 +117,9 @@ func (c *Cookie) sync() {
 func (c *Cookie) init() error {
 	// 如果文件存在则读取配置文件
 	if !fileExists(c.cfg.Filepath) {
+		if c.cfg.ReadOnly {
+			return os.ErrNotExist
+		}
 		log.Printf("cookie: warnning %s file not found", c.cfg.Filepath)
 		return os.MkdirAll(filepath.Dir(c.cfg.Filepath), os.ModePerm)
 	}
@@ -171,6 +175,9 @@ func (c *Cookie) init() error {
 }
 
 func (c *Cookie) export() error {
+	if c.cfg.ReadOnly {
+		return nil
+	}
 	c.jar.mu.Lock()
 	defer c.jar.mu.Unlock()
 
@@ -250,6 +257,13 @@ func WithSyncInterval(interval time.Duration) Option {
 	})
 }
 
+// WithReadOnly 仅加载已有文件，Cookie 更新只保留在当前会话内存中。
+func WithReadOnly(readOnly bool) Option {
+	return optionFunc(func(p *Config) {
+		p.ReadOnly = readOnly
+	})
+}
+
 // WithFilePath sets the file path.
 func WithFilePath(filePath string) Option {
 	return optionFunc(func(p *Config) {
@@ -260,6 +274,9 @@ func WithFilePath(filePath string) Option {
 // WithPublicSuffixList sets the public suffix list.
 func WithPublicSuffixList(list PublicSuffixList) Option {
 	return optionFunc(func(p *Config) {
+		if p.Options == nil {
+			p.Options = &Options{}
+		}
 		p.Options.PublicSuffixList = list
 	})
 }

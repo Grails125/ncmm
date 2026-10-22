@@ -32,6 +32,9 @@ jobs:
       - name: Check WebUI JavaScript syntax
         run: node --check internal/webui/static/app.js
 
+      - name: Test music partner configuration and points state
+        run: node --test tests/webui_music_partner_config.test.js tests/webui_music_partner_points.test.js
+
       - name: Install WebUI browser test runtime
         run: |
           npm ci
@@ -77,7 +80,7 @@ jobs:
           node tests/webui_music_partner.js http://127.0.0.1:39134 "$WEBUI_HOME"
 
       - name: Race test high-risk services
-        run: go test -race ./api/... ./config ./internal/webui ./internal/ncmm
+        run: go test -race ./api/... ./config ./internal/webui ./internal/ncmm ./internal/partnerpoints ./pkg/cookie
 
   docker:
     runs-on: ubuntu-latest

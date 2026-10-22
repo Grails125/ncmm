@@ -29,22 +29,23 @@ var staticFiles embed.FS
 var ErrRestartRequested = errors.New("WebUI restart requested")
 
 type Server struct {
-	opts         Options
-	authManager  *webauth.Manager
-	loginLimiter *loginRateLimiter
-	config       *configStore
-	notify       *configStore
-	webConfig    *webConfigStore
-	runner       *runManager
-	scheduler    *scheduler
-	qrcode       *qrcodeLoginManager
-	processes    *processSupervisor
-	plugins      PluginManager
-	instance     instanceMetadata
-	startedAt    time.Time
-	updateMu     sync.Mutex
-	http         *http.Server
-	restartCh    chan struct{}
+	opts              Options
+	authManager       *webauth.Manager
+	loginLimiter      *loginRateLimiter
+	config            *configStore
+	notify            *configStore
+	webConfig         *webConfigStore
+	runner            *runManager
+	scheduler         *scheduler
+	qrcode            *qrcodeLoginManager
+	processes         *processSupervisor
+	plugins           PluginManager
+	instance          instanceMetadata
+	startedAt         time.Time
+	updateMu          sync.Mutex
+	http              *http.Server
+	restartCh         chan struct{}
+	readPartnerPoints partnerPointsReader
 }
 
 func New(ctx context.Context, opts Options) (*Server, error) {
@@ -201,6 +202,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/schedules/{id}/run", s.handleScheduleRun)
 	mux.HandleFunc("GET /api/v1/runs", s.handleRunsGet)
 	mux.HandleFunc("GET /api/v1/play-stats", s.handlePlayStatsGet)
+	mux.HandleFunc("GET /api/v1/music-partner/points", s.handlePartnerPointsGet)
 	mux.HandleFunc("GET /api/v1/runs/{id}/log", s.handleRunLog)
 	mux.HandleFunc("POST /api/v1/runs/{id}/stop", s.handleRunStop)
 	mux.HandleFunc("DELETE /api/v1/runs/{id}", s.handleRunDelete)
@@ -1177,4 +1179,3 @@ func (s *Server) handlePluginRun(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"success": true, "runId": record.ID})
 }
-

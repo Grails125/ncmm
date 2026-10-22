@@ -31,6 +31,10 @@
     accountEditing: null,
     dashboardMetric: 'plays',
     dashboardAccountPath: '',
+    musicPartnerAccountPath: '',
+    musicPartnerPoints: { account: '', data: null, loading: false, error: '', stale: false },
+    musicPartnerPointsRequestID: 0,
+    musicPartnerFinishedRuns: new Set(),
     currentPage: 'dashboard',
     scheduleSearch: '',
     runFilter: 'all',
@@ -50,6 +54,7 @@
   };
   let dashboardChartObserver = null;
   let dashboardChartResizeTimer = 0;
+  let musicPartnerPointsController = null;
 
   const pageTitles = { dashboard: '仪表盘', accounts: '账号中心', schedules: '定时任务', plugins: '插件中心', config: '策略配置', runs: '运行日志', system: '系统设置' };
   const pageRoutes = { dashboard: '/', accounts: '/account', schedules: '/task', plugins: '/plugins', config: '/config', runs: '/logs', system: '/system' };
@@ -69,7 +74,7 @@
     main: '主账号', primary: '旧版主账号', secondary: '辅助账号', antiCheatTokens: '反作弊令牌',
     enabled: '启用', enableMain: '启用主账号', enableSecondaries: '启用辅助账号', automatic: '自动执行',
     enableVipTask: '黑胶 VIP 任务', mode: '执行模式', fast_tasks: '快速任务', slow_tasks: '慢速任务',
-    score: '评分策略', extraTasks: '执行额外评分', fullExtraTasks: '完成当前全部额外任务', extraLimit: '每日额外评分目标', waitMin: '评分等待下限', waitMax: '评分等待上限', syncYunCircle: '同步评分到云圈',
+    scoreMin: '评分下限', scoreMax: '评分上限', extraTasks: '执行额外评分', fullExtraTasks: '完成当前全部额外任务', extraLimitMin: '每日额外评分目标下限', extraLimitMax: '每日额外评分目标上限', waitMin: '评分等待下限', waitMax: '评分等待上限', syncYunCircle: '同步评分到云圈', comments: '按分值配置乐评',
     timeout: '超时时间', retry: '重试次数', debug: '调试模式', user_agent: 'User-Agent',
     daily_min: '每日最小数量', daily_max: '每日最大数量', run_min: '单次最小数量', run_max: '单次最大数量',
     gap_min: '最小间隔（秒）', gap_max: '最大间隔（秒）', ids: '歌曲 ID', idsFile: '歌曲 ID 文件',
@@ -102,7 +107,7 @@
     playids: { nav: '播放歌曲', title: '播放指定歌曲有效播放量', description: '批量冲刺指定歌曲或歌单有效播放量目标' },
     mixPlay: { nav: '日推混听', title: '日推混听防风控策略', description: '按比例穿插播放官方日推歌曲，模拟真人听歌' },
     musician: { nav: '音乐人任务', title: '音乐人专属任务与 VIP 进阶', description: '日常签到领云豆、VIP 月度进阶与专属播放覆盖' },
-    musicPartner: { nav: '合伙人评分', title: '音乐合伙人自动评分', description: '复用账号登录，按规则提交基础与额外评分；不分析音频质量' },
+    musicPartner: { nav: '合伙人评分', title: '音乐合伙人自动评分', description: '按配置区间随机评分，可按分值搭配乐评；不分析音频质量' },
     note: { nav: '图文动态', title: '图文动态与笔记素材池', description: '通用随机标题、正文与配图素材池（供推歌与音乐人复用）' },
     dailySongShare: { nav: '每日推歌', title: '每日推歌与抽奖', description: '推歌抽奖、话题标签、封面模式与秒删保护（需 antiCheatToken）' },
     fansgroup: { nav: '乐迷团', title: '乐迷团日常打卡', description: '音乐合伙人与关注歌手乐迷团日常应援打卡' },
@@ -178,7 +183,7 @@
       config: {
         task: { sign: true, playids: false, 'musician-sign': false, 'musician-vip': false, 'music-partner': true, note: false, 'daily-song-share': false, 'vip-member-gift': false, fansgroup: false, mode: 'by-task-group' },
         sign: { automatic: true, enableMain: true, enableSecondaries: false, enableVipTask: true },
-        musicPartner: { enableMain: true, enableSecondaries: false, score: 3, extraTasks: true, fullExtraTasks: false, extraLimit: 7, waitMin: 15, waitMax: 20, syncYunCircle: false }
+        musicPartner: { enableMain: true, enableSecondaries: false, scoreMin: 3, scoreMax: 4, extraTasks: true, fullExtraTasks: false, extraLimitMin: 7, extraLimitMax: 7, waitMin: 15, waitMax: 20, syncYunCircle: false }
       }
     }
   };
@@ -412,6 +417,7 @@
     state.poller = null;
     state.pollGeneration += 1;
     state.pollInFlight = false;
+    resetMusicPartnerPoints();
     state.qrcodePoller = null;
     clearQRCodeImage();
     $('#app-shell').classList.add('hidden');
@@ -433,6 +439,7 @@
     state.config = config;
     state.schedules = schedules;
     state.runs = runs;
+    state.musicPartnerFinishedRuns = new Set(musicPartnerFinishedRunKeys(runs));
     state.settings = settings;
     state.auth = auth;
     state.csrf = auth.csrfToken || state.csrf;
@@ -962,6 +969,127 @@
     chart.innerHTML = `<svg class="metric-line-svg" viewBox="0 0 ${chartWidth} ${viewportHeight}" role="img" aria-label="${escapeHTML(`${account.label}最近 7 日${labels[state.dashboardMetric]}`)}"><defs><linearGradient id="metric-area-gradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" class="metric-area-start"></stop><stop offset="100%" class="metric-area-end"></stop></linearGradient></defs>${grid}${areas}${averageLine}${paths}${markers}</svg>`;
   }
 
+  function musicPartnerPointsAccount(accounts = configuredAccounts()) {
+    return accounts.find(account => account.path === state.musicPartnerAccountPath)
+      || accounts.find(account => account.main) || accounts[0] || null;
+  }
+
+  function resetMusicPartnerPoints() {
+    state.musicPartnerPointsRequestID += 1;
+    musicPartnerPointsController?.abort();
+    musicPartnerPointsController = null;
+    state.musicPartnerAccountPath = '';
+    state.musicPartnerPoints = { account: '', data: null, loading: false, error: '', stale: false };
+    state.musicPartnerFinishedRuns = new Set();
+  }
+
+  function musicPartnerPointNumber(value) {
+    return typeof value === 'number' && Number.isFinite(value) ? String(value) : '未知';
+  }
+
+  function musicPartnerPointsView(account, points) {
+    const current = account && points.account === account.path ? points : { data: null, loading: false, error: '', stale: false };
+    const data = current.data;
+    const integral = musicPartnerPointNumber(data?.integral);
+    const weekly = musicPartnerPointNumber(data?.currentWeekIntegral);
+    let status = '等待查询', tone = 'gray', message = '点击刷新查询当前账号的合伙人积分。';
+    if (!account) {
+      status = '未配置账号';
+      message = '暂无已配置的 Cookie 账号，积分未知。请先在账号中心登录。';
+    } else if (current.loading) {
+      status = data ? '旧数据 · 刷新中' : '查询中';
+      tone = 'blue';
+      message = data ? '正在更新积分，当前显示上次查询结果。' : '正在查询所选账号的合伙人积分。';
+    } else if (current.error) {
+      status = data ? '已过期' : '查询失败';
+      tone = 'primary';
+      message = `${data ? '刷新失败，保留上次数据：' : '积分未知：'}${current.error}`;
+    } else if (data) {
+      const unknown = [integral, weekly].filter(value => value === '未知').length;
+      status = unknown === 2 ? '积分未知' : unknown === 1 ? '部分积分未知' : '已更新';
+      tone = unknown ? 'gray' : 'success';
+      message = unknown ? '接口未返回的积分字段显示为未知。' : '积分来自音乐合伙人接口。';
+    }
+    return { data, integral, weekly, status, tone, message, loading: current.loading, stale: current.stale };
+  }
+
+  function musicPartnerPeriodDate(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '未知';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '未知';
+    return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', timeZone: 'Asia/Shanghai' }).format(date);
+  }
+
+  function renderMusicPartnerPoints(accounts = configuredAccounts()) {
+    const account = musicPartnerPointsAccount(accounts);
+    const view = musicPartnerPointsView(account, state.musicPartnerPoints);
+    const selector = $('#music-partner-points-account');
+    selector.innerHTML = accounts.length ? accounts.map(item => `<option value="${escapeHTML(item.path)}"${item.path === account?.path ? ' selected' : ''}>${escapeHTML(item.label)}${item.main ? '（主账号）' : ''}</option>`).join('') : '<option value="">暂无账号</option>';
+    selector.disabled = !accounts.length;
+    $('#music-partner-points-refresh').disabled = !account || view.loading;
+    $('#music-partner-points-integral').textContent = view.integral;
+    $('#music-partner-points-weekly').textContent = view.weekly;
+    $('#music-partner-points-status').textContent = view.status;
+    $('#music-partner-points-status').className = `badge-pill ${view.tone}`;
+    $('#music-partner-points-message').textContent = view.message;
+    const period = musicPartnerPointNumber(view.data?.period);
+    const week = musicPartnerPointNumber(view.data?.week);
+    $('#music-partner-points-period').textContent = `${period === '未知' ? '期号未知' : `第 ${period} 期`} · ${week === '未知' ? '周号未知' : `第 ${week} 周`}`;
+    const start = musicPartnerPeriodDate(view.data?.startDate);
+    const end = musicPartnerPeriodDate(view.data?.endDate);
+    $('#music-partner-points-dates').textContent = start === '未知' && end === '未知' ? '周期时间未知' : `${start} 至 ${end}（北京时间）`;
+    const updated = view.data?.updatedAt;
+    $('#music-partner-points-updated').textContent = updated && !Number.isNaN(new Date(updated).getTime()) ? `${view.stale ? '上次成功查询' : '查询时间'}：${formatDate(updated)}` : '尚无成功查询时间';
+    $('.music-partner-points-panel').setAttribute('aria-busy', String(view.loading));
+  }
+
+  async function refreshMusicPartnerPoints(force = false) {
+    if (!state.authenticated || state.currentPage !== 'dashboard') return;
+    const account = musicPartnerPointsAccount();
+    if (!account) {
+      resetMusicPartnerPoints();
+      renderMusicPartnerPoints();
+      return;
+    }
+    const current = state.musicPartnerPoints;
+    if (!force && current.account === account.path && current.loading) return;
+    musicPartnerPointsController?.abort();
+    const controller = new AbortController();
+    musicPartnerPointsController = controller;
+    const requestID = ++state.musicPartnerPointsRequestID;
+    const previous = current.account === account.path ? current.data : null;
+    state.musicPartnerAccountPath = account.path;
+    state.musicPartnerPoints = { account: account.path, data: previous, loading: true, error: '', stale: !!previous };
+    renderMusicPartnerPoints();
+    const isCurrent = () => state.authenticated && requestID === state.musicPartnerPointsRequestID && musicPartnerPointsAccount()?.path === account.path;
+    try {
+      const data = await api(`/api/v1/music-partner/points?account=${encodeURIComponent(account.path)}`, { signal: controller.signal });
+      if (!isCurrent()) return;
+      if (!data || data.account !== account.path) throw new Error('返回的积分账号不匹配，请刷新重试。');
+      state.musicPartnerPoints = { account: account.path, data, loading: false, error: '', stale: false };
+    } catch (error) {
+      if (!isCurrent() || error.name === 'AbortError') return;
+      state.musicPartnerPoints = { account: account.path, data: previous, loading: false, error: error.message || '查询失败，请稍后重试。', stale: !!previous };
+    } finally {
+      if (isCurrent()) {
+        musicPartnerPointsController = null;
+        renderMusicPartnerPoints();
+      }
+    }
+  }
+
+  function musicPartnerFinishedRunKeys(runs) {
+    return (runs || []).filter(run => ['music-partner', 'task'].includes(run.command) && run.finishedAt).map(run => `${run.id}:${run.finishedAt}`);
+  }
+
+  function refreshMusicPartnerPointsAfterRun(runs) {
+    const keys = musicPartnerFinishedRunKeys(runs);
+    const completed = keys.some(key => !state.musicPartnerFinishedRuns.has(key));
+    state.musicPartnerFinishedRuns = new Set(keys);
+    const accountChanged = (musicPartnerPointsAccount()?.path || '') !== state.musicPartnerPoints.account;
+    if (state.currentPage === 'dashboard' && (completed || accountChanged)) return refreshMusicPartnerPoints(completed);
+  }
+
   function renderDashboard() {
     const accounts = configuredAccounts();
     const dailyRewards = todayAccountRewards();
@@ -1010,6 +1138,7 @@
     $('#reward-sync-badge').textContent = rewardsKnown ? '已同步' : '等待同步';
     $('#reward-sync-badge').className = `badge-pill ${rewardsKnown ? 'success' : 'primary'}`;
     renderDashboardChart(accounts);
+    renderMusicPartnerPoints(accounts);
   }
 
   function renderConfig() {
@@ -1349,9 +1478,17 @@
     const minInfo = flowFieldInfo(minPath);
     const maxInfo = flowFieldInfo(maxPath);
     if (!minInfo || !maxInfo) return '';
-    const minEncoded = escapeHTML(JSON.stringify(minInfo.keys));
-    const maxEncoded = escapeHTML(JSON.stringify(maxInfo.keys));
-    return `<div class="form-row"><label class="form-row-label">${escapeHTML(label)}</label><div class="range-inputs-row"><input class="config-control range-input-box" data-path='${minEncoded}' data-kind="number" type="number" value="${escapeHTML(minInfo.value)}" min="${minInfo.field.min ?? 0}"><span class="range-divider">至</span><input class="config-control range-input-box" data-path='${maxEncoded}' data-kind="number" type="number" value="${escapeHTML(maxInfo.value)}" min="${maxInfo.field.min ?? 0}"><span class="range-unit-text">${escapeHTML(unit)}</span></div>${description ? `<p class="form-row-desc">${escapeHTML(description)}</p>` : ''}</div>`;
+    if (minPath.startsWith('musicPartner.')) {
+      const hasMin = valueAtPath(activeDocument().data, minInfo.keys).exists;
+      const hasMax = valueAtPath(activeDocument().data, maxInfo.keys).exists;
+      if (hasMin !== hasMax) (hasMin ? maxInfo : minInfo).value = '';
+    }
+    const rangeInput = (info, boundary) => {
+      const encoded = escapeHTML(JSON.stringify(info.keys));
+      const limits = ` min="${info.field.min ?? 0}"${info.field.max !== undefined ? ` max="${info.field.max}"` : ''}${info.field.step !== undefined ? ` step="${info.field.step}"` : ''}`;
+      return `<input class="config-control range-input-box" data-path='${encoded}' data-kind="number" type="number" value="${escapeHTML(info.value)}" aria-label="${escapeHTML(`${label}${boundary}`)}"${limits}>`;
+    };
+    return `<div class="form-row"><label class="form-row-label">${escapeHTML(label)}</label><div class="range-inputs-row">${rangeInput(minInfo, '下限')}<span class="range-divider">至</span>${rangeInput(maxInfo, '上限')}<span class="range-unit-text">${escapeHTML(unit)}</span></div>${description ? `<p class="form-row-desc">${escapeHTML(description)}</p>` : ''}</div>`;
   }
 
   function renderFlowDuration(path, label) {
@@ -1591,6 +1728,35 @@
     return `<div class="config-cards-grid">${main}${play}</div>`;
   }
 
+  function completeMusicPartnerRanges(root) {
+    const partner = root?.musicPartner;
+    if (!partner || typeof partner !== 'object' || Array.isArray(partner)) return;
+    const has = key => Object.prototype.hasOwnProperty.call(partner, key);
+    if (!has('scoreMin') && !has('scoreMax')) {
+      const score = partner.score === undefined || partner.score === 0 ? 3 : partner.score;
+      if (Number.isInteger(score) && score >= 1 && score <= 4) {
+        partner.scoreMin = score;
+        partner.scoreMax = Math.min(score + 1, 4);
+      }
+    }
+    if (!has('extraLimitMin') && !has('extraLimitMax')) {
+      const target = partner.extraLimit === undefined || partner.extraLimit === 0 ? 7 : partner.extraLimit;
+      if (Number.isInteger(target) && target >= 1 && target <= 500) {
+        partner.extraLimitMin = target;
+        partner.extraLimitMax = target;
+      }
+    }
+  }
+
+  function renderFlowMusicPartner() {
+    completeMusicPartnerRanges(activeDocument().data);
+    const main = renderFlowCard('账号与评分策略', `${renderFlowFields(['musicPartner.enableMain', 'musicPartner.enableSecondaries'])}${renderFlowRange('评分范围', 'musicPartner.scoreMin', 'musicPartner.scoreMax', '分', '每首歌曲在 1–5 分的配置区间内随机取整数分；上下限相同则固定评分。')}${renderFlowField('musicPartner.syncYunCircle')}`, '合伙人专属', 'cyan');
+    const extra = renderFlowCard('额外评分与等待', `${renderFlowFields(['musicPartner.extraTasks', 'musicPartner.fullExtraTasks'])}${renderFlowRange('每日额外评分目标', 'musicPartner.extraLimitMin', 'musicPartner.extraLimitMax', '首', '从 1–500 首的配置区间内随机选取目标，已完成数量计入目标；选择全部任务时忽略此项。')}${renderFlowRange('评分等待时间', 'musicPartner.waitMin', 'musicPartner.waitMax', '秒', '每次评分请求前随机等待 1–300 秒的配置时长。')}`);
+    const pools = [1, 2, 3, 4, 5].map(score => renderFlowField(`musicPartner.comments.${score}`, { title: `${score} 分乐评`, description: '每行一条，按此分值随机选取；留空不填写乐评。' })).join('');
+    const comments = renderFlowCard('按分值配置乐评', `<p class="form-row-desc">每个分值最多 50 条，每条最多 500 个字符。</p><div class="partner-comment-pools">${pools}</div>`, '选填 · 每行一条', 'gray', 'partner-comments-card');
+    return `<div class="config-cards-grid">${main}${extra}${comments}</div>`;
+  }
+
   function renderFlowDailySongShare() {
     const mainPaths = ['dailySongShare.enableMain', 'dailySongShare.enableSecondaries', 'dailySongShare.songId', 'dailySongShare.playlistId', 'dailySongShare.imageMode', 'dailySongShare.titleMode', 'dailySongShare.autoDelete'];
     const contentPaths = ['dailySongShare.imageUrls', 'dailySongShare.titles', 'dailySongShare.titlesFile', 'dailySongShare.messages', 'dailySongShare.messagesFile'];
@@ -1601,10 +1767,6 @@
 
   function renderFlowGeneric(key) {
     const layouts = {
-      musicPartner: [
-        { title: '账号与评分策略', paths: ['musicPartner.enableMain', 'musicPartner.enableSecondaries', 'musicPartner.score', 'musicPartner.syncYunCircle'] },
-        { title: '额外评分与等待', paths: ['musicPartner.extraTasks', 'musicPartner.fullExtraTasks', 'musicPartner.extraLimit', 'musicPartner.waitMin', 'musicPartner.waitMax'] },
-      ],
       fansgroup: [
         { title: '', paths: ['fansgroup.enableMain', 'fansgroup.enableSecondaries', 'fansgroup.autoDeleteNote'] },
         { title: '', paths: ['fansgroup.groupIds'] },
@@ -1647,6 +1809,7 @@
       case 'mixPlay': content = renderFlowMixPlay(); break;
       case 'note': content = renderFlowNote(); break;
       case 'musician': content = renderFlowMusician(); break;
+      case 'musicPartner': content = renderFlowMusicPartner(); break;
       case 'dailySongShare': content = renderFlowDailySongShare(); break;
       default: content = renderFlowGeneric(key);
     }
@@ -1780,7 +1943,7 @@
       case 'json':
         return `<textarea class="config-control schema-textarea schema-json" data-path='${encodedPath}' data-kind="json" spellcheck="false"${disabled}>${escapeHTML(JSON.stringify(value ?? [], null, 2))}</textarea>`;
       case 'textarea-list':
-        return `<textarea class="config-control schema-textarea" data-path='${encodedPath}' data-kind="array"${disabled}>${escapeHTML(Array.isArray(value) ? value.join('\n') : stringValue)}</textarea>`;
+        return `<textarea class="config-control schema-textarea" data-path='${encodedPath}' data-kind="array" aria-label="${escapeHTML(field.title)}"${disabled}>${escapeHTML(Array.isArray(value) ? value.join('\n') : stringValue)}</textarea>`;
       case 'textarea':
         return `<textarea class="config-control schema-textarea" data-path='${encodedPath}' data-kind="string"${disabled}>${escapeHTML(stringValue)}</textarea>`;
       default:
@@ -2055,6 +2218,7 @@
     button.disabled = true;
     try {
       const document = activeDocument();
+      if (state.configTarget === 'config' && state.configMode === 'visual') completeMusicPartnerRanges(document.data);
       const body = state.configMode === 'yaml'
         ? {
           revision: document.revision,
@@ -2721,6 +2885,7 @@
       ]);
       if (!state.authenticated || generation !== state.pollGeneration) return;
       state.runs = runs; state.status = status; state.schedules = schedules;
+	  refreshMusicPartnerPointsAfterRun(runs);
 	  await refreshPlayStatsAfterRun(runs);
 	  if (!state.authenticated || generation !== state.pollGeneration) return;
       renderRuns(); renderStatus(); renderSchedules(); renderDashboard();
@@ -2762,6 +2927,7 @@
       history[options.replace ? 'replaceState' : 'pushState']({ page }, '', route);
     }
     if (page === 'config') requestAnimationFrame(updateConfigFlowActiveSection);
+    if (page === 'dashboard') void refreshMusicPartnerPoints();
   }
 
   function updatePageTitle() {
@@ -2969,7 +3135,7 @@
     $('#refresh-button').addEventListener('click', async () => {
       const button = $('#refresh-button');
       button.disabled = true;
-      try { await refreshOperationalState(); toast('状态已刷新'); }
+      try { await refreshOperationalState(); await refreshMusicPartnerPoints(); toast('状态已刷新'); }
       finally { button.disabled = false; }
     });
     $('#menu-button').addEventListener('click', () => {
@@ -2992,6 +3158,11 @@
       state.dashboardAccountPath = event.target.value;
       renderDashboard();
     });
+    $('#music-partner-points-account').addEventListener('change', event => {
+      state.musicPartnerAccountPath = event.target.value;
+      void refreshMusicPartnerPoints();
+    });
+    $('#music-partner-points-refresh').addEventListener('click', () => { void refreshMusicPartnerPoints(true); });
 
     $('#config-sections').addEventListener('click', async event => {
       const button = event.target.closest('[data-section]');

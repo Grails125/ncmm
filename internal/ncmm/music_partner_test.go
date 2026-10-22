@@ -82,30 +82,12 @@ func partnerTestExtra(count, completed int) *weapi.PartnerExtraTaskResp {
 
 func partnerTestCommand(t *testing.T) (*MusicPartner, *config.MusicPartnerConf) {
 	t.Helper()
-	cfg := &config.MusicPartnerConf{Score: 3, ExtraLimit: 7, WaitMin: 15, WaitMax: 20}
+	cfg := &config.MusicPartnerConf{ScoreMin: 3, ScoreMax: 3, ExtraLimitMin: 7, ExtraLimitMax: 7, WaitMin: 15, WaitMax: 20}
 	command := NewMusicPartner(&Root{Cfg: &config.Config{MusicPartner: cfg}}, nil)
 	command.Command().SetOut(io.Discard)
 	command.Command().SetErr(io.Discard)
 	command.wait = func(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 	return command, cfg
-}
-
-func TestMusicPartnerScoreStrategies(t *testing.T) {
-	for strategy := 1; strategy <= 4; strategy++ {
-		for _, tt := range []struct {
-			name, author string
-			english      bool
-		}{{"中文", "作者", false}, {"中文Song", "作者", true}, {"中文", "Artist", true}, {"１２３é", "作者", false}} {
-			want := strategy
-			if strategy < 4 && tt.english {
-				want++
-			}
-			score, tag := musicPartnerScore(weapi.PartnerWork{Name: tt.name, AuthorName: tt.author}, strategy)
-			if score != fmt.Sprint(want) || string(tag) != fmt.Sprintf("%d-A-1", want) {
-				t.Fatalf("strategy=%d work=%q/%q: %q %q", strategy, tt.name, tt.author, score, tag)
-			}
-		}
-	}
 }
 
 func TestMusicPartnerAccountBlockClassification(t *testing.T) {
@@ -165,7 +147,7 @@ func TestMusicPartnerReconcilePreservesAccountBlock(t *testing.T) {
 				return nil, &api.HTTPStatusError{StatusCode: http.StatusTooManyRequests}
 			},
 		}
-		err := command.confirmScore(context.Background(), fake, 10, 100, extra)
+		err := command.confirmScore(context.Background(), fake, 10, weapi.PartnerWork{Id: 100}, extra)
 		var failure *musicPartnerFailure
 		if !errors.As(err, &failure) || !failure.accountBlocked {
 			t.Fatalf("extra=%t: reconciliation lost account block: %v", extra, err)
@@ -216,7 +198,7 @@ func TestMusicPartnerSkipsCompletedDailyAndUsesNativeRequest(t *testing.T) {
 		t.Fatalf("evaluations=%d", len(fake.evaluations))
 	}
 	got := fake.evaluations[0]
-	if got.TaskId != "10" || got.WorkId != "2" || got.Score != "3" || got.Tags != "3-A-1" || got.CustomTags != "[]" || got.SyncYunCircle || got.SyncComment || got.ExtraResource {
+	if got.TaskId != "10" || got.WorkId != "2" || got.Score != "3" || got.Tags != "3-A-1" || got.CustomTags != "%5B%5D" || got.SyncYunCircle || got.SyncComment || got.ExtraResource || got.Source != "" || got.ExtraScore != "" {
 		t.Fatalf("unexpected request: %+v", got)
 	}
 }
@@ -235,7 +217,7 @@ func TestMusicPartnerExtraLimitAndFullList(t *testing.T) {
 				if len(fake.reports) != len(fake.evaluations) {
 					t.Fatal("评分必须在对应PLAY_END上报后")
 				}
-				if !req.ExtraResource || req.Score != "4" {
+				if !req.ExtraResource || req.Score != "3" {
 					t.Fatalf("unexpected extra request: %+v", req)
 				}
 				return &weapi.PartnerEvaluateResp{RespCommon: types.RespCommon[weapi.PartnerEvaluateRespData]{Code: 200, Data: weapi.PartnerEvaluateRespData{EvaluateRes: true}}}, nil
@@ -437,6 +419,7 @@ func TestMusicPartnerInvalidExtraListNeverWrites(t *testing.T) {
 func TestMusicPartnerExtraUncertainResultRechecksWithoutReplay(t *testing.T) {
 	command, cfg := partnerTestCommand(t)
 	cfg.ExtraTasks = true
+	cfg.ExtraLimitMin, cfg.ExtraLimitMax = 1, 1
 	reads := 0
 	fake := &partnerFake{daily: func(context.Context) (*weapi.PartnerTaskResp, error) { return partnerTestDaily(), nil }, extra: func(context.Context) (*weapi.PartnerExtraTaskResp, error) {
 		reads++
@@ -512,10 +495,16 @@ func TestMusicPartnerExecuteKeepsCookieSessionsSeparate(t *testing.T) {
 			if req.URL.Query().Get("csrf_token") != fmt.Sprintf("test-csrf-%d", index) {
 				t.Error("host-only CSRF not propagated")
 			}
-			if req.URL.Path != "/weapi/music/partner/daily/task/get" {
-				t.Fatalf("unexpected request: %s", req.URL.Path)
+			wantPath := "/weapi/music/partner/home/get"
+			payload := `{"code":200,"data":{"period":73,"week":2,"integral":{"integral":100,"currentWeekIntegral":40}}}`
+			if (seen-1)%3 == 1 {
+				wantPath = "/weapi/music/partner/daily/task/get"
+				payload = `{"code":200,"data":{"id":10,"count":0,"completedCount":0,"works":[]}}`
 			}
-			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"code":200,"data":{"id":10,"count":0,"completedCount":0,"works":[]}}`)), Request: req}, nil
+			if req.URL.Path != wantPath {
+				t.Fatalf("unexpected request: %s, want %s", req.URL.Path, wantPath)
+			}
+			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(payload)), Request: req}, nil
 		})
 		return client, nil
 	}
@@ -524,7 +513,7 @@ func TestMusicPartnerExecuteKeepsCookieSessionsSeparate(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if seen != 2 || network.Cookie.Filepath != "untouched.json" || network.Retry != 5 || !network.Debug {
+	if seen != 6 || network.Cookie.Filepath != "untouched.json" || network.Retry != 5 || !network.Debug {
 		t.Fatal("shared config or request count changed")
 	}
 }
@@ -556,7 +545,7 @@ func TestMusicPartnerCancellationStopsPendingHTTP(t *testing.T) {
 func TestMusicPartnerSkippedExtraDoesNotConsumeSuccessLimit(t *testing.T) {
 	command, cfg := partnerTestCommand(t)
 	cfg.ExtraTasks = true
-	cfg.ExtraLimit = 1
+	cfg.ExtraLimitMin, cfg.ExtraLimitMax = 1, 1
 	fake := &partnerFake{daily: func(context.Context) (*weapi.PartnerTaskResp, error) { return partnerTestDaily(), nil }, extra: func(context.Context) (*weapi.PartnerExtraTaskResp, error) { return partnerTestExtra(3, 0), nil }}
 	fake.evaluate = func(_ context.Context, req *weapi.PartnerEvaluateReq) (*weapi.PartnerEvaluateResp, error) {
 		if req.WorkId == "100" {

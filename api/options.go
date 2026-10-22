@@ -8,10 +8,16 @@ import (
 	"net/http"
 )
 
-// HTTPStatusError 保留明确拒绝的状态码，避免重试非幂等写入或泄露响应体。
-type HTTPStatusError struct{ StatusCode int }
+// HTTPStatusError 仅保留明确拒绝的数值状态码，不保存响应正文或凭据。
+type HTTPStatusError struct {
+	StatusCode  int
+	ServiceCode int64
+}
 
 func (e *HTTPStatusError) Error() string {
+	if e.ServiceCode != 0 {
+		return fmt.Sprintf("音乐接口 HTTP 状态码：%d，服务码：%d", e.StatusCode, e.ServiceCode)
+	}
 	return fmt.Sprintf("音乐接口 HTTP 状态码：%d", e.StatusCode)
 }
 

@@ -2946,6 +2946,61 @@
       font-size: 15px;
     }
 
+    .music-partner-points-panel {
+      min-width: 0;
+      margin-bottom: 22px;
+    }
+
+    .music-partner-points-panel .card-header,
+    .music-partner-points-heading,
+    .music-partner-points-actions {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .music-partner-points-heading {
+      min-width: 0;
+    }
+
+    .music-partner-points-body {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 20px 48px;
+    }
+
+    .music-partner-points-values {
+      display: flex;
+      flex: 0 0 auto;
+      gap: 36px;
+      margin: 0;
+    }
+
+    .music-partner-points-values dt,
+    .music-partner-points-details,
+    .music-partner-points-message {
+      color: var(--text-muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .music-partner-points-values dd {
+      margin: 4px 0 0;
+      color: var(--text);
+      font: 600 20px var(--font-mono);
+    }
+
+    .music-partner-points-details p {
+      margin: 0;
+    }
+
+    .music-partner-points-message {
+      margin: 14px 0 0;
+      overflow-wrap: anywhere;
+    }
+
     .dashboard-primary-grid {
       display: grid;
       grid-template-columns: 2fr 1fr;
@@ -6130,6 +6185,16 @@
       grid-template-columns: minmax(0, 1fr);
     }
 
+    #page-config .partner-comments-card {
+      grid-column: 1 / -1;
+    }
+
+    #page-config .partner-comment-pools {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px 24px;
+    }
+
     #page-config.notify-config-active .config-cards-grid {
       grid-template-columns: minmax(0, 1fr);
     }
@@ -6654,6 +6719,10 @@
     }
 
     @media (max-width: 760px) {
+      #page-config .partner-comment-pools {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
       #page-config.active {
         height: auto;
         min-height: calc(100vh - 104px);

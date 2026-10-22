@@ -84,6 +84,7 @@ func NewClient(cfg *Config, l *log.Logger) (*Client, error) {
 
 	var opts = []cookie.Option{
 		cookie.WithSyncInterval(cfg.Cookie.Interval),
+		cookie.WithReadOnly(cfg.Cookie.ReadOnly),
 	}
 	if cfg.Cookie.Filepath != "" {
 		opts = append(opts, cookie.WithFilePath(cfg.Cookie.Filepath))
@@ -505,7 +506,14 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 		log.Debug("[response.raw]: %s", string(response.Body()))
 	}
 	if opts.Sensitive && response.StatusCode() != http.StatusOK {
-		return nil, &HTTPStatusError{StatusCode: response.StatusCode()}
+		statusErr := &HTTPStatusError{StatusCode: response.StatusCode()}
+		var diagnostic struct {
+			Code int64 `json:"code"`
+		}
+		if json.Unmarshal(response.Body(), &diagnostic) == nil {
+			statusErr.ServiceCode = diagnostic.Code
+		}
+		return nil, statusErr
 	}
 
 	var decryptData []byte

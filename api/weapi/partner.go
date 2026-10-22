@@ -5,7 +5,9 @@ package weapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/3899/ncmm/api"
 	"github.com/3899/ncmm/api/types"
@@ -405,10 +407,10 @@ type PartnerHomeResp struct {
 }
 
 type PartnerHomeRespData struct {
-	Period    int64 `json:"period"`
-	Week      int64 `json:"week"`
-	StartDate int64 `json:"startDate"` // eg: 1740931200000
-	EndDate   int64 `json:"endDate"`   // eg: 1740931200000
+	Period    *int64 `json:"period"`
+	Week      *int64 `json:"week"`
+	StartDate *int64 `json:"startDate"` // eg: 1740931200000
+	EndDate   *int64 `json:"endDate"`   // eg: 1740931200000
 	User      struct {
 		UserId    int64  `json:"userId"`
 		NickName  string `json:"nickName"`
@@ -418,8 +420,8 @@ type PartnerHomeRespData struct {
 		Number    int64  `json:"number"`
 	} `json:"user"`
 	Integral struct {
-		Integral            int64 `json:"integral"`
-		CurrentWeekIntegral int64 `json:"currentWeekIntegral"`
+		Integral            *int64 `json:"integral"`
+		CurrentWeekIntegral *int64 `json:"currentWeekIntegral"`
 	} `json:"integral"`
 	Title      interface{} `json:"title"`
 	Banner     interface{} `json:"banner"`
@@ -428,7 +430,7 @@ type PartnerHomeRespData struct {
 	HotSongDto interface{} `json:"hotSongDto"`
 }
 
-// PartnerHome 查询本周完成任务情况
+// PartnerHome 查询当前期及本周积分，空字段不代表零积分。
 // har: 21.har
 func (a *Api) PartnerHome(ctx context.Context, req *PartnerHomeReq) (*PartnerHomeResp, error) {
 	var (
@@ -436,6 +438,8 @@ func (a *Api) PartnerHome(ctx context.Context, req *PartnerHomeReq) (*PartnerHom
 		reply PartnerHomeResp
 		opts  = api.NewOptions()
 	)
+	opts.Sensitive = true
+	opts.SetHeader("Referer", "https://mp.music.163.com/")
 	if req.CSRFToken == "" {
 		csrf, _ := a.client.GetCSRF(url)
 		req.CSRFToken = csrf
@@ -751,8 +755,64 @@ type PartnerEvaluateReq struct {
 	ExtraResource bool        `json:"extraResource"` // 当测评扩展更多歌曲时为true
 }
 
+// MarshalJSON 保留 Go 调用参数类型，按合伙人接口的数字 ID 和字符串开关发送。
+func (r PartnerEvaluateReq) MarshalJSON() ([]byte, error) {
+	taskID, err := partnerRequestID(r.TaskId, "taskId")
+	if err != nil {
+		return nil, err
+	}
+	workID, err := partnerRequestID(r.WorkId, "workId")
+	if err != nil {
+		return nil, err
+	}
+	payload := struct {
+		types.ReqCommon
+		TaskID        int64       `json:"taskId"`
+		WorkID        int64       `json:"workId"`
+		Score         string      `json:"score"`
+		Tags          PartnerTags `json:"tags"`
+		CustomTags    string      `json:"customTags"`
+		Comment       string      `json:"comment"`
+		SyncYunCircle string      `json:"syncYunCircle"`
+		SyncComment   bool        `json:"syncComment,omitempty"`
+		Source        string      `json:"source,omitempty"`
+		ExtraScore    string      `json:"extraScore,omitempty"`
+		ExtraResource string      `json:"extraResource,omitempty"`
+	}{
+		ReqCommon: r.ReqCommon, TaskID: taskID, WorkID: workID,
+		Score: r.Score, Tags: r.Tags, CustomTags: r.CustomTags, Comment: r.Comment,
+		SyncYunCircle: strconv.FormatBool(r.SyncYunCircle), SyncComment: r.SyncComment,
+		Source: r.Source, ExtraScore: r.ExtraScore,
+	}
+	if r.ExtraResource {
+		payload.ExtraResource = "true"
+	}
+	return json.Marshal(payload)
+}
+
+func partnerRequestID(value, name string) (int64, error) {
+	id, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("音乐合伙人请求的 %s 必须为有效正整数", name)
+	}
+	return id, nil
+}
+
 type PartnerEvaluateResp struct {
 	types.RespCommon[PartnerEvaluateRespData]
+	DataNull bool `json:"-"` // 服务端 data 缺失或为 null，区别于字段均为零值的对象。
+}
+
+func (r *PartnerEvaluateResp) UnmarshalJSON(data []byte) error {
+	var decoded types.RespCommon[*PartnerEvaluateRespData]
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = PartnerEvaluateResp{RespCommon: types.RespCommon[PartnerEvaluateRespData]{Code: decoded.Code, Message: decoded.Message, Msg: decoded.Msg}, DataNull: decoded.Data == nil}
+	if decoded.Data != nil {
+		r.Data = *decoded.Data
+	}
+	return nil
 }
 
 type PartnerEvaluateRespData struct {
@@ -845,8 +905,40 @@ type PartnerExtraReportReq struct {
 	InteractType  string `json:"interactType"`  // PLAY_END(目前只知道这一个)
 }
 
+// MarshalJSON 对齐播放上报的数字作品与资源 ID，保留空 bizResourceId。
+func (r PartnerExtraReportReq) MarshalJSON() ([]byte, error) {
+	workID, err := partnerRequestID(r.WorkId, "workId")
+	if err != nil {
+		return nil, err
+	}
+	resourceID, err := partnerRequestID(r.ResourceId, "resourceId")
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(struct {
+		types.ReqCommon
+		WorkID        int64  `json:"workId"`
+		ResourceID    int64  `json:"resourceId"`
+		BizResourceID string `json:"bizResourceId"`
+		InteractType  string `json:"interactType"`
+	}{ReqCommon: r.ReqCommon, WorkID: workID, ResourceID: resourceID, BizResourceID: r.BizResourceId, InteractType: r.InteractType})
+}
+
 type PartnerExtraReportResp struct {
 	types.RespCommon[PartnerExtraReportRespData]
+	DataNull bool `json:"-"` // 服务端 data 缺失或为 null，区别于字段均为零值的对象。
+}
+
+func (r *PartnerExtraReportResp) UnmarshalJSON(data []byte) error {
+	var decoded types.RespCommon[*PartnerExtraReportRespData]
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = PartnerExtraReportResp{RespCommon: types.RespCommon[PartnerExtraReportRespData]{Code: decoded.Code, Message: decoded.Message, Msg: decoded.Msg}, DataNull: decoded.Data == nil}
+	if decoded.Data != nil {
+		r.Data = *decoded.Data
+	}
+	return nil
 }
 
 type PartnerExtraReportRespData struct {

@@ -88,18 +88,30 @@ task:
 musicPartner:
   enableMain: true
   enableSecondaries: false
-  # 名称/作者含英文字母时使用较高分：1=1/2分，2=2/3分，3=3/4分，4=固定4分。
-  # 这是规则评分，不是听音或 AI 音质评估。
-  score: 3
+  # 每首在上下限之间随机选择整数分值，均为 1～5；上下限相同表示固定分值。
+  # 这是随机规则评分，不是听音或 AI 音质评估。
+  scoreMin: 3
+  scoreMax: 4
   extraTasks: true
-  # false=补到每日累计 extraLimit；true=处理本次接口返回的全部待评额外作品。
+  # false=按下方目标范围补齐每日累计数量；true=处理本次接口返回的全部待评额外作品。
   fullExtraTasks: false
-  extraLimit: 7
-  # 每首提交前的随机等待时间（秒），范围 1～300。
+  # 每次运行随机选择额外评分目标，已完成数量计入目标；上下限均为 1～500。
+  extraLimitMin: 7
+  extraLimitMax: 7
+  # 每首提交前随机等待的秒数，上下限均为 1～300。
   waitMin: 15
   waitMax: 20
   # 是否将评分同步到云圈，默认关闭。
   syncYunCircle: false
+  # 按分值随机选择一条乐评，未配置的分值不提交乐评；默认全部留空。
+  # 键仅允许 "1"～"5"，每个分值最多 50 条，每条 1～500 个字符。
+  # 示例：comments: {"3": ["旋律自然流畅", "编曲层次清晰"], "4": ["很喜欢这首作品"]}
+  comments:
+    "1": []
+    "2": []
+    "3": []
+    "4": []
+    "5": []
 
 # 签到、云贝与会员成长值任务
 sign:
