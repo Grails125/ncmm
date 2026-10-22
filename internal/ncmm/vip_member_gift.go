@@ -248,7 +248,6 @@ func (c *VipMemberGift) ExecuteForCookie(ctx context.Context, cookieFile string)
 	if err != nil {
 		return err
 	}
-	syncSessionConfig(ctx, cli, cookieFile, user.Account.Id, nil, c.root.Cfg.Database)
 	c.cmd.Printf("[vip-member-gift] 当前账号：uid=%v 昵称=%q\n", user.Account.Id, user.Profile.Nickname)
 	c.cmd.Printf("[vip-member-gift] 接口模式：%s (%s)\n", protocol.Mode, protocol.Platform)
 

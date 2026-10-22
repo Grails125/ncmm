@@ -198,7 +198,6 @@ func (c *DailySongShare) ExecuteForCookie(ctx context.Context, cookieFile string
 	if err != nil {
 		return 0, err
 	}
-	syncSessionConfig(ctx, cli, cookieFile, user.Account.Id, nil, c.root.Cfg.Database)
 	c.cmd.Printf("[daily-song-share] current account: uid=%v nickname=%q\n", user.Account.Id, user.Profile.Nickname)
 	c.cmd.Printf("[daily-song-share] api mode: %s (%s)\n", protocol.Mode, protocol.Platform)
 

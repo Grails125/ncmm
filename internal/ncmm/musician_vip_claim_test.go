@@ -37,12 +37,17 @@ type musicianVipClaimFixture struct {
 	claimError error
 	infoCalls  int
 	claimCalls int
+	userID     int64
+	userCalls  int
+	userBody   string
+	userError  error
 }
 
 func newMusicianVipClaimFixture(t *testing.T) *musicianVipClaimFixture {
 	t.Helper()
 	f := &musicianVipClaimFixture{
-		db: newPlayStatsMemoryDB(),
+		userID: 10001,
+		db:     newPlayStatsMemoryDB(),
 		info: weapi.MusicianVipInfoResp{RespCommon: types.RespCommon[weapi.MusicianVipInfoData]{
 			Code: 200,
 			Data: weapi.MusicianVipInfoData{CanOpen: true, TaskStatus: true, FurtherVipGetTime: time.Now().Add(-24 * time.Hour).UnixMilli()},
@@ -62,10 +67,23 @@ func newMusicianVipClaimFixture(t *testing.T) *musicianVipClaimFixture {
 	t.Cleanup(func() { _ = client.Close(context.Background()) })
 	client.GetClient().Transport = musicianVipClaimTransport(func(request *http.Request) (*http.Response, error) {
 		var payload any
-		if request.Method != http.MethodPost || request.Host != "interface.music.163.com" {
+		expectedHost := "interface.music.163.com"
+		if request.URL.Path == "/weapi/w/nuser/account/get" {
+			expectedHost = "music.163.com"
+		}
+		if request.Method != http.MethodPost || request.Host != expectedHost {
 			t.Errorf("unexpected request: %s %s", request.Method, request.Host)
 		}
 		switch request.URL.Path {
+		case "/weapi/w/nuser/account/get":
+			f.userCalls++
+			if f.userError != nil {
+				return nil, f.userError
+			}
+			if f.userBody != "" {
+				return giftJSONResponse(request, f.userBody), nil
+			}
+			payload = map[string]any{"code": 200, "account": map[string]any{"id": f.userID}, "profile": map[string]any{"userId": f.userID}}
 		case "/weapi/nmusician/workbench/special/right/vip/info":
 			f.infoCalls++
 			if f.infoError != nil {
@@ -135,7 +153,7 @@ func TestMusicianVipClaimCacheUsesOfficialCycleAndAccount(t *testing.T) {
 	if f.infoCalls != 2 || f.claimCalls != 1 {
 		t.Fatalf("repeat must refresh status but not claim twice: info=%d claim=%d", f.infoCalls, f.claimCalls)
 	}
-	cycleKey := fmt.Sprintf("musician:vip:claim:account-a.json:%d", cycle)
+	cycleKey := musicianVipClaimCacheKey(f.userID, cycle)
 	if f.db.values[cycleKey] != "1" {
 		t.Fatalf("success not stored by official cycle: %v", f.db.values)
 	}
@@ -145,9 +163,13 @@ func TestMusicianVipClaimCacheUsesOfficialCycleAndAccount(t *testing.T) {
 	if f.claimCalls != 2 {
 		t.Fatalf("new cycle did not claim: calls=%d", f.claimCalls)
 	}
-	f.run("account-b.json")
-	if f.claimCalls != 3 || len(f.db.values) != 3 {
-		t.Fatalf("account caches were not isolated: calls=%d cache=%v", f.claimCalls, f.db.values)
+	second := newMusicianVipClaimFixture(t)
+	second.userID = 20002
+	second.ctx.db = f.db
+	second.info.Data.FurtherVipGetTime = f.info.Data.FurtherVipGetTime
+	second.run("account-b.json")
+	if second.claimCalls != 1 || len(f.db.values) != 3 {
+		t.Fatalf("account caches were not isolated: second_calls=%d cache=%v", second.claimCalls, f.db.values)
 	}
 }
 
@@ -248,7 +270,7 @@ func TestMusicianVipClaimCacheErrorsRemainVisible(t *testing.T) {
 
 func TestMusicianVipClaimRefreshFailureDoesNotTrustCachedState(t *testing.T) {
 	f := newMusicianVipClaimFixture(t)
-	f.db.values[musicianVipClaimCacheKey("account-a.json", f.info.Data.FurtherVipGetTime)] = "1"
+	f.db.values[musicianVipClaimCacheKey(f.userID, f.info.Data.FurtherVipGetTime)] = "1"
 	f.infoError = fmt.Errorf("mock refresh failure")
 	f.run("account-a.json")
 	if f.infoCalls != 1 || f.claimCalls != 0 || strings.Contains(f.output.String(), "已领取") {

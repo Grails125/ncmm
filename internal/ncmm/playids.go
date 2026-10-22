@@ -332,8 +332,6 @@ func (c *PlayIds) executeForClient(ctx context.Context, cli *api.Client, cookieF
 	}
 	c.closePlayIdsDatabase(ctx, db)
 
-	syncSessionConfig(ctx, cli, cookieFile, user.Account.Id, c.sharedDB, c.root.Cfg.Database)
-
 	expire, err := utils.TimeUntilMidnight("Local")
 	if err != nil {
 		return 0, fmt.Errorf("获取午夜过期时间失败: %w", err)

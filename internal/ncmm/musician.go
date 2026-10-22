@@ -22,17 +22,19 @@ import (
 )
 
 type Musician struct {
-	root *Root
-	cmd  *cobra.Command
-	l    *log.Logger
-	rng  *rand.Rand
+	root      *Root
+	cmd       *cobra.Command
+	l         *log.Logger
+	rng       *rand.Rand
+	newClient func(*api.Config, *log.Logger) (*api.Client, error)
 }
 
 func NewMusician(root *Root, l *log.Logger) *Musician {
 	c := &Musician{
-		root: root,
-		l:    l,
-		rng:  rand.New(rand.NewSource(time.Now().UnixNano())),
+		root:      root,
+		l:         l,
+		rng:       rand.New(rand.NewSource(time.Now().UnixNano())),
+		newClient: api.NewClient,
 		cmd: &cobra.Command{
 			Use:     "musician",
 			Short:   "[need login] Auto-complete musician daily check-ins and VIP tasks",
@@ -87,8 +89,11 @@ func (c *Musician) VipCommand() *cobra.Command {
 // ==================== 身份缓存逻辑 ====================
 
 // musicianIdentityCacheKey 返回身份缓存的 badger key
-func musicianIdentityCacheKey(cookieFile string) string {
-	return fmt.Sprintf("musician:identity:%s", cookieFile)
+func musicianIdentityCacheKey(userID int64) string {
+	if userID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("musician:identity:uid:%d", userID)
 }
 
 func musicianRewardClaimCacheKey(cookieFile string, userMissionId, period int64) string {
@@ -97,8 +102,9 @@ func musicianRewardClaimCacheKey(cookieFile string, userMissionId, period int64)
 
 // checkMusicianIdentityCache 检查本地缓存的音乐人身份状态
 // 返回: (isMusician, cacheHit, error)
-func (c *Musician) checkMusicianIdentityCache(ctx context.Context, db database.Database, cookieFile string) (bool, bool, error) {
-	if db == nil {
+func (c *Musician) checkMusicianIdentityCache(ctx context.Context, db database.Database, userID int64) (bool, bool, error) {
+	key := musicianIdentityCacheKey(userID)
+	if db == nil || key == "" {
 		return false, false, nil
 	}
 	cacheDays := c.root.Cfg.Musician.IdentityCacheDays
@@ -108,7 +114,7 @@ func (c *Musician) checkMusicianIdentityCache(ctx context.Context, db database.D
 		return false, false, nil
 	}
 
-	cached, err := db.Get(ctx, musicianIdentityCacheKey(cookieFile))
+	cached, err := db.Get(ctx, key)
 	if err != nil {
 		// 缓存未命中（key not found 或其他错误）
 		return false, false, nil
@@ -119,8 +125,9 @@ func (c *Musician) checkMusicianIdentityCache(ctx context.Context, db database.D
 }
 
 // saveMusicianIdentityCache 保存音乐人身份状态到本地缓存
-func (c *Musician) saveMusicianIdentityCache(ctx context.Context, db database.Database, cookieFile string, isMusician bool) {
-	if db == nil {
+func (c *Musician) saveMusicianIdentityCache(ctx context.Context, db database.Database, userID int64, isMusician bool) {
+	key := musicianIdentityCacheKey(userID)
+	if db == nil || key == "" {
 		return
 	}
 	cacheDays := c.root.Cfg.Musician.IdentityCacheDays
@@ -135,12 +142,12 @@ func (c *Musician) saveMusicianIdentityCache(ctx context.Context, db database.Da
 
 	if cacheDays != nil && *cacheDays > 0 {
 		ttl := time.Duration(*cacheDays) * 24 * time.Hour
-		if err := db.Set(ctx, musicianIdentityCacheKey(cookieFile), value, ttl); err != nil {
+		if err := db.Set(ctx, key, value, ttl); err != nil {
 			log.Warn("[musician] 写入身份缓存失败: %s", err)
 		}
 	} else {
 		// 0 = 永久有效
-		if err := db.Set(ctx, musicianIdentityCacheKey(cookieFile), value); err != nil {
+		if err := db.Set(ctx, key, value); err != nil {
 			log.Warn("[musician] 写入身份缓存失败: %s", err)
 		}
 	}
@@ -150,6 +157,7 @@ func (c *Musician) saveMusicianIdentityCache(ctx context.Context, db database.Da
 
 // musicianContext 保存单次执行所需的公共上下文
 type musicianContext struct {
+	userID   int64
 	cli      *api.Client
 	eapiCli  *eapi.Api
 	weapiCli *weapi.Api
@@ -170,29 +178,32 @@ func (c *Musician) initMusicianContext(ctx context.Context, cookieFile string, n
 	networkCfg.Cookie.Filepath = absPath
 	// 领取等写请求响应丢失时不能自动重提，下次执行先查询官方状态。
 	networkCfg.Retry = 0
-	cli, err := api.NewClient(&networkCfg, c.l)
+	cli, err := c.newClient(&networkCfg, c.l)
 	if err != nil {
 		return nil, fmt.Errorf("实例化客户端失败: %w", err)
-	}
-
-	// 初始化数据库（可选）。音乐人身份缓存是风控辅助缓存，如果数据库被占用，则自动跳过缓存直接通过 API 交互。
-	db, err := database.NewWithOptions(c.root.Cfg.Database, 1, 0, true)
-	if err != nil {
-		c.cmd.Println("    ⚠️  本地数据库已被其他进程占用，已自动降级为无缓存模式直接执行")
-		db = nil
 	}
 
 	mctx := &musicianContext{
 		cli:      cli,
 		eapiCli:  eapi.New(cli),
 		weapiCli: weapi.New(cli),
-		db:       db,
 	}
-
-	syncSessionConfig(ctx, cli, cookieFile, 0, db, nil)
+	// 先确认当前会话的真实 UID；路径和登录元数据不能代表账号身份。
+	mctx.userID, err = c.resolveMusicianUserID(ctx, mctx.weapiCli)
+	if err != nil {
+		mctx.close(ctx)
+		return nil, err
+	}
+	// 数据库不可用时仍可直接查询官方状态，不借用其他账号的记录。
+	db, err := database.NewWithOptions(c.root.Cfg.Database, 1, 0, true)
+	if err != nil {
+		c.cmd.Println("    ⚠️  本地数据库已被其他进程占用，已自动降级为无缓存模式直接执行")
+		db = nil
+	}
+	mctx.db = db
 
 	// 检查身份缓存
-	isMusician, cacheHit, _ := c.checkMusicianIdentityCache(ctx, db, cookieFile)
+	isMusician, cacheHit, _ := c.checkMusicianIdentityCache(ctx, db, mctx.userID)
 
 	if cacheHit && !isMusician {
 		// 缓存命中且非音乐人 → 直接返回错误
@@ -201,7 +212,7 @@ func (c *Musician) initMusicianContext(ctx context.Context, cookieFile string, n
 	}
 
 	if cacheHit && !needVipData {
-		// 缓存命中且只需 sign（不需要 VIP 任务进度）→ 跳过 API 调用
+		// 当前 UID 已验证；仅签到时可复用其身份缓存，跳过音乐人身份接口。
 		c.cmd.Println("  ✅ 已认证音乐人 (来自身份缓存)")
 		return mctx, nil
 	}
@@ -219,7 +230,12 @@ func (c *Musician) initMusicianContext(ctx context.Context, cookieFile string, n
 			return nil, fmt.Errorf("MusicianRoleGet error: code=%d msg=%s", role.Code, role.Message)
 		}
 
-		c.saveMusicianIdentityCache(ctx, db, cookieFile, role.Data.IsMusician)
+		if role.Data.UserId != 0 && role.Data.UserId != mctx.userID {
+			log.Warn("[musician] 身份响应 UID 与登录会话不一致: account=%d role=%d", mctx.userID, role.Data.UserId)
+			mctx.close(ctx)
+			return nil, fmt.Errorf("音乐人身份与当前登录账号不一致，请重新登录后重试")
+		}
+		c.saveMusicianIdentityCache(ctx, db, mctx.userID, role.Data.IsMusician)
 		if !role.Data.IsMusician {
 			mctx.close(ctx)
 			return nil, fmt.Errorf("当前账号不是音乐人")
@@ -242,7 +258,7 @@ func (c *Musician) initMusicianContext(ctx context.Context, cookieFile string, n
 	}
 
 	// 写入身份缓存
-	c.saveMusicianIdentityCache(ctx, db, cookieFile, resp.Data.IsMusician)
+	c.saveMusicianIdentityCache(ctx, db, mctx.userID, resp.Data.IsMusician)
 
 	if !resp.Data.IsMusician {
 		mctx.close(ctx)
@@ -254,6 +270,27 @@ func (c *Musician) initMusicianContext(ctx context.Context, cookieFile string, n
 
 	mctx.resp = resp
 	return mctx, nil
+}
+
+func (c *Musician) resolveMusicianUserID(ctx context.Context, client *weapi.Api) (int64, error) {
+	if client == nil {
+		log.Warn("[musician] 缺少用于验证账号的登录会话")
+		return 0, fmt.Errorf("无法验证当前登录账号，请检查 Cookie 后重试")
+	}
+	user, err := client.GetUserInfo(ctx, &weapi.GetUserInfoReq{})
+	if err != nil {
+		log.Warn("[musician] 验证登录账号失败: %s", err)
+		return 0, fmt.Errorf("无法验证当前登录账号，请检查 Cookie 后重试")
+	}
+	if user == nil || user.Code != 200 || user.Account == nil || user.Profile == nil || user.Account.Id <= 0 {
+		log.Warn("[musician] 登录响应未包含有效账号身份")
+		return 0, fmt.Errorf("无法验证当前登录账号，请检查 Cookie 后重试")
+	}
+	if user.Profile.UserId > 0 && user.Profile.UserId != user.Account.Id {
+		log.Warn("[musician] 登录响应 UID 不一致: account=%d profile=%d", user.Account.Id, user.Profile.UserId)
+		return 0, fmt.Errorf("无法验证当前登录账号，请重新登录后重试")
+	}
+	return user.Account.Id, nil
 }
 
 func (mc *musicianContext) close(ctx context.Context) {
@@ -983,11 +1020,11 @@ func musicianPlaySources(cfg config.MusicianPlayConf, rootPlayCfg *config.PlayId
 
 // ==================== doVipClaimPhase: 音乐人 VIP 自动领取 ====================
 
-func musicianVipClaimCacheKey(cookieFile string, cycle int64) string {
-	if cycle <= 0 {
+func musicianVipClaimCacheKey(userID, cycle int64) string {
+	if userID <= 0 || cycle <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("musician:vip:claim:%s:%d", cookieFile, cycle)
+	return fmt.Sprintf("musician:vip:claim:uid:%d:%d", userID, cycle)
 }
 
 // doVipClaimPhase 执行第三阶段：音乐人 VIP 领取
@@ -998,6 +1035,14 @@ func (c *Musician) doVipClaimPhase(ctx context.Context, mctx *musicianContext, c
 	}
 
 	c.cmd.Println("  👉 [第三阶段] 检查并尝试领取本期音乐人黑胶 VIP...")
+	if mctx.userID <= 0 {
+		var err error
+		mctx.userID, err = c.resolveMusicianUserID(ctx, mctx.weapiCli)
+		if err != nil {
+			c.cmd.Printf("    ⚠️ %s，已跳过 VIP 领取\n", err)
+			return
+		}
+	}
 
 	// 1. 查询最新的音乐人 VIP 权益与任务状态 (WEAPI)
 	info, err := mctx.weapiCli.MusicianVipInfo(ctx, &weapi.MusicianVipInfoReq{})
@@ -1013,7 +1058,7 @@ func (c *Musician) doVipClaimPhase(ctx context.Context, mctx *musicianContext, c
 	data := info.Data
 	nowMs := time.Now().UnixMilli()
 	// 先读取官方周期，再查本期成功记录；旧版自然月缓存可能来自预约误判，不能沿用。
-	cacheKey := musicianVipClaimCacheKey(cookieFile, data.FurtherVipGetTime)
+	cacheKey := musicianVipClaimCacheKey(mctx.userID, data.FurtherVipGetTime)
 	if mctx.db != nil && cacheKey != "" {
 		cached, err := mctx.db.Exists(ctx, cacheKey)
 		if err != nil {
