@@ -24,15 +24,11 @@ import re
 import shutil
 import zipfile
 import tarfile
-import time
 import subprocess
 
 # 1. 稳定获取当前脚本所在的真实目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
 target_dir = current_dir  # 直接使用脚本所在目录作为目标目录
-
-print(f"[LOG] Python脚本所在目录: {current_dir}")
-print(f"[LOG] 目标二进制目录: {target_dir}")
 
 # 手动触发更新时给 ncmm 的超时（秒）
 NCMM_UPDATE_TIMEOUT = 600
@@ -112,80 +108,7 @@ def get_latest_release():
         
     return None, None
 
-# 4. 进程查杀释放逻辑（升级失败时的兜底，用于释放被占用的二进制文件）
-def stop_running_ncmm(binary_name):
-    sys_name = platform.system().lower()
-    if 'windows' in sys_name:
-        try:
-            print("[LOG] 正在检查并强制终止 Windows 平台上的 ncmm.exe 进程...")
-            # Windows 平台下，使用 taskkill 强行杀掉对应名称的进程
-            subprocess.run(["taskkill", "/F", "/IM", binary_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception as e:
-            print(f"[WARNING] 尝试终止 Windows 进程时发生异常: {e}")
-    else:
-        print(f"[LOG] 正在检查并终止 Linux/Unix 平台上的 {binary_name} 进程...")
-        pkill_used = False
-        try:
-            res = subprocess.run(["pkill", "-x", binary_name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if res.returncode == 0:
-                pkill_used = True
-        except Exception:
-            pkill_used = False
-
-        if not pkill_used:
-            # 纯 Python 扫描 /proc 目录（支持无 ps/pkill/lsof 的极简面板环境，如呆呆面板）
-            current_pid = os.getpid()
-            parent_pid = os.getppid() if hasattr(os, 'getppid') else -1
-            
-            try:
-                for entry in os.listdir('/proc'):
-                    if not entry.isdigit():
-                        continue
-                    pid = int(entry)
-                    
-                    # 1. 排除当前 Python 脚本进程及父进程（防止自杀）
-                    if pid in (current_pid, parent_pid):
-                        continue
-                    
-                    # 2. 读取该 PID 对应的可执行二进制文件软链接
-                    exe_link = f"/proc/{entry}/exe"
-                    is_target = False
-                    
-                    if os.path.exists(exe_link):
-                        try:
-                            real_exe = os.readlink(exe_link)
-                            if os.path.basename(real_exe) == binary_name:
-                                is_target = True
-                        except Exception:
-                            pass
-                    
-                    # 3. 兜底检查命令行：排除带 .py 的脚本进程
-                    if not is_target:
-                        try:
-                            with open(f"/proc/{entry}/cmdline", "rb") as f:
-                                cmd_bytes = f.read()
-                            cmd_str = cmd_bytes.decode("utf-8", errors="ignore").replace("\0", " ")
-                            if ".py" not in cmd_str:
-                                parts = cmd_str.split()
-                                if parts and os.path.basename(parts[0]) == binary_name:
-                                    is_target = True
-                        except Exception:
-                            pass
-
-                    # 4. 发送 SIGKILL 终止目标进程
-                    if is_target:
-                        try:
-                            os.kill(pid, 9)
-                            print(f"[LOG] 已通过 /proc 扫描成功终止进程 PID={pid}")
-                        except Exception as ke:
-                            print(f"[WARNING] 终止进程 PID={pid} 失败: {ke}")
-            except Exception as e:
-                print(f"[WARNING] /proc 扫描终止进程发生异常: {e}")
-
-    # 等待 1.5 秒，确保操作系统完全释放文件锁定
-    time.sleep(1.5)
-
-# 5. 带有多镜像重试与原地址兜底的下载模块（仅首次安装时使用）
+# 4. 带有多镜像重试与原地址兜底的下载模块（仅首次安装时使用）
 PROXIES = [
     "https://gh-proxy.com/",
     "https://ghproxy.net/",
@@ -236,7 +159,7 @@ def download_file_with_fallback(src_url, dst_path, headers=None, timeout=45):
 
     return False
 
-# 6. 本地 VERSION 文件读写（仅作记录，供面板展示；是否更新完全由 ncmm 判断）
+# 5. 本地 VERSION 文件读写（仅作记录，供面板展示；是否更新完全由 ncmm 判断）
 def read_local_version(version_file):
     if not os.path.exists(version_file):
         return "unknown"
@@ -257,7 +180,7 @@ def write_local_version(version_file, version):
         print(f"[WARNING] 写入 VERSION 文件失败: {e}")
         return False
 
-# 7. 调用 ncmm 自身完成更新（手动触发的核心）
+# 6. 调用 ncmm 自身完成更新（手动触发的核心）
 def run_ncmm_cli(binary_path, args, timeout=NCMM_UPDATE_TIMEOUT, capture=False):
     """在 ncmm 程序目录内执行 ncmm 子命令，返回 (returncode, stdout+stderr)。"""
     print(f"[LOG] 进入程序目录执行: {os.path.basename(binary_path)} {' '.join(args)}")
@@ -293,34 +216,17 @@ def update_with_ncmm(binary_path, binary_name):
     """
     手动触发 ncmm 更新：只调用 `ncmm update --apply`。
     检查、下载、镜像、解压、替换、配置升级全部由 ncmm 按自身规则完成。
-    首次失败可能是运行中的进程占用了二进制，释放后重试一次。
+    返回 CLI 的退出码；失败由用户按原始错误排查，不终止进程或自动重试。
     """
     code, _ = run_ncmm_cli(binary_path, ["update", "--apply"])
     if code == 0:
-        return True
-
-    print("[WARNING] ncmm update --apply 首次执行失败，可能是运行中的 ncmm 进程占用了二进制，")
-    print("[WARNING] 正在尝试释放占用后重试一次...")
-    stop_running_ncmm(binary_name)
-    code, _ = run_ncmm_cli(binary_path, ["update", "--apply"])
-    if code == 0:
-        return True
+        return 0
 
     print(f"[ERROR] ncmm update --apply 执行失败（状态码 {code}），本次更新未完成。")
-    return False
+    print(f"[LOG] 请根据上方错误检查网络、文件权限和配置，再手动重试；脚本不会终止其他 {binary_name} 进程。")
+    return code
 
-def cleanup_old_binary(binary_path):
-    """ncmm 替换二进制时会留下 *.old，这里做一次尽力而为的清理。"""
-    old_path = binary_path + ".old"
-    if not os.path.exists(old_path):
-        return
-    try:
-        os.remove(old_path)
-        print(f"[LOG] 已清理旧版本备份文件: {old_path}")
-    except Exception as e:
-        print(f"[WARNING] 清理旧版本备份失败（下次 ncmm 启动时会自行清理）: {e}")
-
-# 8. 首次安装（没有任何可调用的 ncmm 二进制时）：下载 release 安装包并落地
+# 7. 首次安装（没有任何可调用的 ncmm 二进制时）：下载 release 安装包并落地
 def install_from_archive(remote_tag, assets, binary_name, binary_path, config_path, version_file):
     os_part, arch_part, ext = get_platform_info()
     print(f"[LOG] 判定当前主机系统为: {os_part}, 架构为: {arch_part}, 下载格式为: {ext}")
@@ -435,6 +341,8 @@ def install_from_archive(remote_tag, assets, binary_name, binary_path, config_pa
                 print(f"[WARNING] 清理临时目录失败: {e}")
 
 def main():
+    print(f"[LOG] Python脚本所在目录: {current_dir}")
+    print(f"[LOG] 目标二进制目录: {target_dir}")
     is_windows = 'windows' in platform.system().lower()
     binary_name = "ncmm.exe" if is_windows else "ncmm"
     binary_path = os.path.join(target_dir, binary_name)
@@ -443,6 +351,11 @@ def main():
 
     # 没有可调用的二进制：只能由脚本完成首次安装（此时不存在"两套更新规则"的问题）
     if not os.path.exists(binary_path):
+        old_path = binary_path + ".old"
+        if os.path.lexists(old_path):
+            print(f"[ERROR] 主程序缺失，但发现更新恢复备份: {old_path}，已停止首次安装。")
+            print(f"[LOG] 请先确认该备份为完整的本分支可执行文件，再手动恢复到 {binary_path} 后重试；脚本保留现有文件不作覆盖。")
+            sys.exit(1)
         print(f"[LOG] 未检测到 {binary_name}，判定为首次安装，由脚本下载 release 安装包...")
         remote_tag, assets = get_latest_release()
         if not remote_tag:
@@ -466,15 +379,18 @@ def main():
         sys.exit(1)
     print("[LOG] 交由 ncmm 自身的更新规则执行（ncmm update --apply），脚本仅做手动触发...")
 
-    if not update_with_ncmm(binary_path, binary_name):
+    update_code = update_with_ncmm(binary_path, binary_name)
+    if update_code != 0:
         print("[ERROR] 更新失败，更新中止。")
-        sys.exit(1)
+        sys.exit(update_code)
 
     final_version = query_binary_version(binary_path)
-    if final_version:
-        write_local_version(version_file, final_version)
-    cleanup_old_binary(binary_path)
-    print(f"[SUCCESS] 更新流程完成，当前版本: {final_version or '未知'}")
+    if not final_version or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+', final_version):
+        print("[ERROR] 更新命令已结束，但无法确认当前程序为本分支版本；已保留 VERSION 记录及恢复备份，请检查后重试。")
+        sys.exit(1)
+    write_local_version(version_file, final_version)
+    # 恢复备份由 Go 更新器管理；脚本不删除可能仍被占用或用于恢复的 .old 文件。
+    print(f"[SUCCESS] 更新流程完成，当前版本: {final_version}")
     print("[LOG] 提示：如正在运行 ncmm web / 面板服务，请重启后使用新版本。")
 
 if __name__ == '__main__':

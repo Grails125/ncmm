@@ -12,19 +12,22 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/3899/ncmm/internal/selfupdate"
 )
 
 type updateState struct {
-	LastCheckTime  time.Time `json:"last_check_time"`
-	CurrentVersion string    `json:"current_version"`
-	LatestVersion  string    `json:"latest_version"`
-	ReleaseNotes   string    `json:"release_notes"`
-	UpdateStatus   string    `json:"update_status"`
-	UpdatedVersion string    `json:"updated_version"`
-	LastUpdateTime time.Time `json:"last_update_time"`
-	LastError      string    `json:"last_error"`
-	OS             string    `json:"os"`
-	Arch           string    `json:"arch"`
+	LastCheckTime   time.Time `json:"last_check_time"`
+	CurrentVersion  string    `json:"current_version"`
+	LatestVersion   string    `json:"latest_version"`
+	ReleaseNotes    string    `json:"release_notes"`
+	UpdateStatus    string    `json:"update_status"`
+	UpdatedVersion  string    `json:"updated_version"`
+	InstalledSHA256 string    `json:"installed_sha256,omitempty"`
+	LastUpdateTime  time.Time `json:"last_update_time"`
+	LastError       string    `json:"last_error"`
+	OS              string    `json:"os"`
+	Arch            string    `json:"arch"`
 }
 
 type updateView struct {
@@ -45,7 +48,7 @@ func (s *Server) handleUpdateGet(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, s.makeUpdateView(state, false))
+	writeJSON(w, http.StatusOK, s.makeUpdateView(state))
 }
 
 func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +59,7 @@ func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, s.makeUpdateView(state, false))
+	writeJSON(w, http.StatusOK, s.makeUpdateView(state))
 }
 
 func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +74,7 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, s.makeUpdateView(state, true))
+	writeJSON(w, http.StatusOK, s.makeUpdateView(state))
 }
 
 func (s *Server) runUpdateCommand(parent context.Context, apply bool) (updateState, error) {
@@ -107,7 +110,7 @@ func (s *Server) runUpdateCommand(parent context.Context, apply bool) (updateSta
 	return updateState{}, fmt.Errorf("更新命令未返回有效状态")
 }
 
-func (s *Server) makeUpdateView(state updateState, restartRequired bool) updateView {
+func (s *Server) makeUpdateView(state updateState) updateView {
 	if strings.TrimSpace(s.opts.Version) != "" {
 		state.CurrentVersion = strings.TrimSpace(s.opts.Version)
 	} else if strings.TrimSpace(state.CurrentVersion) == "" {
@@ -124,8 +127,16 @@ func (s *Server) makeUpdateView(state updateState, restartRequired bool) updateV
 	}
 	docker := os.Getenv("NCMM_DOCKER_OFFICIAL") == "1"
 	available := compareUpdateVersions(state.CurrentVersion, state.LatestVersion) < 0
-	installed := available && state.UpdatedVersion != "" && compareUpdateVersions(state.UpdatedVersion, state.LatestVersion) >= 0
-	restartRequired = restartRequired || installed
+	// 版本缓存不能证明磁盘程序仍是已安装版本，手工降级后允许再次更新。
+	installed := available && state.UpdatedVersion != "" && compareUpdateVersions(state.UpdatedVersion, state.LatestVersion) >= 0 && selfupdate.Matches(s.opts.Executable, state.InstalledSHA256)
+	if available && !installed {
+		state.UpdatedVersion = ""
+		state.InstalledSHA256 = ""
+		if state.UpdateStatus == "success" {
+			state.UpdateStatus = "idle"
+		}
+	}
+	restartRequired := installed
 	view := updateView{
 		updateState: state, Available: available, CanApply: available && !docker && !installed,
 		Docker: docker, RestartRequired: restartRequired,

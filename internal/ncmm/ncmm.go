@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -16,7 +15,6 @@ import (
 	"github.com/3899/ncmm/internal/filelock"
 	"github.com/3899/ncmm/pkg/log"
 	"github.com/3899/ncmm/pkg/notify"
-	"github.com/3899/ncmm/pkg/utils"
 
 	"github.com/spf13/cobra"
 )
@@ -56,19 +54,26 @@ func New() *Root {
 	}
 	c.cmd.SetVersionTemplate(`{{printf "%s\n" .Version}}`)
 	c.cmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		location, err := c.resolveConfigLocation()
+		if err != nil {
+			return err
+		}
+		c.Opts.Home = location.Home
+		c.CfgPath = location.Path
 		if cmd.Annotations[skipConfigAnnotation] == "true" {
 			return nil
 		}
-		var (
-			cfgPath = c.Opts.Config
-			home    = filepath.Clean(utils.Ternary(c.Opts.Home != "", c.Opts.Home, config.HomeDir))
-		)
-		if c.Opts.Config != "" {
-			var err error
-			if !utils.FileExists(c.Opts.Config) {
-				return fmt.Errorf("config file not exists: %s", c.Opts.Config)
+		if c.CfgPath != "" {
+			// 自动发现可能遇到其他应用的 config.yaml，迁移写入前先只读校验。
+			if location.Discovered {
+				discovered, err := config.PreviewConfigMigration(c.CfgPath)
+				if err != nil {
+					return fmt.Errorf("自动发现的配置无效，请检查文件或显式指定 --config: %w", err)
+				}
+				if discovered.Network == nil || discovered.Log == nil || discovered.Database == nil {
+					return fmt.Errorf("自动发现的配置缺少 network、log 或 database，请检查是否为完整的 ncmm 配置")
+				}
 			}
-			c.CfgPath = c.Opts.Config
 			if os.Getenv("NCMM_WEB_CHILD") != "1" {
 				if err := config.AutoUpgradeConfigIfNeeded(c.CfgPath); err != nil {
 					return fmt.Errorf("upgrade config file error: %w", err)
@@ -79,26 +84,11 @@ func New() *Root {
 				return fmt.Errorf("init config error: %s", err)
 			}
 		} else {
-			autoCfgPath := filepath.Join(home, "config.yaml")
-			if utils.FileExists(autoCfgPath) {
-				var err error
-				c.CfgPath = autoCfgPath
-				if os.Getenv("NCMM_WEB_CHILD") != "1" {
-					if err := config.AutoUpgradeConfigIfNeeded(c.CfgPath); err != nil {
-						return fmt.Errorf("upgrade config file error: %w", err)
-					}
-				}
-				c.Cfg, err = loadConfigLocked(autoCfgPath)
-				if err != nil {
-					return fmt.Errorf("init config error: %s", err)
-				}
-			} else {
-				c.CfgPath = "default"
-				c.Cfg = config.GetDefault()
-			}
+			c.CfgPath = "default"
+			c.Cfg = config.GetDefault()
 		}
 
-		c.Cfg.ReplaceMagicVariables("HOME", home)
+		c.Cfg.ReplaceMagicVariables("HOME", c.Opts.Home)
 		if err := c.Cfg.Validate(); err != nil {
 			return fmt.Errorf("config validate error: %s", err)
 		}
@@ -115,7 +105,7 @@ func New() *Root {
 		// init logger
 		c.l = log.New(c.Cfg.Log)
 		log.Default = c.l
-		log.Debug("[config] init home=%s path=%s log=%+v network=%+v", home, cfgPath, c.Cfg.Log, c.Cfg.Network)
+		log.Debug("[config] init home=%s path=%s log=%+v network=%+v", c.Opts.Home, c.CfgPath, c.Cfg.Log, c.Cfg.Network)
 
 		c.initNotify()
 		if c.Report != nil {

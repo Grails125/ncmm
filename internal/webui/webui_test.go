@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/3899/ncmm/internal/loginresult"
+	"github.com/3899/ncmm/internal/selfupdate"
 )
 
 func TestValidateCookieFilename(t *testing.T) {
@@ -195,7 +196,7 @@ func TestMakeUpdateViewUsesRunningVersion(t *testing.T) {
 		CurrentVersion: "1.1.0",
 		LatestVersion:  "1.2.0",
 		UpdatedVersion: "1.2.0",
-	}, false)
+	})
 	if view.CurrentVersion != "1.2.0" || view.Available || view.RestartRequired {
 		t.Fatalf("unexpected post-restart update view: %+v", view)
 	}
@@ -205,7 +206,11 @@ func TestMakeUpdateViewPendingRestartAndDocker(t *testing.T) {
 	t.Run("pending restart", func(t *testing.T) {
 		t.Setenv("NCMM_DOCKER_OFFICIAL", "")
 		server := &Server{opts: Options{Version: "1.1.0"}}
-		view := server.makeUpdateView(updateState{LatestVersion: "1.2.0", UpdatedVersion: "1.2.0"}, false)
+		server.opts.Executable = filepath.Join(t.TempDir(), "ncmm")
+		if err := os.WriteFile(server.opts.Executable, []byte("new executable"), 0755); err != nil {
+			t.Fatal(err)
+		}
+		view := server.makeUpdateView(updateState{LatestVersion: "1.2.0", UpdatedVersion: "1.2.0", InstalledSHA256: selfupdate.Digest([]byte("new executable"))})
 		if !view.Available || !view.RestartRequired || view.CanApply {
 			t.Fatalf("unexpected pending-restart update view: %+v", view)
 		}
@@ -214,7 +219,7 @@ func TestMakeUpdateViewPendingRestartAndDocker(t *testing.T) {
 	t.Run("official docker", func(t *testing.T) {
 		t.Setenv("NCMM_DOCKER_OFFICIAL", "1")
 		server := &Server{opts: Options{Version: "1.1.0"}}
-		view := server.makeUpdateView(updateState{LatestVersion: "1.2.0"}, false)
+		view := server.makeUpdateView(updateState{LatestVersion: "1.2.0"})
 		if !view.Available || !view.Docker || view.CanApply {
 			t.Fatalf("unexpected Docker update view: %+v", view)
 		}

@@ -593,6 +593,28 @@ func DefaultYAML() []byte {
 }
 
 func New(cfgPath ...string) (*Config, error) {
+	v := newConfigViper()
+	if len(cfgPath) > 0 {
+		v.SetConfigFile(cfgPath[0])
+	}
+	if err := v.ReadInConfig(); err != nil {
+		return nil, fmt.Errorf("ReadInConfig: %w", err)
+	}
+	return decodeConfig(v)
+}
+
+func newConfigViper() *viper.Viper {
+	v := viper.NewWithOptions(viper.KeyDelimiter("::"))
+	v.SetTypeByDefaultValue(true)
+	v.SetEnvPrefix("ncmm")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+	v.AllowEmptyEnv(true)
+	v.SetConfigType("yaml")
+	return v
+}
+
+func decodeConfig(v *viper.Viper) (*Config, error) {
 	var (
 		conf Config
 		opts = func(m *mapstructure.DecoderConfig) {
@@ -623,23 +645,7 @@ func New(cfgPath ...string) (*Config, error) {
 				},
 			)
 		}
-		_cfgPath string
 	)
-	if len(cfgPath) > 0 {
-		_cfgPath = cfgPath[0]
-	}
-
-	v := viper.NewWithOptions(viper.KeyDelimiter("::"))
-	v.SetTypeByDefaultValue(true)
-	v.SetEnvPrefix("ncmm")
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	v.AutomaticEnv()
-	v.AllowEmptyEnv(true)
-	v.SetConfigType("yaml")
-	v.SetConfigFile(_cfgPath)
-	if err := v.ReadInConfig(); err != nil {
-		return nil, fmt.Errorf("ReadInConfig: %w", err)
-	}
 	if err := v.UnmarshalExact(&conf, opts); err != nil {
 		return nil, fmt.Errorf("UnmarshalExact: %w", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -80,30 +81,17 @@ func runWeb(parent context.Context, root *Root, opts webOptions) error {
 	if err := os.MkdirAll(home, 0755); err != nil {
 		return err
 	}
-	configPath := root.CfgPath
-	if configPath == "" || configPath == "default" {
-		configPath = filepath.Join(home, "config.yaml")
-		if !utils.FileExists(configPath) {
-			ctx, cancel := context.WithTimeout(parent, 10*time.Second)
-			lock, lockErr := filelock.Acquire(ctx, configPath+".lock")
-			cancel()
-			if lockErr != nil {
-				return fmt.Errorf("initialize config lock: %w", lockErr)
-			}
-			if !utils.FileExists(configPath) {
-				if err := atomicfile.Write(configPath, config.DefaultYAML(), 0600); err != nil {
-					_ = lock.Close()
-					return fmt.Errorf("initialize config: %w", err)
-				}
-			}
-			if err := lock.Close(); err != nil {
-				return fmt.Errorf("release config lock: %w", err)
-			}
-		}
+	configPath, err := prepareWebConfig(parent, home, root.CfgPath)
+	if err != nil {
+		return err
 	}
-	configPath, _ = filepath.Abs(configPath)
+	root.CfgPath = configPath
 	if opts.webConfig == "" {
 		opts.webConfig = filepath.Join(home, "webui.yaml")
+	}
+	opts.webConfig, err = filepath.Abs(opts.webConfig)
+	if err != nil {
+		return err
 	}
 	executable, err := os.Executable()
 	if err != nil {
@@ -126,10 +114,61 @@ func runWeb(parent context.Context, root *Root, opts webOptions) error {
 	if !errors.Is(err, webui.ErrRestartRequested) {
 		return err
 	}
-	restarted := exec.Command(executable, os.Args[1:]...)
+	restarted := exec.Command(executable, webRestartArgs(os.Args[1:], home, configPath, opts.webConfig)...)
 	restarted.Dir = home
 	restarted.Env = append(os.Environ(), "NCMM_WEB_RESTARTED=1")
 	restarted.Stdout = os.Stdout
 	restarted.Stderr = os.Stderr
 	return restarted.Start()
+}
+
+func prepareWebConfig(parent context.Context, home, configPath string) (string, error) {
+	if configPath != "" && configPath != "default" {
+		return filepath.Abs(configPath)
+	}
+	home, err := filepath.Abs(home)
+	if err != nil {
+		return "", err
+	}
+	// 与默认启动共用候选规则；已存在 config.yml 时不另建 config.yaml。
+	location, err := findConfigLocation("", home, home, false)
+	if err != nil || location.Path != "" {
+		return location.Path, err
+	}
+	configPath = filepath.Join(location.Home, "config.yaml")
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+	defer cancel()
+	lock, err := filelock.Acquire(ctx, configPath+".lock")
+	if err != nil {
+		return "", fmt.Errorf("initialize config lock: %w", err)
+	}
+	defer lock.Close()
+	location, err = findConfigLocation("", location.Home, location.Home, false)
+	if err != nil || location.Path != "" {
+		return location.Path, err
+	}
+	if err := atomicfile.Write(configPath, config.DefaultYAML(), 0600); err != nil {
+		return "", fmt.Errorf("initialize config: %w", err)
+	}
+	return configPath, nil
+}
+
+func webRestartArgs(args []string, home, configPath, webConfigPath string) []string {
+	// 重启工作目录会切到 home，固定已解析路径，避免重新发现其他实例。
+	result := []string{"--home", home, "--config", configPath}
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "--" {
+			result = append(result, "--web-config", webConfigPath)
+			return append(result, args[index:]...)
+		}
+		switch {
+		case arg == "--home" || arg == "--config" || arg == "-c" || arg == "--web-config":
+			index++
+		case strings.HasPrefix(arg, "--home=") || strings.HasPrefix(arg, "--config=") || strings.HasPrefix(arg, "--web-config=") || strings.HasPrefix(arg, "-c"):
+		default:
+			result = append(result, arg)
+		}
+	}
+	return append(result, "--web-config", webConfigPath)
 }
