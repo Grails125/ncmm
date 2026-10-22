@@ -276,6 +276,7 @@ type PlayIdsConfig struct {
 	GapMax            int64         `json:"gap_max" yaml:"gap_max"`
 	IDs               string        `json:"ids" yaml:"ids"`
 	IDsFile           StringOrSlice `json:"idsFile" yaml:"idsFile"`
+	PlaylistIDs       StringOrSlice `json:"playlistIds" yaml:"playlistIds"`
 	EnableMain        bool          `json:"enableMain" yaml:"enableMain"`
 	EnablePrimary     bool          `json:"enablePrimary" yaml:"enablePrimary"` // 兼容旧版
 	EnableSecondaries bool          `json:"enableSecondaries" yaml:"enableSecondaries"`
