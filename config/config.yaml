@@ -284,6 +284,11 @@ dailySongShare:
 
 # 乐迷团打卡
 fansgroup:
+  # 仅乐迷团播放使用独立网页会话；关闭时跳过播放，其他任务照常。可能触发平台风控，默认关闭。
+  webSession: false
+  # 网页评论正文中的短效 checkToken，按 Cookie 文件配置；默认空时跳过评论加速。
+  # 仅填写对应账号正常浏览器评论请求的令牌，不复用 accounts.antiCheatTokens；过期需重新获取。
+  commentCheckTokens: {}
   # 主账号执行乐迷团打卡。
   enableMain: true
   # 辅助账号执行乐迷团打卡。
