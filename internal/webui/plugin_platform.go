@@ -86,12 +86,17 @@ func pluginTaskName(command string, args []string) string {
 	if command != "plugin" {
 		return ""
 	}
-	for i := 0; i+1 < len(args); i++ {
-		if args[i] == "run" {
-			return strings.ToLower(args[i+1])
-		}
+	if len(args) >= 2 && args[0] == "run" && args[1] != "" && !strings.HasPrefix(args[1], "-") {
+		return strings.ToLower(args[1])
 	}
-	return ""
+	// 全局参数可出现在子命令/名称前，不重复实现 Cobra 解析；未知布局采取保守互斥。
+	return "*"
+}
+
+// 调用方持有 runner.mu。
+func (m *runManager) pluginMutationBlocked(command string, args []string) bool {
+	name := pluginTaskName(command, args)
+	return m.mutatingPlugins[name] || (name == "*" && len(m.mutatingPlugins) > 0)
 }
 
 // 同一服务中的任务准入与升级互斥，网络期间不持有任务锁，也不阻塞其他插件。
@@ -106,7 +111,8 @@ func (m *runManager) reservePluginMutation(name string) (func(), error) {
 		return nil, fmt.Errorf("插件正在升级或卸载，请完成后重试")
 	}
 	for _, run := range m.runs {
-		if (run.Status == "running" || run.Status == "queued") && pluginTaskName(run.Command, run.Args) == key {
+		name := pluginTaskName(run.Command, run.Args)
+		if (run.Status == "running" || run.Status == "queued") && (name == key || name == "*") {
 			return nil, fmt.Errorf("插件仍有运行或排队任务，请先停止任务再升级或卸载")
 		}
 	}

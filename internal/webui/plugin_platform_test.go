@@ -83,3 +83,24 @@ func TestPluginMutationAdmissionBlocksActiveAndNewRuns(t *testing.T) {
 	}
 	done()
 }
+
+func TestPluginMutationConservativelyBlocksGlobalFlagLayouts(t *testing.T) {
+	for _, args := range [][]string{{"run", "--config", "plugin-host.yaml", "demo"}, {"--home", "another", "run", "demo"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			manager := newControlledRunManager(t, 1)
+			manager.runs["unknown-layout"] = RunRecord{Command: "plugin", Args: args, Status: "running"}
+			if _, err := manager.reservePluginMutation("demo"); err == nil {
+				t.Fatal("global-flag plugin run bypassed mutation gate")
+			}
+			delete(manager.runs, "unknown-layout")
+			release, err := manager.reservePluginMutation("demo")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			if _, err = manager.start(context.Background(), Schedule{Command: "plugin", Args: args}); err == nil || !strings.Contains(err.Error(), "升级") {
+				t.Fatalf("unknown plugin run entered active mutation: %v", err)
+			}
+		})
+	}
+}

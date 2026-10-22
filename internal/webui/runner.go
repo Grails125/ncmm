@@ -149,7 +149,7 @@ func (m *runManager) startWithDelay(ctx context.Context, job Schedule, delaySeco
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if m.mutatingPlugins[pluginTaskName(job.Command, job.Args)] {
+	if m.pluginMutationBlocked(job.Command, job.Args) {
 		return RunRecord{}, fmt.Errorf("插件正在升级或卸载，请完成后重试")
 	}
 	runID := newID("run")
@@ -247,7 +247,7 @@ func (m *runManager) startWithDelay(ctx context.Context, job Schedule, delaySeco
 }
 
 func (m *runManager) launchLocked(ctx context.Context, job Schedule, record RunRecord, resources []string) (RunRecord, error) {
-	if m.mutatingPlugins[pluginTaskName(job.Command, job.Args)] {
+	if m.pluginMutationBlocked(job.Command, job.Args) {
 		err := fmt.Errorf("插件正在升级或卸载，请完成后重试")
 		return m.failBeforeStartLocked(job.ID, record, err), err
 	}
