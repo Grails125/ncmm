@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,9 +36,12 @@ type runningProcess struct {
 }
 
 type queuedProcess struct {
-	ctx       context.Context
-	job       Schedule
-	resources []string
+	ctx        context.Context
+	job        Schedule
+	resources  []string
+	readyAt    time.Time
+	timer      *time.Timer
+	stopCancel func() bool
 }
 
 type runCommandFactory func(context.Context, string, ...string) *exec.Cmd
@@ -57,6 +61,7 @@ type runManager struct {
 	maxParallel int
 	supervisor  *processSupervisor
 	command     runCommandFactory
+	randomDelay func(int) int
 	policy      LogPolicy
 }
 
@@ -86,6 +91,7 @@ func newRunManager(executable, configPath, home string, policy LogPolicy, concur
 		maxParallel: maxParallel,
 		supervisor:  supervisor,
 		command:     exec.CommandContext,
+		randomDelay: func(max int) int { return rand.IntN(max + 1) },
 		policy:      policy,
 	}
 	m.loadHistory()
@@ -110,6 +116,28 @@ func (m *runManager) setConcurrencyPolicy(policy ConcurrencyPolicy) {
 }
 
 func (m *runManager) start(ctx context.Context, job Schedule) (RunRecord, error) {
+	return m.startWithDelay(ctx, job, 0)
+}
+
+func validateRandomDelay(seconds int) error {
+	if seconds < 0 || seconds > 86400 {
+		return fmt.Errorf("随机延迟上限必须在 0 到 86400 秒之间")
+	}
+	return nil
+}
+
+func (m *runManager) startScheduled(ctx context.Context, job Schedule) (RunRecord, error) {
+	if err := validateRandomDelay(job.RandomDelaySeconds); err != nil {
+		return RunRecord{}, err
+	}
+	delay := 0
+	if job.RandomDelaySeconds > 0 {
+		delay = m.randomDelay(job.RandomDelaySeconds)
+	}
+	return m.startWithDelay(ctx, job, delay)
+}
+
+func (m *runManager) startWithDelay(ctx context.Context, job Schedule, delaySeconds int) (RunRecord, error) {
 	resources := m.concurrencyKeys(ctx, job)
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -169,15 +197,41 @@ func (m *runManager) start(ctx context.Context, job Schedule) (RunRecord, error)
 	}
 
 	m.addJobRunLocked(job.ID, runID)
-	if m.canLaunchLocked(resources) {
+	if delaySeconds == 0 && m.canLaunchLocked(resources) {
 		launched, launchErr := m.launchLocked(ctx, job, record, resources)
 		if launchErr != nil {
 			m.drainQueueLocked()
 		}
 		return launched, launchErr
 	}
-	m.queued[runID] = &queuedProcess{ctx: ctx, job: job, resources: append([]string(nil), resources...)}
+	pending := &queuedProcess{ctx: ctx, job: job, resources: append([]string(nil), resources...)}
+	if delaySeconds > 0 {
+		pending.readyAt = now.Add(time.Duration(delaySeconds) * time.Second)
+		record.DelaySeconds = delaySeconds
+		record.NotBefore = &pending.readyAt
+		m.runs[runID] = record
+		m.appendLogLocked(record, fmt.Sprintf("[runner] 本次随机延迟 %d 秒，最早执行时间 %s；等待期间可停止任务\n", delaySeconds, pending.readyAt.Format(time.RFC3339)))
+	}
+	m.queued[runID] = pending
 	m.queue = append(m.queue, runID)
+	// 等待中的任务不占执行名额和账号资源，但仍参与重复触发检查。
+	pending.stopCancel = context.AfterFunc(ctx, func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if m.queued[runID] == pending {
+			m.cancelQueuedLocked(runID, pending, "任务等待已取消")
+			m.drainQueueLocked()
+		}
+	})
+	if delaySeconds > 0 {
+		pending.timer = time.AfterFunc(time.Until(pending.readyAt), func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if m.queued[runID] == pending {
+				m.drainQueueLocked()
+			}
+		})
+	}
 	m.writeMetaLocked(record)
 	return record, nil
 }
@@ -292,21 +346,35 @@ func (m *runManager) stop(id string) error {
 		m.mu.Unlock()
 		return os.ErrNotExist
 	}
+	m.cancelQueuedLocked(id, pending, "排队任务已取消")
+	m.drainQueueLocked()
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *runManager) removeQueuedLocked(id string, pending *queuedProcess) {
 	delete(m.queued, id)
+	if pending.timer != nil {
+		pending.timer.Stop()
+	}
+	if pending.stopCancel != nil {
+		pending.stopCancel()
+	}
+}
+
+func (m *runManager) cancelQueuedLocked(id string, pending *queuedProcess, reason string) {
+	m.removeQueuedLocked(id, pending)
 	m.removeJobRunLocked(pending.job.ID, id)
 	record := m.runs[id]
 	record.Status = "stopped"
-	record.Error = "排队任务已取消"
+	record.Error = reason
 	finished := time.Now()
 	record.FinishedAt = &finished
 	exitCode := -1
 	record.ExitCode = &exitCode
 	m.runs[id] = record
-	m.appendLogLocked(record, "[runner] stopped before start\n")
+	m.appendLogLocked(record, "[runner] stopped before start: "+reason+"\n")
 	m.writeMetaLocked(record)
-	m.drainQueueLocked()
-	m.mu.Unlock()
-	return nil
 }
 
 func (m *runManager) jobActivity(jobID string) (bool, int) {
@@ -360,25 +428,18 @@ func (m *runManager) drainQueueLocked() {
 				continue
 			}
 			if pending.ctx.Err() != nil {
-				delete(m.queued, runID)
+				m.cancelQueuedLocked(runID, pending, "任务等待已取消")
 				m.queue = append(m.queue[:index], m.queue[index+1:]...)
-				record := m.runs[runID]
-				record.Status = "stopped"
-				record.Error = pending.ctx.Err().Error()
-				finished := time.Now()
-				record.FinishedAt = &finished
-				exitCode := -1
-				record.ExitCode = &exitCode
-				m.runs[runID] = record
-				m.removeJobRunLocked(pending.job.ID, runID)
-				m.writeMetaLocked(record)
 				index--
+				continue
+			}
+			if pending.readyAt.After(time.Now()) {
 				continue
 			}
 			if !m.canLaunchLocked(pending.resources) {
 				continue
 			}
-			delete(m.queued, runID)
+			m.removeQueuedLocked(runID, pending)
 			m.queue = append(m.queue[:index], m.queue[index+1:]...)
 			_, _ = m.launchLocked(pending.ctx, pending.job, m.runs[runID], pending.resources)
 			launched = true

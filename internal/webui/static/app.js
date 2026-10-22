@@ -133,9 +133,9 @@
   const PRESET_STRATEGIES = {
     novice: {
       name: '小白省心 (推荐)',
-      hint: '全自动日常打卡 + 30%防风控刷歌 + 自动领会员',
+      hint: '日常打卡、指定播放与日推混听、会员礼品；乐迷团按需开启',
       config: {
-        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': false, 'music-partner': false, note: false, 'daily-song-share': false, 'vip-member-gift': true, fansgroup: true, mode: 'by-task-group' },
+        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': false, 'music-partner': false, note: false, 'daily-song-share': false, 'vip-member-gift': true, fansgroup: false, mode: 'by-task-group' },
         sign: { automatic: true, enableMain: true, enableSecondaries: true, enableVipTask: true },
         playids: { enableMain: true, enableSecondaries: true, daily_min: 40, daily_max: 100, run_min: 10, run_max: 30, gap_min: 15, gap_max: 35 },
         mixPlay: { enabled: true, dailyRecommendRatio: 0.3, countTarget: true },
@@ -148,9 +148,9 @@
     },
     musician: {
       name: '音乐人冲刺',
-      hint: '开启全量刷歌与 VIP 进阶长耗时任务，全面提升音乐人身份数据',
+      hint: '音乐人签到与 VIP 进阶任务；进阶笔记由音乐人任务内部执行',
       config: {
-        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': true, 'music-partner': false, note: true, 'daily-song-share': true, 'vip-member-gift': true, fansgroup: true, mode: 'by-task-group' },
+        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': true, 'music-partner': false, note: false, 'daily-song-share': false, 'vip-member-gift': true, fansgroup: false, mode: 'by-task-group' },
         musician: { enableMain: true, enableSecondaries: true, identityCacheDays: 0, enableVipNote: true, enableVipPlay: true },
         playids: { enableMain: true, enableSecondaries: true, daily_min: 100, daily_max: 300, run_min: 30, run_max: 60, gap_min: 20, gap_max: 40 },
         mixPlay: { enabled: true, dailyRecommendRatio: 0.25, countTarget: true },
@@ -160,9 +160,9 @@
     },
     stealth: {
       name: '高防风控安全',
-      hint: '拉大播放间隔、45%高防风控混听、轻量低频刷歌，全方位规避账号风控',
+      hint: '拉大播放间隔、增加日推混听、减少单次播放量；不自动执行乐迷团',
       config: {
-        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': false, 'music-partner': false, note: false, 'daily-song-share': false, 'vip-member-gift': false, fansgroup: true, mode: 'by-task-group' },
+        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': false, 'music-partner': false, note: false, 'daily-song-share': false, 'vip-member-gift': false, fansgroup: false, mode: 'by-task-group' },
         playids: { enableMain: true, enableSecondaries: true, daily_min: 30, daily_max: 60, run_min: 5, run_max: 15, gap_min: 35, gap_max: 75 },
         mixPlay: { enabled: true, dailyRecommendRatio: 0.45, countTarget: true },
         network: { timeout: '90s', retry: 2, debug: false }
@@ -170,9 +170,9 @@
     },
     sign_only: {
       name: '极速纯签到',
-      hint: '仅秒级打卡（签到、乐迷团、领云豆），不刷歌不发动态，3秒极速结束',
+      hint: '日常签到、音乐人签到和会员礼品，不执行指定播放、乐迷团及公共动态',
       config: {
-        task: { sign: true, playids: false, 'musician-sign': true, 'musician-vip': false, 'music-partner': false, note: false, 'daily-song-share': false, 'vip-member-gift': false, fansgroup: true, mode: 'by-task-group' },
+        task: { sign: true, playids: false, 'musician-sign': true, 'musician-vip': false, 'music-partner': false, note: false, 'daily-song-share': false, 'vip-member-gift': true, fansgroup: false, mode: 'by-task-group' },
         mixPlay: { enabled: false },
         sign: { automatic: true, enableMain: true, enableSecondaries: true, enableVipTask: true }
       }
@@ -1162,7 +1162,7 @@
     </tr>`).join('') : '<tr><td colspan="5" class="empty-state">暂无定时任务</td></tr>';
     const recent = state.runs.slice(0, 5);
     $('#recent-runs').className = `compact-list${recent.length ? '' : ' empty-state'}`;
-    $('#recent-runs').innerHTML = recent.length ? recent.map(run => `<div class="compact-row"><strong>${escapeHTML(run.jobName)}</strong><span>${escapeHTML(run.command)} ${escapeHTML((run.args || []).join(' '))}</span><span class="badge-pill ${runBadgeClass(run.status)}">${escapeHTML(statusLabel(run.status))}</span></div>`).join('') : '暂无运行记录';
+    $('#recent-runs').innerHTML = recent.length ? recent.map(run => `<div class="compact-row"><strong>${escapeHTML(run.jobName)}</strong><span>${escapeHTML(run.command)} ${escapeHTML((run.args || []).join(' '))}</span><span class="badge-pill ${runBadgeClass(run.status)}">${escapeHTML(statusLabel(run.status, run))}</span></div>`).join('') : '暂无运行记录';
 
     $('#account-rewards-list').className = `reward-list${accounts.length ? '' : ' empty-state'}`;
     $('#account-rewards-list').innerHTML = accounts.length ? accounts.map(account => {
@@ -1737,7 +1737,7 @@
   function renderFlowPlayids() {
     const accountSwitches = `<div class="form-row"><label class="form-row-label">账号分工</label><div class="flow-inline-switches">${renderFlowField('playids.enableMain', { title: '主账号刷歌', description: '' })}${renderFlowField('playids.enableSecondaries', { title: '辅助账号刷歌（推荐开启）', description: '' })}</div></div>`;
     const target = renderFlowCard('刷歌分工与目标', `${accountSwitches}${renderFlowRange('每日播放随机目标 (daily_min ~ daily_max)', 'playids.daily_min', 'playids.daily_max', '首 / 天', '每日首次启动时在此范围内随机生成当日目标。')}${renderFlowRange('单次运行随机目标 (run_min ~ run_max)', 'playids.run_min', 'playids.run_max', '首 / 次', '填 0 表示不限制单次数量，直接刷满今日剩余目标。')}`, '核心冲量', 'cyan');
-    const source = renderFlowCard('切歌间隔与歌曲源', `${renderFlowRange('切歌随机等待间隔 (gap_min ~ gap_max)', 'playids.gap_min', 'playids.gap_max', '秒')}${renderFlowField('playids.ids', { title: '歌曲 ID 池 (playids.ids)', description: '' })}${renderFlowField('playids.idsFile', { title: '歌曲 ID 远程/本地文件列表 (playids.idsFile)', description: '' })}`, 'playids', 'primary');
+    const source = renderFlowCard('切歌间隔与歌曲源', `${renderFlowRange('切歌随机等待间隔 (gap_min ~ gap_max)', 'playids.gap_min', 'playids.gap_max', '秒')}${renderFlowField('playids.ids', { title: '歌曲 ID 池 (playids.ids)' })}${renderFlowField('playids.playlistIds', { title: '歌单 ID 或分享链接 (playlistIds)' })}${renderFlowField('playids.idsFile', { title: '歌曲 ID 远程/本地文件列表 (playids.idsFile)' })}`, 'playids', 'primary');
     return `<div class="config-cards-grid">${target}${source}</div>`;
   }
 
@@ -1869,14 +1869,29 @@
       });
       section.classList.toggle('search-hidden', !visible);
     });
+    syncMobileConfigSections();
+  }
+
+  function syncMobileConfigSections() {
+    const body = $('#config-visual');
+    if (!body) return;
+    body.classList.toggle('mobile-search', Boolean(state.configSearch.trim()));
+    $$('.card-flow-section', body).forEach(section => {
+      section.classList.toggle('mobile-active', section.dataset.configSection === state.configSection);
+    });
   }
 
   function updateConfigFlowActiveSection() {
     if (state.configTarget !== 'config' || state.configMode !== 'visual') return;
+    const mobile = window.matchMedia('(max-width: 760px)').matches;
+    if (mobile && !state.configSearch.trim()) {
+      syncMobileConfigSections();
+      return;
+    }
     const body = $('#config-visual');
     const sections = $$('.card-flow-section:not(.search-hidden)', $('#config-form'));
     if (!sections.length) return;
-    const anchor = body.getBoundingClientRect().top + 28;
+    const anchor = mobile ? 96 : body.getBoundingClientRect().top + 28;
     let active = sections[0];
     for (const section of sections) {
       if (section.getBoundingClientRect().top <= anchor) active = section;
@@ -1891,6 +1906,16 @@
     const body = $('#config-visual');
     const section = $(`#config-block-${CSS.escape(key)}`);
     if (!body || !section) return;
+    if (window.matchMedia('(max-width: 760px)').matches) {
+      if (state.configSearch) {
+        state.configSearch = '';
+        $('#config-search').value = '';
+        applyConfigSearch('');
+      }
+      syncMobileConfigSections();
+      section.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      return;
+    }
     const top = body.scrollTop + section.getBoundingClientRect().top - body.getBoundingClientRect().top - 12;
     body.scrollTo({ top, behavior: 'smooth' });
   }
@@ -2305,14 +2330,14 @@
       return `<tr>
       <td><span class="task-name-link">${escapeHTML(job.name)}</span>${job.pinned ? ` <span class="task-pinned-badge">${icon('pin')}置顶</span>` : ''}${job.readOnly ? ' <span class="task-type-badge">环境托管</span>' : ''}</td>
       <td><span class="task-cmd-tag">${escapeHTML(job.command)} ${escapeHTML((job.args || []).join(' '))}</span></td>
-      <td><code class="cron-capsule-input">${escapeHTML(job.cron)}</code></td>
-      <td><span class="badge-pill ${job.running || job.queued ? 'blue' : job.enabled ? 'success' : 'gray'}">${job.running ? '运行中' : job.queued ? `排队 ${job.queued}` : job.enabled ? '空闲中' : '已禁用'}</span></td>
-      <td>${lastRun ? formatScheduleDate(lastRun.startedAt || lastRun.triggeredAt) : '<span class="schedule-date">--</span>'}</td>
+      <td><code class="cron-capsule-input">${escapeHTML(job.cron)}</code>${job.randomDelaySeconds > 0 ? `<div class="field-note">随机延迟 0～${escapeHTML(job.randomDelaySeconds)} 秒</div>` : ''}</td>
+      <td><span class="badge-pill ${job.running || job.queued ? 'blue' : job.enabled ? 'success' : 'gray'}">${job.running ? '运行中' : job.queued ? (state.runs.some(run => run.jobId === job.id && isRunDelayed(run)) ? '延迟中' : `排队 ${job.queued}`) : job.enabled ? '空闲中' : '已禁用'}</span></td>
+      <td>${lastRun ? formatScheduleDate(lastRun.status === 'queued' ? lastRun.triggeredAt : lastRun.startedAt || lastRun.triggeredAt) : '<span class="schedule-date">--</span>'}</td>
       <td>${job.nextRuns?.[0] ? formatScheduleDate(job.nextRuns[0]) : '<span class="schedule-date">--</span>'}</td>
-      <td>${lastRun ? `<span class="badge-pill ${runBadgeClass(lastRun.status)}">${escapeHTML(statusLabel(lastRun.status))}</span>` : '<span class="badge-pill gray">未运行</span>'}</td>
-      <td><span class="schedule-date">${lastRun ? duration(lastRun.startedAt, lastRun.finishedAt) : '--'}</span></td>
+      <td>${lastRun ? `<span class="badge-pill ${runBadgeClass(lastRun.status)}">${escapeHTML(statusLabel(lastRun.status, lastRun))}</span>` : '<span class="badge-pill gray">未运行</span>'}</td>
+      <td><span class="schedule-date">${lastRun && lastRun.status !== 'queued' ? duration(lastRun.startedAt, lastRun.finishedAt) : '--'}</span></td>
       <td class="actions-column"><div class="schedule-actions-row">
-        ${job.running ? `<button class="schedule-act-link warning" data-action="stop" data-id="${escapeHTML(job.id)}">停止</button>` : `<button class="schedule-act-link action-run" data-action="run" data-id="${escapeHTML(job.id)}">运行</button>`}
+        ${job.running || job.queued ? `<button class="schedule-act-link warning" data-action="stop" data-id="${escapeHTML(job.id)}">停止</button>` : `<button class="schedule-act-link action-run" data-action="run" data-id="${escapeHTML(job.id)}">运行</button>`}
         <button class="schedule-act-link ${job.enabled ? 'danger' : 'success'}" data-action="toggle" data-id="${escapeHTML(job.id)}" ${job.readOnly ? 'disabled' : ''}>${job.enabled ? '禁用' : '启用'}</button>
         <button class="schedule-act-link" data-action="logs" data-id="${escapeHTML(job.id)}">日志</button>
         <button class="schedule-act-link" data-action="edit" data-id="${escapeHTML(job.id)}" ${job.readOnly ? 'disabled' : ''}>编辑</button>
@@ -2719,6 +2744,7 @@
     $('#schedule-id').value = job?.id || '';
     $('#schedule-enabled').checked = job?.enabled ?? true;
     $('#schedule-overlap').value = job?.overlapPolicy || 'skip';
+    $('#schedule-random-delay').value = job?.randomDelaySeconds ?? 0;
 
     if (pluginPreset) {
       $('#schedule-name').value = pluginPreset.title ? `${pluginPreset.title} - 定时提现` : `${pluginPreset.name} 任务`;
@@ -2764,6 +2790,7 @@
       name: $('#schedule-name').value.trim(), enabled: $('#schedule-enabled').checked,
       cron: $('#schedule-cron').value.trim(), command: $('#schedule-command').value,
       args: parseArgs($('#schedule-args').value), overlapPolicy: $('#schedule-overlap').value,
+      randomDelaySeconds: Number($('#schedule-random-delay').value),
     };
     try {
       await api(id ? `/api/v1/schedules/${encodeURIComponent(id)}` : '/api/v1/schedules', { method: id ? 'PUT' : 'POST', body });
@@ -2794,9 +2821,9 @@
     }
     tbody.innerHTML = runs.map(run => `<tr>
       <td><div class="run-identity"><strong>${escapeHTML(run.jobName || run.command)}</strong><small>${escapeHTML([`${run.command} ${(run.args || []).join(' ')}`.trim(), shortRunID(run.id), runSourceLabel(run.source)].filter(Boolean).join(' · '))}</small></div></td>
-      <td><span class="status-capsule ${['success'].includes(run.status) ? 'idle' : ['running', 'queued'].includes(run.status) ? 'running' : 'disabled'}">${statusLabel(run.status)}</span></td>
-      <td><code>${duration(run.startedAt, run.finishedAt)}</code></td>
-      <td><code>${formatRunDate(run.startedAt)}</code></td>
+      <td><span class="status-capsule ${['success'].includes(run.status) ? 'idle' : ['running', 'queued'].includes(run.status) ? 'running' : 'disabled'}">${statusLabel(run.status, run)}</span>${isRunDelayed(run) ? `<small class="field-note">最早 ${escapeHTML(formatDate(run.notBefore))} 执行</small>` : ''}</td>
+      <td><code>${run.status === 'queued' ? '--' : duration(run.startedAt, run.finishedAt)}</code></td>
+      <td><code>${formatRunDate(run.status === 'queued' ? run.triggeredAt : run.startedAt)}</code></td>
       <td class="actions-column"><div class="row-actions run-row-actions"><button class="table-action" data-run-action="log" data-id="${escapeHTML(run.id)}">查看</button>${['running', 'queued'].includes(run.status) ? `<button class="table-action danger" data-run-action="stop" data-id="${escapeHTML(run.id)}">停止</button>` : `<button class="table-action danger" data-run-action="delete" data-id="${escapeHTML(run.id)}">删除</button>`}</div></td>
     </tr>`).join('');
   }
@@ -2982,7 +3009,12 @@
     $('#cron-next').textContent = times.length ? `下次：${times.slice(0, 3).map(formatDate).join('、')}` : '';
   }
 
-  function statusLabel(status) {
+  function isRunDelayed(run) {
+    return run?.status === 'queued' && Date.parse(run.notBefore) > Date.now();
+  }
+
+  function statusLabel(status, run) {
+    if (isRunDelayed(run)) return '延迟中';
     return ({ success: '成功', failed: '失败', running: '运行中', queued: '排队中', skipped: '已跳过', stopped: '已停止', interrupted: '已中断' })[status] || status;
   }
 
@@ -3458,13 +3490,21 @@
     $('#config-reload')?.addEventListener('click', handleReloadUndo);
     $('#config-save')?.addEventListener('click', saveConfig);
     let configScrollFrame = 0;
-    $('#config-visual').addEventListener('scroll', () => {
+    const onConfigScroll = () => {
       if (configScrollFrame) cancelAnimationFrame(configScrollFrame);
       configScrollFrame = requestAnimationFrame(() => {
         configScrollFrame = 0;
         updateConfigFlowActiveSection();
       });
+    };
+    $('#config-visual').addEventListener('scroll', onConfigScroll, { passive: true });
+    window.addEventListener('scroll', () => {
+      if (state.currentPage === 'config' && state.configSearch && window.matchMedia('(max-width: 760px)').matches) onConfigScroll();
     }, { passive: true });
+    window.matchMedia('(max-width: 760px)').addEventListener('change', () => {
+      syncMobileConfigSections();
+      if (state.currentPage === 'config' && state.configTarget === 'config' && state.configMode === 'visual') scrollToConfigSection(state.configSection);
+    });
 
     $('#notify-test')?.addEventListener('click', async () => {
       if (state.configTarget !== 'notify' || !state.configSection) return;
@@ -3594,7 +3634,7 @@
         }
         if (button.dataset.action === 'edit') openScheduleDialog(job);
         if (button.dataset.action === 'stop') {
-          const activeRun = state.runs.find(r => (r.jobId === job.id || (r.command === job.command && JSON.stringify(r.args || []) === JSON.stringify(job.args || []))) && ['running', 'queued'].includes(r.status));
+          const activeRun = state.runs.find(r => r.jobId === job.id && ['running', 'queued'].includes(r.status));
           if (activeRun) {
             await api(`/api/v1/runs/${encodeURIComponent(activeRun.id)}/stop`, { method: 'POST' });
             toast('正在停止任务');
@@ -3608,6 +3648,7 @@
             method: 'PUT', body: {
               name: job.name, enabled: !job.enabled, cron: job.cron, command: job.command,
               args: job.args || [], overlapPolicy: job.overlapPolicy || 'skip',
+              randomDelaySeconds: job.randomDelaySeconds || 0,
             }
           });
           await refreshSchedules();

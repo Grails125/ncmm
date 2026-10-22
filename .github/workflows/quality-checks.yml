@@ -32,8 +32,8 @@ jobs:
       - name: Check WebUI JavaScript syntax
         run: node --check internal/webui/static/app.js
 
-      - name: Test browser launcher, account status and music partner state
-        run: node --test tests/run_webui_browser.test.js tests/webui_cookie_status.test.js tests/webui_music_partner_config.test.js tests/webui_music_partner_points.test.js
+      - name: Test browser launcher, account status and task configuration
+        run: node --test tests/run_webui_browser.test.js tests/webui_cookie_status.test.js tests/webui_music_partner_config.test.js tests/webui_music_partner_points.test.js tests/webui_task_config.test.js
 
       - name: Install WebUI browser test runtime
         run: |
@@ -57,6 +57,12 @@ jobs:
 
       - name: Test verified login status in Chromium
         run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_cookie_status.js "$RUNNER_TEMP/webui-cookie-status"
+
+      - name: Test task configuration in Chromium
+        run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_task_config.js "$RUNNER_TEMP/webui-task-config"
+
+      - name: Test mobile configuration in Chromium
+        run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_mobile_config.js "$RUNNER_TEMP/webui-mobile-config"
 
       - name: Race test high-risk services
         run: go test -race ./api/... ./config ./internal/webui ./internal/ncmm ./internal/partnerpoints ./pkg/cookie

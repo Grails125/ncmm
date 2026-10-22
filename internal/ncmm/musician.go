@@ -948,13 +948,7 @@ func playCandidateIdsSource(vipIds string, vipIdsFile config.StringOrSlice, root
 
 	if vipIds != "" || len(vipIdsFile) > 0 {
 		if vipIds != "" {
-			parts := strings.Split(vipIds, ",")
-			for _, part := range parts {
-				part = strings.TrimSpace(part)
-				if part != "" {
-					rawIds = append(rawIds, part)
-				}
-			}
+			rawIds = append(rawIds, parsePlaySongIDs(vipIds)...)
 		}
 		for _, file := range uniqueStrings(vipIdsFile) {
 			if file != "" {
@@ -968,13 +962,7 @@ func playCandidateIdsSource(vipIds string, vipIdsFile config.StringOrSlice, root
 		}
 	} else if rootPlayCfg != nil {
 		if rootPlayCfg.IDs != "" {
-			parts := strings.Split(rootPlayCfg.IDs, ",")
-			for _, part := range parts {
-				part = strings.TrimSpace(part)
-				if part != "" {
-					rawIds = append(rawIds, part)
-				}
-			}
+			rawIds = append(rawIds, parsePlaySongIDs(rootPlayCfg.IDs)...)
 		}
 		for _, file := range uniqueStrings(rootPlayCfg.IDsFile) {
 			if file != "" {

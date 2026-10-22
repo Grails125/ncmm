@@ -297,7 +297,7 @@ async function hasHorizontalScroll(locator, label) {
   assert(await page.locator('.card-flow-section:not(.search-hidden)').count() === 1, 'full-flow search did not narrow the matching module');
   assert(await page.locator('#config-block-task .task-card:not(.search-hidden)').count() === 0, 'full-flow search left unrelated task cards visible');
   await page.locator('#config-search').fill('');
-  for (const [section, control] of [['accounts', '.config-token-control'], ['musician', '.schema-stepper'], ['musicPartner', '.range-inputs-row'], ['mixPlay', '.single-range-input'], ['note', '.schema-textarea'], ['dailySongShare', '.schema-json'], ['network', '.quick-pill'], ['playids', '.schema-tags']]) {
+  for (const [section, control] of [['accounts', '.config-token-control'], ['musician', '.schema-stepper'], ['musicPartner', '.range-inputs-row'], ['mixPlay', '.single-range-input'], ['note', '.schema-textarea'], ['dailySongShare', '.schema-json'], ['network', '.quick-pill'], ['playids', '.schema-textarea']]) {
     await page.locator(`#config-sections [data-section="${section}"]`).click();
     await page.waitForFunction(key => document.querySelector(`#config-sections [data-section="${key}"]`)?.classList.contains('active'), section);
     assert(await page.locator(`#config-block-${section} ${control}`).count() > 0, `${section} prototype control ${control} was missing`);

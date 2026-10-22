@@ -29,6 +29,7 @@ import (
 type PlayIdsOpts struct {
 	Ids            string
 	IdsFile        string
+	PlaylistIDs    []string
 	DailyMin       int64
 	DailyMax       int64
 	RunMin         int64
@@ -102,8 +103,9 @@ func (c *PlayIds) validate() error {
 }
 
 func (c *PlayIds) addFlags() {
-	c.cmd.Flags().StringVar(&c.opts.Ids, "ids", "", "逗号分隔的歌曲 ID 列表")
+	c.cmd.Flags().StringVar(&c.opts.Ids, "ids", "", "歌曲 ID 列表，支持中英文逗号、分号及行内注释")
 	c.cmd.Flags().StringVar(&c.opts.IdsFile, "ids-file", "", "包含歌曲 ID 的文件路径")
+	c.cmd.Flags().StringArrayVar(&c.opts.PlaylistIDs, "playlist-ids", nil, "歌单 ID 或网易云歌单分享链接，可重复传入并与配置合并")
 	c.cmd.Flags().Int64Var(&c.opts.DailyMin, "daily-min", 0, "每日播放目标随机范围的最小值")
 	c.cmd.Flags().Int64Var(&c.opts.DailyMax, "daily-max", 0, "每日播放目标随机范围的最大值")
 	c.cmd.Flags().Int64Var(&c.opts.RunMin, "run-min", 0, "单次运行播放目标随机范围的最小值")
@@ -118,63 +120,10 @@ func (c *PlayIds) execute(ctx context.Context) error {
 		return fmt.Errorf("validate: %w", err)
 	}
 
-	// 1. 并集去重歌曲 ID 池解析
-	var rawIds []string
-
-	// A. 收集命令行参数指定的歌曲 ID
-	if c.opts.Ids != "" {
-		parts := strings.Split(c.opts.Ids, ",")
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if part != "" {
-				rawIds = append(rawIds, part)
-			}
-		}
-	}
-	if c.opts.IdsFile != "" {
-		fileIds, err := parseIdsFromFile(c.opts.IdsFile)
-		if err != nil {
-			c.log("[WARN] 读取命令行 --ids-file (%s) 失败: %s，该来源将被跳过", c.opts.IdsFile, err)
-		} else {
-			rawIds = append(rawIds, fileIds...)
-		}
-	}
-
-	// B. 并集收集配置文件中的歌曲 ID
-	if c.root.Cfg.PlayIds != nil {
-		if c.root.Cfg.PlayIds.IDs != "" {
-			parts := strings.Split(c.root.Cfg.PlayIds.IDs, ",")
-			for _, part := range parts {
-				part = strings.TrimSpace(part)
-				if part != "" {
-					rawIds = append(rawIds, part)
-				}
-			}
-		}
-		for _, file := range uniqueStrings(c.root.Cfg.PlayIds.IDsFile) {
-			if file != "" {
-				fileIds, err := parseIdsFromFile(file)
-				if err != nil {
-					c.log("[WARN] 读取配置文件 playids.idsFile (%s) 失败: %s，该来源将被跳过", file, err)
-				} else {
-					rawIds = append(rawIds, fileIds...)
-				}
-			}
-		}
-	}
-
-	if len(rawIds) == 0 {
-		return fmt.Errorf("未指定任何有效的歌曲ID。请使用 --ids/--ids-file 传参，或在 config.yaml 默认配置中指定")
-	}
-
-	// 去重
-	uniqueIds := make([]string, 0)
-	seen := make(map[string]bool)
-	for _, id := range rawIds {
-		if !seen[id] {
-			seen[id] = true
-			uniqueIds = append(uniqueIds, id)
-		}
+	// 静态歌曲源可共享，歌单在各账号的登录会话中分别读取。
+	uniqueIds, playlistSources := c.collectPlaySources()
+	if len(uniqueIds) == 0 && len(playlistSources) == 0 {
+		return fmt.Errorf("未指定有效歌曲或歌单，请配置 --ids、--ids-file、--playlist-ids 或对应配置项")
 	}
 
 	// 2. 确定执行播放的账号文件列表
@@ -220,7 +169,7 @@ func (c *PlayIds) execute(ctx context.Context) error {
 	// 3. 依次对账号执行播放打卡
 	for i, cookieFile := range executeQueue {
 		c.log(">>>>>> 开始为账号 (%s) 执行模拟播放 <<<<<<", cookieFile)
-		if _, err := c.executeForCookie(ctx, cookieFile, uniqueIds); err != nil {
+		if _, err := c.executeForCookie(ctx, cookieFile, uniqueIds, playlistSources...); err != nil {
 			c.log("[ERROR] 账号 (%s) 模拟播放失败: %s", cookieFile, err)
 			c.root.ReportFailure(cookieFile, "playids", err)
 		}
@@ -244,58 +193,12 @@ func (c *PlayIds) sleepBetweenAccounts(ctx context.Context, currentAccount strin
 }
 
 func (c *PlayIds) RunForCookie(ctx context.Context, cookieFile string) error {
-	var rawIds []string
-	if c.opts.Ids != "" {
-		parts := strings.Split(c.opts.Ids, ",")
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if part != "" {
-				rawIds = append(rawIds, part)
-			}
-		}
-	}
-	if c.opts.IdsFile != "" {
-		fileIds, err := parseIdsFromFile(c.opts.IdsFile)
-		if err != nil {
-			c.log("[WARN] 读取命令行 --ids-file (%s) 失败: %s，该来源将被跳过", c.opts.IdsFile, err)
-		} else {
-			rawIds = append(rawIds, fileIds...)
-		}
-	}
-	if c.root.Cfg.PlayIds != nil {
-		if c.root.Cfg.PlayIds.IDs != "" {
-			parts := strings.Split(c.root.Cfg.PlayIds.IDs, ",")
-			for _, part := range parts {
-				part = strings.TrimSpace(part)
-				if part != "" {
-					rawIds = append(rawIds, part)
-				}
-			}
-		}
-		for _, file := range uniqueStrings(c.root.Cfg.PlayIds.IDsFile) {
-			if file != "" {
-				fileIds, err := parseIdsFromFile(file)
-				if err != nil {
-					c.log("[WARN] 读取配置文件 playids.idsFile (%s) 失败: %s，该来源将被跳过", file, err)
-				} else {
-					rawIds = append(rawIds, fileIds...)
-				}
-			}
-		}
-	}
-	if len(rawIds) == 0 {
-		return fmt.Errorf("未指定任何有效的歌曲ID。请使用 --ids/--ids-file 传参，或在 config.yaml 默认配置中指定")
-	}
-	uniqueIds := make([]string, 0)
-	seen := make(map[string]bool)
-	for _, id := range rawIds {
-		if !seen[id] {
-			seen[id] = true
-			uniqueIds = append(uniqueIds, id)
-		}
+	uniqueIds, playlistSources := c.collectPlaySources()
+	if len(uniqueIds) == 0 && len(playlistSources) == 0 {
+		return fmt.Errorf("未指定有效歌曲或歌单，请配置 --ids、--ids-file、--playlist-ids 或对应配置项")
 	}
 	c.log(">>>>>> 开始为账号 (%s) 执行模拟播放 <<<<<<", cookieFile)
-	if _, err := c.executeForCookie(ctx, cookieFile, uniqueIds); err != nil {
+	if _, err := c.executeForCookie(ctx, cookieFile, uniqueIds, playlistSources...); err != nil {
 		c.log("[ERROR] 账号 (%s) 模拟播放失败: %s", cookieFile, err)
 		return err
 	}
@@ -380,7 +283,7 @@ func isPlayIdsOwnSong(song *weapi.SongDetailRespSongs, accountID, artistID int64
 	return false
 }
 
-func (c *PlayIds) executeForCookie(ctx context.Context, cookieFile string, uniqueIds []string) (int64, error) {
+func (c *PlayIds) executeForCookie(ctx context.Context, cookieFile string, uniqueIds []string, playlistSources ...string) (int64, error) {
 	// 1. 网络客户端与登录校验
 	networkCfg := c.root.Cfg.Network
 	absPath, err := filepath.Abs(cookieFile)
@@ -409,6 +312,13 @@ func (c *PlayIds) executeForCookie(ctx context.Context, cookieFile string, uniqu
 	}
 	var uid = fmt.Sprintf("%v", user.Account.Id)
 	c.log("当前账号：uid=%s 昵称=\"%s\"", uid, user.Profile.Nickname)
+	uniqueIds, err = c.mergePlaylistSongs(ctx, request, uniqueIds, playlistSources)
+	if err != nil {
+		return 0, err
+	}
+	if len(uniqueIds) == 0 {
+		return 0, fmt.Errorf("歌曲来源未返回可用歌曲，请检查歌单访问权限及输入内容")
+	}
 
 	// 2. 初始化本地进度缓存。播放任务遇到 Badger 目录锁时只失去跨进程进度记忆，不能中断本次播放链路。
 	db, cacheEnabled, err := c.openPlayIdsDatabase()
@@ -967,22 +877,7 @@ func parseIdsFromFile(filePath string) ([]string, error) {
 			return nil, err
 		}
 	}
-	var ids []string
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.Split(line, ",")
-		for _, part := range parts {
-			part = strings.TrimSpace(part)
-			if part != "" {
-				ids = append(ids, part)
-			}
-		}
-	}
-	return ids, nil
+	return parsePlaySongIDs(string(data)), nil
 }
 
 func downloadAudioToBuffer(ctx context.Context, cli *api.Client, songUrl string) error {
