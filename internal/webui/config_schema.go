@@ -277,8 +277,9 @@ func mainConfigSchema() configTargetSchema {
 			f.Min = number(0)
 			return f
 		}(),
-		schemaField("playids.ids", "歌曲 ID 池", "使用逗号分隔保存，界面按标签编辑。", "play-source", "csv", "tags"),
+		schemaField("playids.ids", "歌曲 ID 池", "支持中英文逗号、分号、换行与 #、// 行内注释，仅保留有效歌曲 ID。", "play-source", "string", "textarea"),
 		schemaField("playids.idsFile", "歌曲 ID 文件", "支持本地路径和 HTTP/HTTPS 文本列表。", "play-source", "string-list", "tags"),
+		schemaField("playids.playlistIds", "歌单 ID / 分享链接", "每行填写一个歌单 ID 或网易云歌单链接，按当前听歌账号读取并与歌曲池去重合并。", "play-source", "string-list", "textarea-list"),
 
 		schemaField("mixPlay.enabled", "启用日推混听", "在指定播放中穿插官方日推歌曲。", "mix", "boolean", "switch"),
 		func() configSchemaField {

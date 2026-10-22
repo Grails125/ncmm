@@ -6718,7 +6718,87 @@
       }
     }
 
+    /* 平板保留连续配置流，将模块栏移到顶部，为表单留出完整宽度。 */
+    @media (min-width: 761px) and (max-width: 960px) {
+      #page-config .fullwidth-presets-bar {
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      #page-config .presets-bar-right {
+        margin-left: auto;
+      }
+
+      #page-config .sim-rules-card {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
+      }
+
+      #page-config .sim-rules-sidebar {
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      #page-config .sim-rules-sidebar-header {
+        min-height: 40px;
+        padding: 8px 16px;
+      }
+
+      #page-config .sim-category-list {
+        display: grid;
+        flex: none;
+        grid-auto-flow: column;
+        grid-auto-columns: 126px;
+        grid-template-rows: repeat(2, 44px);
+        gap: 6px;
+        padding: 8px;
+        overflow-x: auto;
+        overflow-y: hidden;
+      }
+
+      #page-config .sim-category-item {
+        height: 44px;
+        min-height: 44px;
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+
+      #page-config .sim-category-item>small {
+        display: none;
+      }
+
+      #page-config .sim-rules-body {
+        padding: 24px 20px 44px;
+      }
+
+      #page-config .task-cards-grid,
+      #page-config .partner-comment-pools {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+
     @media (max-width: 760px) {
+      /* 手机配置页交给文档滚动，避免祖先视口锁定和内层滚动互相争抢手势。 */
+      html:has(#app-shell:not(.hidden) #page-config.active),
+      body:has(#app-shell:not(.hidden) #page-config.active) {
+        height: auto;
+        min-height: 100%;
+        overflow: visible;
+      }
+
+      #app-shell:not(.hidden):has(#page-config.active),
+      #app-shell:not(.hidden):has(#page-config.active) .workspace {
+        height: auto;
+        min-height: 100dvh;
+        max-height: none;
+        overflow: visible;
+      }
+
+      .page-body:has(>#page-config.active) {
+        overflow: visible;
+        padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+      }
+
       #page-config .partner-comment-pools {
         grid-template-columns: minmax(0, 1fr);
       }
@@ -6730,8 +6810,7 @@
       }
 
       #page-config .fullwidth-presets-bar,
-      #page-config .presets-bar-left,
-      #page-config .save-hub-group {
+      #page-config .presets-bar-left {
         align-items: stretch;
       }
 
@@ -6750,13 +6829,62 @@
 
       #page-config .preset-chip-btn {
         min-width: 0;
+        min-height: 36px;
         white-space: normal;
       }
 
-      #page-config .presets-bar-right,
-      #page-config .save-hub-group,
+      #page-config .presets-bar-right {
+        display: contents;
+      }
+
+      /* 保存栏固定在视口底部；移除祖先滤镜，避免 fixed 被限制在卡片内部。 */
+      #page-config .fullwidth-presets-bar,
+      #page-config .sim-rules-card {
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+      }
+
+      #page-config.active .save-hub-group {
+        position: fixed;
+        left: 14px;
+        right: 14px;
+        bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+        z-index: 40;
+        width: auto;
+        min-width: 0;
+        padding: 6px;
+        gap: 6px;
+        flex-direction: row;
+        align-items: center;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        background: var(--bg);
+        box-shadow: var(--card-shadow);
+      }
+
       #page-config .save-hub-group .btn {
-        width: 100%;
+        flex: 1 1 0;
+        width: auto;
+        min-width: 0;
+        min-height: 40px;
+        padding: 6px 8px;
+        gap: 4px;
+        justify-content: center;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      #page-config .save-hub-group .btn svg {
+        width: 14px;
+        height: 14px;
+      }
+
+      #page-config .dirty-status-badge {
+        flex: 0 0 auto;
+        padding: 4px 6px;
+        gap: 4px;
+        font-size: 10.5px;
+        white-space: nowrap;
       }
 
       #page-config .config-view-actions {
@@ -6776,10 +6904,12 @@
 
       #page-config .sim-rules-card {
         display: grid;
-        height: min(900px, calc(100vh - 130px));
-        min-height: 620px;
+        height: auto;
+        min-height: 0;
+        max-height: none;
+        overflow: visible;
         grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: 142px minmax(0, 1fr);
+        grid-template-rows: auto auto;
       }
 
       #page-config .sim-rules-sidebar {
@@ -6794,16 +6924,39 @@
 
       #page-config .sim-category-list {
         display: grid;
-        grid-auto-columns: minmax(180px, 220px);
+        grid-auto-columns: 78px;
         grid-auto-flow: column;
-        grid-template-rows: repeat(2, 42px);
+        grid-template-rows: repeat(2, 44px);
+        flex: none;
+        gap: 6px;
+        padding: 8px;
+        max-height: none;
         overflow-x: auto;
         overflow-y: hidden;
+        scroll-padding-inline: 8px;
       }
 
       #page-config .sim-category-item {
-        height: 42px;
-        min-height: 42px;
+        height: 44px;
+        min-height: 44px;
+        padding: 4px 6px;
+        justify-content: center;
+        text-align: center;
+        font-size: 11.5px;
+      }
+
+      #page-config .sim-category-item-left>span:last-child {
+        white-space: normal;
+        line-height: 1.4;
+      }
+
+      #page-config .sim-category-item>small {
+        display: none;
+      }
+
+      #page-config .sim-category-item:focus-visible {
+        outline: 2px solid var(--primary);
+        outline-offset: -2px;
       }
 
       #page-config .sim-rules-header {
@@ -6823,6 +6976,68 @@
 
       #page-config .sim-rules-body {
         padding: 20px 16px 44px;
+        overflow: visible;
+        overscroll-behavior: auto;
+        scrollbar-gutter: auto;
+        scroll-behavior: auto;
+      }
+
+      #page-config #config-visual:not(.mobile-search) .card-flow-section:not(.mobile-active) {
+        display: none;
+      }
+
+      #page-config .kanban-col-body {
+        min-height: 0;
+        max-height: none;
+        padding: 12px;
+        overflow: visible;
+      }
+
+      #page-config .kanban-col-head {
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 12px;
+      }
+
+      #page-config .kanban-col-title {
+        flex-wrap: wrap;
+        max-width: 100%;
+      }
+
+      #page-config .kanban-item {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 10px;
+        padding: 10px;
+      }
+
+      #page-config .kanban-item-right {
+        justify-content: flex-end;
+        flex-wrap: wrap;
+      }
+
+      #page-config .kanban-item-name {
+        white-space: normal;
+      }
+
+      #page-config .kanban-item-key {
+        overflow-wrap: anywhere;
+      }
+
+      #page-config .kanban-transfer-btn {
+        min-height: 36px;
+      }
+
+      #page-config .yaml-wrap {
+        height: auto;
+        min-height: 440px;
+        padding: 12px;
+      }
+
+      #page-config .yaml-editor-container {
+        flex: none;
+        height: min(65dvh, 620px);
+        min-height: 360px;
       }
 
       #page-config .card-flow-heading {

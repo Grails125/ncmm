@@ -997,6 +997,8 @@
         </select></label>
       <label>Cron 表达式<input id="schedule-cron" value="30 8 * * *" required></label>
       <p id="cron-next" class="field-note"></p>
+      <label>运行前随机延迟上限（秒）<input id="schedule-random-delay" type="number" min="0" max="86400" step="1" value="0" required aria-describedby="schedule-delay-help"></label>
+      <p id="schedule-delay-help" class="field-note">自动触发时随机等待 0～上限秒，0 表示不延迟；手动运行不延迟。等待中的任务可停止，并遵循重叠策略。</p>
       <div class="form-grid two">
         <label>命令<select id="schedule-command">
             <option value="task">task</option>

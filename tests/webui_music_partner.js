@@ -142,7 +142,12 @@ async function noOverflow(page) {
     await page.locator('.nav-item[data-page="config"]').click();
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator('#config-sections [data-section="musicPartner"]').click();
-    await page.waitForFunction(() => Math.abs(document.querySelector('#config-block-musicPartner').getBoundingClientRect().top - document.querySelector('#config-visual').getBoundingClientRect().top - 12) < 4);
+    await page.waitForFunction(() => {
+      const section = document.querySelector('#config-block-musicPartner');
+      return section.classList.contains('mobile-active') && section.getBoundingClientRect().top >= 0 && section.getBoundingClientRect().top < 40;
+    });
+    assert(await page.locator('.card-flow-section:visible').count() === 1, 'mobile must show the selected configuration module');
+    assert(await page.evaluate(() => getComputedStyle(document.documentElement).overflowY === 'visible' && document.scrollingElement.scrollTop > 0), 'mobile must scroll the document to the selected module');
     await noOverflow(page);
     assert(await page.locator('#config-block-musicPartner .range-inputs-row').evaluateAll(elements => elements.every(element => element.scrollWidth <= element.clientWidth)), 'mobile range inputs were clipped');
     assert(await page.locator('#config-block-musicPartner .partner-comment-pools').evaluate(element => element.scrollWidth <= element.clientWidth), 'mobile comment pools were clipped');
