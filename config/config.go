@@ -301,6 +301,7 @@ type PlayIdsConfig struct {
 type UpdaterConf struct {
 	Check        *bool    `json:"check" yaml:"check"`
 	AutoUpdate   *bool    `json:"auto_update" yaml:"auto_update"`
+	AutoRestart  *bool    `json:"auto_restart" yaml:"auto_restart"`
 	ProxyMirrors []string `json:"proxy_mirrors" yaml:"proxy_mirrors"`
 }
 
@@ -452,6 +453,10 @@ func (c *Config) Validate() error {
 	if c.Updater.AutoUpdate == nil {
 		auto := false
 		c.Updater.AutoUpdate = &auto
+	}
+	if c.Updater.AutoRestart == nil {
+		enabled := true
+		c.Updater.AutoRestart = &enabled
 	}
 	if len(c.Updater.ProxyMirrors) == 0 {
 		c.Updater.ProxyMirrors = []string{

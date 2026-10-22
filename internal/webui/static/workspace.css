@@ -446,6 +446,23 @@
       backdrop-filter: blur(10px);
     }
 
+    .btn-update-download {
+      background: var(--accent-cyan-glow);
+      border-color: var(--accent-cyan);
+      color: var(--text);
+    }
+
+    .btn-update-ready {
+      background: var(--success-glow);
+      border-color: var(--success);
+      color: var(--text);
+    }
+
+    #update-apply:focus-visible {
+      outline: 2px solid var(--accent-cyan);
+      outline-offset: 3px;
+    }
+
     .btn-glass:hover {
       background: var(--interactive-hover);
       border-color: var(--border-hover);

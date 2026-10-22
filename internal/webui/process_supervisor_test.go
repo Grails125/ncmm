@@ -147,6 +147,7 @@ func TestProcessSupervisorReportsStartFailureAndTimeout(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// 超时包含子进程启动时间；慢机器上 helper 可以在写 ready 前被终止。
 		if err := process.Wait(); err == nil {
 			t.Fatal("timed out process returned no error")
 		}

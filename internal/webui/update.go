@@ -40,15 +40,25 @@ type updateView struct {
 }
 
 func (s *Server) handleUpdateGet(w http.ResponseWriter, _ *http.Request) {
-	state := updateState{CurrentVersion: s.opts.Version, LatestVersion: s.opts.Version, UpdateStatus: "idle"}
-	data, err := os.ReadFile(filepath.Join(s.opts.Home, "ncmm-update.json"))
-	if err == nil {
-		_ = json.Unmarshal(data, &state)
-	} else if !os.IsNotExist(err) {
+	state, err := s.readUpdateState()
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, s.makeUpdateView(state))
+}
+
+func (s *Server) readUpdateState() (updateState, error) {
+	state := updateState{CurrentVersion: s.opts.Version, LatestVersion: s.opts.Version, UpdateStatus: "idle"}
+	data, err := os.ReadFile(filepath.Join(s.opts.Home, "ncmm-update.json"))
+	if err == nil {
+		if err := json.Unmarshal(data, &state); err != nil {
+			return state, err
+		}
+	} else if !os.IsNotExist(err) {
+		return state, err
+	}
+	return state, nil
 }
 
 func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +73,7 @@ func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
-	if os.Getenv("NCMM_DOCKER_OFFICIAL") == "1" {
+	if os.Getenv("NCMM_DOCKER_OFFICIAL") == "1" && !selfupdate.RuntimeManaged(s.opts.Executable) {
 		writeError(w, http.StatusConflict, "官方 Docker 容器不能替换镜像内二进制，请执行 docker compose pull && docker compose up -d")
 		return
 	}
@@ -74,10 +84,17 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	s.autoRestartAfter = time.Now().Add(30 * time.Second)
 	writeJSON(w, http.StatusOK, s.makeUpdateView(state))
 }
 
 func (s *Server) runUpdateCommand(parent context.Context, apply bool) (updateState, error) {
+	s.runner.mu.RLock()
+	restarting := s.runner.restarting
+	s.runner.mu.RUnlock()
+	if restarting {
+		return updateState{}, fmt.Errorf("服务正在重启，请稍后重试")
+	}
 	timeout := 45 * time.Second
 	if apply {
 		timeout = 4 * time.Minute
@@ -126,6 +143,7 @@ func (s *Server) makeUpdateView(state updateState) updateView {
 		state.Arch = runtime.GOARCH
 	}
 	docker := os.Getenv("NCMM_DOCKER_OFFICIAL") == "1"
+	containerUpdate := !docker || selfupdate.RuntimeManaged(s.opts.Executable)
 	available := compareUpdateVersions(state.CurrentVersion, state.LatestVersion) < 0
 	// 版本缓存不能证明磁盘程序仍是已安装版本，手工降级后允许再次更新。
 	installed := available && state.UpdatedVersion != "" && compareUpdateVersions(state.UpdatedVersion, state.LatestVersion) >= 0 && selfupdate.Matches(s.opts.Executable, state.InstalledSHA256)
@@ -138,10 +156,10 @@ func (s *Server) makeUpdateView(state updateState) updateView {
 	}
 	restartRequired := installed
 	view := updateView{
-		updateState: state, Available: available, CanApply: available && !docker && !installed,
+		updateState: state, Available: available, CanApply: available && containerUpdate && !installed,
 		Docker: docker, RestartRequired: restartRequired,
 	}
-	if docker && available {
+	if docker && !containerUpdate && available {
 		view.Message = "检测到新版本。Docker 部署请拉取新镜像并重建容器。"
 	} else if restartRequired {
 		view.Message = "更新文件已安装，请重启 ncmm 后生效。"
