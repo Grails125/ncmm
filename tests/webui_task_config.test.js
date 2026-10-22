@@ -19,10 +19,22 @@ function harness() {
     renderConfig = () => {};
     toast = () => {};
     markConfigDirty = () => { state.configDirty = true; };
-    globalThis.ui = { state, PRESET_STRATEGIES, applyPreset, renderSchedules, renderRuns };
+    globalThis.ui = { state, PRESET_STRATEGIES, applyPreset, renderSchedules, renderRuns, configSectionKeys, configSectionOrder };
   })();`), context);
   return { ...context.ui, nodes };
 }
+
+test('废弃通用播放字段归入播放模块且不增加导航模块，保留原始兼容数据和其他扩展配置', () => {
+  const { configSectionKeys, configSectionOrder } = harness();
+  const root = { version: '1.2.9', play: { webSession: false }, ...Object.fromEntries(configSectionOrder.map(key => [key, {}])) };
+  const schema = { categories: configSectionOrder.map(id => ({ id })) };
+  const original = structuredClone(root);
+  assert.deepEqual(Array.from(configSectionKeys(root, schema, 'config')), Array.from(configSectionOrder));
+  assert.deepEqual(root, original);
+  root.customExtension = { enabled: true };
+  assert.equal(configSectionKeys(root, schema, 'config').at(-1), 'customExtension');
+  assert.deepEqual(Array.from(configSectionKeys({ version: {}, play: {} }, {}, 'notify')), ['version', 'play']);
+});
 
 test('四种日常预设关闭乐迷团，音乐人冲刺不额外开启公共笔记和推歌', () => {
   const { PRESET_STRATEGIES: presets } = harness();
@@ -33,6 +45,20 @@ test('四种日常预设关闭乐迷团，音乐人冲刺不额外开启公共�
   assert.equal(presets.musician.config.task['daily-song-share'], false);
   assert.equal(presets.musician.config.musician.enableVipNote, true);
   assert.equal(presets.sign_only.config.task['vip-member-gift'], true);
+});
+
+test('推荐预设采用新版默认任务和播放目标，关闭需额外凭据的每日推歌', () => {
+  const preset = harness().PRESET_STRATEGIES.novice.config;
+  assert.equal(preset.task['musician-vip'], true);
+  assert.equal(preset.task['daily-song-share'], false);
+  assert.equal(preset.sign.enableSecondaries, false);
+  assert.equal(preset.fansgroup.enableSecondaries, false);
+  assert.equal(preset.vipMemberGift.enableSecondaries, true);
+  assert.equal(preset.playids.daily_min, 80);
+  assert.equal(preset.playids.daily_max, 200);
+  assert.equal(preset.playids.run_min, 40);
+  assert.equal(preset.playids.run_max, 80);
+  assert.equal(preset.mixPlay.countTarget, false);
 });
 
 test('预设仅在主动应用时改变任务开关，不覆盖账号、歌单源和合伙人规则', () => {

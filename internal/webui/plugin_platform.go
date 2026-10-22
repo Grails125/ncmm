@@ -1,25 +1,65 @@
 package webui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/3899/ncmm/internal/plugininstall"
 )
 
 type pluginMarketEntry struct {
-	Name        string `json:"name"`
-	Title       string `json:"title"`
-	Repository  string `json:"repository"`
-	Type        string `json:"type"`
-	Description string `json:"description"`
-	Homepage    string `json:"homepage"`
+	Name        string                `json:"name"`
+	Title       string                `json:"title"`
+	Repository  string                `json:"repository"`
+	Type        string                `json:"type"`
+	Description string                `json:"description"`
+	Homepage    string                `json:"homepage"`
+	Author      string                `json:"author"`
+	Features    []string              `json:"features"`
+	Update      *plugininstall.Update `json:"update,omitempty"`
+}
+
+func publicPluginMarket() []pluginMarketEntry {
+	return []pluginMarketEntry{{Name: "qqbot", Title: "QQ 机器人", Repository: "crossgg/ncmm-qqbot", Type: "daemon", Description: "通过 QQ 机器人接收通知和管理 NCMM；安装后需配置官方机器人凭据。", Homepage: "https://github.com/crossgg/ncmm-qqbot", Author: "crossgg", Features: []string{"QQ 私聊", "扫码登录", "Cookie 管理", "通知中继"}}}
+}
+
+type publicPluginVersionChecker interface {
+	CheckPublicPluginRepositories(context.Context, []string, bool) ([]plugininstall.Update, error)
+}
+
+func (s *Server) publicPluginUpdates(ctx context.Context, force bool) ([]plugininstall.Update, error) {
+	checker, ok := s.plugins.(publicPluginVersionChecker)
+	if !ok {
+		return nil, nil
+	}
+	repositories := []string{}
+	for _, entry := range publicPluginMarket() {
+		repositories = append(repositories, entry.Repository)
+	}
+	return checker.CheckPublicPluginRepositories(ctx, repositories, force)
 }
 
 // 市场只列出公开来源；展示入口不会下载或启动第三方程序。
 func (s *Server) handlePluginMarket(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, []pluginMarketEntry{{Name: "qqbot", Title: "QQ 机器人", Repository: "crossgg/ncmm-qqbot", Type: "daemon", Description: "通过 QQ 机器人接收通知和管理 NCMM；安装后需配置官方机器人凭据。", Homepage: "https://github.com/crossgg/ncmm-qqbot"}})
+	entries := publicPluginMarket()
+	updates, err := s.publicPluginUpdates(r.Context(), false)
+	for index := range entries {
+		if err != nil {
+			entries[index].Update = &plugininstall.Update{Repository: entries[index].Repository, Error: "版本暂不可用，可稍后检查更新"}
+			continue
+		}
+		for _, update := range updates {
+			if strings.EqualFold(update.Repository, entries[index].Repository) {
+				entries[index].Update = &update
+				break
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
 
 func (s *Server) handlePluginUpdates(w http.ResponseWriter, r *http.Request) {
@@ -39,6 +79,12 @@ func (s *Server) handlePluginUpdates(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, "检查插件更新失败")
 		return
 	}
+	marketUpdates, err := s.publicPluginUpdates(r.Context(), input.Force)
+	if err != nil {
+		writeError(w, 500, "检查市场版本失败")
+		return
+	}
+	updates = append(updates, marketUpdates...)
 	writeJSON(w, 200, updates)
 }
 

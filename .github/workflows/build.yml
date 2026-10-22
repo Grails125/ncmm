@@ -1,24 +1,18 @@
 name: Build Package
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（例如：1.2.2-grails.1，输入 auto 则读取 VERSION 文件）'
-        required: false
+        description: '原生版本号，auto 读取目标提交的 VERSION'
         type: string
         default: 'auto'
       commit_sha:
-        description: '构建的 Git Commit Hash 或分支/标签（例如：2fb17f01bc，默认为 HEAD）'
-        required: false
+        description: '待发布的提交、分支或标签；留空使用事件提交'
         type: string
         default: ''
       release_type:
         description: '发布类型'
-        required: true
         type: choice
         default: '最新正式版（latest release）'
         options:
@@ -27,244 +21,15 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
-  resolve:
-    name: Resolve immutable source commit
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      commit_sha: ${{ steps.commit.outputs.sha }}
-    steps:
-      - name: Checkout requested source
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.commit_sha || github.sha }}
-          persist-credentials: false
-
-      - name: Record immutable source commit
-        id: commit
-        run: |
-          # 分支和标签只在此解析一次，后续检查及发布仅使用固定 SHA。
-          SOURCE_SHA=$(git rev-parse --verify 'HEAD^{commit}')
-          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          printf 'sha=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
-
-  quality:
-    name: Validate release source
-    needs: [resolve]
-    permissions:
-      contents: read
-    uses: ./.github/workflows/quality-checks.yml
+  release:
+    uses: ./.github/workflows/release.yml
+    secrets: inherit
     with:
-      commit_sha: ${{ needs.resolve.outputs.commit_sha }}
-
-  build:
-    needs: [resolve, quality]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.resolve.outputs.commit_sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Verify validated source commit
-        env:
-          EXPECTED_COMMIT: ${{ needs.resolve.outputs.commit_sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
-
-      - name: Verify native integration sources
-        run: |
-          test -f internal/ncmm/music_partner.go
-          test -f THIRD_PARTY_NOTICES.md
-          test -f licenses/ncmp-MIT.txt
-          test -f .goreleaser.yaml
-
-      - name: Resolve Version
-        id: version
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-          INPUT_RELEASE_TYPE: ${{ inputs.release_type }}
-        run: |
-          # 确定版本号和发布类型
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            RELEASE_TYPE="$INPUT_RELEASE_TYPE"
-          else
-            if echo "$GITHUB_REF" | grep -q "^refs/tags/"; then
-              INPUT_VERSION=${GITHUB_REF#refs/tags/}
-            else
-              INPUT_VERSION="auto"
-            fi
-            RELEASE_TYPE="最新正式版（latest release）"
-          fi
-
-          # 如果为 auto 或空，优先检查当前 checkout 的 commit 是否有对应的 git tag
-          if [ "$INPUT_VERSION" = "auto" ] || [ -z "$INPUT_VERSION" ]; then
-            CURRENT_COMMIT_TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || echo "")
-            if [ -n "$CURRENT_COMMIT_TAG" ]; then
-              VERSION=$(echo "$CURRENT_COMMIT_TAG" | sed 's/^v//' | tr -d '[:space:]')
-              SOURCE="git tag of checkout"
-            elif [ -f VERSION ]; then
-              VERSION=$(cat VERSION | tr -d '[:space:]')
-              SOURCE="VERSION file"
-            else
-              echo "Missing VERSION file" >&2
-              exit 1
-            fi
-          else
-            VERSION=$(echo "$INPUT_VERSION" | sed 's/^v//' | tr -d '[:space:]')
-            SOURCE="workflow input"
-          fi
-
-          if ! printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+$'; then
-            echo "Native releases require a version such as 1.2.2-grails.1" >&2
-            exit 1
-          fi
-
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "release_type=$RELEASE_TYPE" >> $GITHUB_OUTPUT
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "RELEASE_TYPE=$RELEASE_TYPE" >> $GITHUB_ENV
-          
-          # 获取实际的 commit hash 并存入 outputs 与 ENV
-          COMMIT_HASH=$(git rev-parse HEAD)
-          echo "commit_hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
-          echo "COMMIT_HASH=$COMMIT_HASH" >> $GITHUB_ENV
-          
-          # 更新 VERSION 文件确保一致性
-          echo "$VERSION" > VERSION
-          
-          echo "📦 当前版本号: $VERSION (来源: $SOURCE)"
-          echo "📦 发布类型: $RELEASE_TYPE"
-          echo "📦 实际 Commit: $COMMIT_HASH"
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: 'go.mod'
-          check-latest: true
-          cache: true
-
-      - name: Create local Git Tag for GoReleaser
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-        run: |
-          # 确保在本地打上对应的 tag 供 GoReleaser 识别版本
-          git tag -d "v$VERSION" 2>/dev/null || true
-          git tag "v$VERSION"
-
-      - name: Generate Custom Changelog
-        id: changelog
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-        shell: python
-        run: |
-          import os
-          import subprocess
-          from datetime import datetime, timezone, timedelta
-
-          version = os.environ.get('VERSION', '0.0.0')
-          release_type = os.environ.get('RELEASE_TYPE', '最新正式版（latest release）')
-          repo = os.environ.get('GITHUB_REPOSITORY', '')
-          
-          # 获取 commit hash
-          commit_hash = subprocess.check_output(['git', 'rev-parse', 'HEAD']).decode('utf-8').strip()
-
-          # 寻找上一个 tag (排除了刚刚创建的当前 tag)
-          try:
-              prev_tag = subprocess.check_output(['git', 'describe', '--tags', '--abbrev=0', 'HEAD^'], stderr=subprocess.DEVNULL).decode('utf-8').strip()
-          except Exception:
-              prev_tag = ''
-
-          # 获取提交日志
-          git_log_cmd = ['git', 'log', '--format=%s']
-          if prev_tag:
-              git_log_cmd.append(f'{prev_tag}..HEAD')
-
-          try:
-              commits = subprocess.check_output(git_log_cmd).decode('utf-8').strip().split('\n')
-              commits = [c.strip() for c in commits if c.strip()]
-          except Exception:
-              commits = []
-
-          features = []
-          improvements = []
-          bugs = []
-
-          for msg in commits:
-              # 忽略临时提交和合并分支提交
-              if msg.startswith('temp:') or msg.startswith('Merge branch'):
-                  continue
-              msg_lower = msg.lower()
-              if msg_lower.startswith('feat') or '✨' in msg:
-                  features.append(f"- {msg}")
-              elif msg_lower.startswith('fix') or msg_lower.startswith('bug') or '🐞' in msg:
-                  bugs.append(f"- {msg}")
-              elif any(msg_lower.startswith(x) for x in ['refactor', 'perf', 'style', 'clean', 'optimize', 'enhance']) or '💫' in msg:
-                  improvements.append(f"- {msg}")
-              else:
-                  improvements.append(f"- {msg}")
-
-          # 上海时间 (UTC+8)
-          tz_shanghai = timezone(timedelta(hours=8))
-          build_time_str = datetime.now(tz_shanghai).strftime('%Y-%m-%d %H:%M:%S')
-
-          body = []
-          body.append("## 版本信息")
-          body.append(f"- **版本**: v{version}")
-          body.append(f"- **Commit**: {commit_hash}")
-          body.append(f"- **构建时间**: {build_time_str} (北京时间)")
-          body.append(f"- **发布类型**: {release_type}")
-          body.append("")
-
-          body.append("## 更新记录")
-          if features:
-              body.append("**✨ 新增功能**")
-              body.extend(features)
-              body.append("")
-          if improvements:
-              body.append("**💫 体验优化**")
-              body.extend(improvements)
-              body.append("")
-          if bugs:
-              body.append("**🐞 bug 修复**")
-              body.extend(bugs)
-              body.append("")
-
-          if prev_tag:
-              body.append(f"**Full Changelog**: https://github.com/{repo}/compare/{prev_tag}...v{version}")
-
-          # 写到临时目录，防止影响 git 状态导致 GoReleaser 报 dirty 错
-          runner_temp = os.environ.get('RUNNER_TEMP', '.')
-          notes_path = os.path.join(runner_temp, 'release_notes.md')
-          with open(notes_path, 'w', encoding='utf-8') as f:
-              f.write('\n'.join(body))
-
-      - name: Run GoReleaser (Build)
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: release --clean --skip=publish --skip=validate
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish Release to GitHub
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-        with:
-          tag_name: v${{ env.VERSION }}
-          name: ncmm_v${{ env.VERSION }}
-          target_commitish: ${{ env.COMMIT_HASH }}
-          files: |
-            dist/*.zip
-            dist/*.tar.gz
-          overwrite_files: true
-          body_path: ${{ runner.temp }}/release_notes.md
-          generate_release_notes: true
-          draft: false
-          prerelease: ${{ env.RELEASE_TYPE == '预发布版（pre-release）' }}
-          make_latest: ${{ env.RELEASE_TYPE == '最新正式版（latest release）' }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      version: ${{ inputs.version }}
+      commit_sha: ${{ inputs.commit_sha }}
+      release_type: ${{ inputs.release_type }}
+      build_package: true
+      build_image: false

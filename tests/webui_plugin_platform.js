@@ -16,19 +16,25 @@ fs.mkdirSync(output, { recursive: true });
     let running = false, autoStart = false, args = [];
     let failAction = '', releaseStart, startGate;
     let failInstall = false;
+    let installed = true, installedTag = 'v1.0.1', checkedAt = '';
     const plugins = () => [
-      { name: 'qqbot', title: 'QQ 机器人', type: 'daemon', version: '1.0.1', running, autoStart, source: { repository: 'crossgg/ncmm-qqbot', tag: 'v1.0.1' }, update: { latestTag: 'v1.0.2', updateAvailable: true } },
+      ...(installed ? [{ name: 'qqbot', title: 'QQ 机器人', type: 'daemon', version: installedTag, running, autoStart, source: { repository: 'crossgg/ncmm-qqbot', tag: installedTag }, update: { latestTag: 'v1.0.2', checkedAt, updateAvailable: installedTag !== 'v1.0.2' } }] : []),
       { name: 'demo', title: '定时演示', type: 'task', version: '1.0', description: '<img src=x onerror=alert(1)>仅展示文字' },
     ];
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/api/v1/music-partner/points**', route => route.fulfill({ status: 503, json: { error: '隔离测试无账号' } }));
     await page.route('**/api/v1/play-stats', route => route.fulfill({ json: [] }));
     await page.route('**/api/v1/plugins', route => route.fulfill({ json: plugins() }));
-    await page.route('**/api/v1/plugins/market', route => route.fulfill({ json: [{ name: 'qqbot', title: 'QQ 机器人', type: 'daemon', repository: 'crossgg/ncmm-qqbot', description: '隔离测试的公开市场入口', homepage: 'https://github.com/crossgg/ncmm-qqbot' }] }));
-    await page.route('**/api/v1/plugins/updates', route => { checks.push(route.request().postDataJSON()); return route.fulfill({ json: [] }); });
+    await page.route('**/api/v1/plugins/market', route => route.fulfill({ json: [{ name: 'qqbot', title: 'QQ 机器人', type: 'daemon', repository: 'crossgg/ncmm-qqbot', author: 'crossgg', features: ['扫码登录', '<script>'], update: { repository: 'crossgg/ncmm-qqbot', latestTag: 'v1.0.2', checkedAt }, description: '隔离测试的公开市场入口', homepage: 'https://github.com/crossgg/ncmm-qqbot' }] }));
+    await page.route('**/api/v1/plugins/updates', route => {
+      const request = route.request().postDataJSON(); checks.push(request);
+      if (request.force) checkedAt = new Date().toISOString();
+      return route.fulfill({ json: [{ repository: 'crossgg/ncmm-qqbot', latestTag: 'v1.0.2', checkedAt }] });
+    });
     await page.route('**/api/v1/plugins/qqbot/daemon/log', route => route.fulfill({ json: { output: '<img src=x onerror=alert(1)>\n日志仅作为文字显示' } }));
     await page.route('**/api/v1/plugins/install', route => {
       installations.push(route.request().postDataJSON());
+      if (!failInstall) { installed = true; installedTag = 'v1.0.2'; }
       return route.fulfill(failInstall ? { status: 502, json: { error: '模拟安装失败' } } : { json: { success: true, name: 'qqbot' } });
     });
     await page.route(/\/api\/v1\/plugins\/qqbot\/(daemon|start|stop|restart|upgrade)$/, async route => {
@@ -40,6 +46,7 @@ fs.mkdirSync(output, { recursive: true });
       if (action === failAction && method !== 'GET') return route.fulfill({ status: 502, json: { error: `模拟${action}失败` } });
       if (action === 'start' || action === 'restart') running = true;
       if (action === 'stop') running = false;
+      if (action === 'upgrade') installedTag = 'v1.0.2';
       if (action === 'daemon' && method === 'PUT') ({ autoStart, args } = body);
       return route.fulfill({ json: { name: 'qqbot', running, autoStart, args, success: true } });
     });
@@ -60,9 +67,33 @@ fs.mkdirSync(output, { recursive: true });
     assert.equal(await daemon.locator('[data-plugin-action="run"]').count(), 0);
     assert.equal(await page.locator('.plugin-card[data-name="demo"] img').count(), 0, 'plugin text must be escaped');
     await page.locator('#plugin-check-updates').click();
-    await page.waitForFunction(() => !document.querySelector('#plugin-check-updates').disabled);
+    await page.waitForFunction(() => /秒后可检查/.test(document.querySelector('#plugin-check-updates').textContent));
+    assert(await page.locator('#plugin-check-updates').isDisabled());
     assert(checks.some(check => check.force === true));
     assert(checks.some(check => check.force === false), 'automatic version check uses cache');
+    await page.reload({ waitUntil: 'networkidle' });
+    await daemon.waitFor({ state: 'visible' });
+    assert(await page.locator('#plugin-check-updates').isDisabled(), 'server cache must restore cooldown after reload');
+    await page.locator('#plugin-tab-market').click();
+    const market = page.locator('[data-market-name="qqbot"]');
+    await market.waitFor({ state: 'visible' });
+    assert.match(await market.innerText(), /crossgg\/ncmm-qqbot/);
+    assert.match(await market.innerText(), /已安装/);
+    assert.match(await market.innerText(), /可更新 v1.0.2/);
+    assert.equal(await market.locator('script').count(), 0);
+    assert.equal(await market.locator('[data-market-install]').count(), 0);
+    await market.locator('[data-market-upgrade]').click();
+    assert(await page.locator('#plugin-upgrade-dialog').isVisible());
+    await page.locator('[data-close-dialog="plugin-upgrade-dialog"]').click();
+    await page.screenshot({ path: path.join(output, 'plugin-market-desktop.png'), fullPage: true, animations: 'disabled' });
+    await market.locator('[data-market-manage]').click();
+    assert.equal(await page.locator('#plugin-tab-installed').getAttribute('aria-selected'), 'true');
+    assert.equal(await page.locator('#plugin-search').inputValue(), 'qqbot');
+    await page.locator('#plugin-search').fill('');
+    await page.locator('#plugin-tab-installed').press('ArrowRight');
+    assert.equal(await page.locator('#plugin-tab-market').getAttribute('aria-selected'), 'true');
+    await page.locator('#plugin-tab-market').press('ArrowLeft');
+    assert.equal(await page.locator('#plugin-tab-installed').getAttribute('aria-selected'), 'true');
     failAction = 'start';
     await daemon.locator('[data-plugin-action="start"]').click();
     await page.locator('.toast.error').filter({ hasText: '模拟start失败' }).waitFor();
@@ -120,6 +151,10 @@ fs.mkdirSync(output, { recursive: true });
     assert(!await page.evaluate(() => JSON.stringify(localStorage).includes('fixture-token-not-a-secret')));
     await daemon.locator('[data-plugin-action="stop"]').click();
     await daemon.locator('[data-plugin-action="start"]').waitFor({ state: 'visible' });
+    installed = false;
+    await page.locator('#plugin-refresh').click();
+    await daemon.waitFor({ state: 'hidden' });
+    await page.locator('#plugin-tab-market').click();
     await page.locator('[data-market-install="crossgg/ncmm-qqbot"]').click();
     assert.equal(await page.locator('#plugin-install-repo').inputValue(), 'crossgg/ncmm-qqbot');
     await page.locator('#plugin-install-proxy').selectOption('https://githubproxy.cc');
@@ -133,18 +168,22 @@ fs.mkdirSync(output, { recursive: true });
     await page.locator('#plugin-install-dialog').waitFor({ state: 'hidden' });
     assert.equal(installations.at(-1).target, 'crossgg/ncmm-qqbot');
     assert.equal(installations.at(-1).proxy, 'https://githubproxy.cc');
+    assert(await market.locator('[data-market-manage]').isVisible());
+    assert.equal(await market.locator('[data-market-install]').count(), 0, 'newly installed market item must switch to management');
+    assert.equal(await market.locator('[data-market-upgrade]').count(), 0, 'up-to-date install must remove upgrade action');
+    await page.locator('#plugin-tab-installed').click();
     await page.locator('.plugin-card[data-name="demo"] [data-plugin-action="schedule"]').click();
     assert.deepEqual(await page.locator('#schedule-plugin-select option').evaluateAll(options => options.map(option => option.value)), ['demo']);
     await page.locator('#schedule-dialog').evaluate(dialog => dialog.close());
     await page.locator('.toast').last().waitFor({ state: 'hidden' });
-    await page.screenshot({ path: path.join(output, 'plugin-platform-desktop.png'), fullPage: true });
+    await page.screenshot({ path: path.join(output, 'plugin-platform-desktop.png'), fullPage: true, animations: 'disabled' });
     for (const width of [320, 390, 768]) {
       await page.setViewportSize({ width, height: 1000 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `mobile viewport overflow at ${width}`);
       const bounds = await daemon.boundingBox();
       if (!bounds || bounds.x < 0 || bounds.x + bounds.width > width + 1) await page.screenshot({ path: path.join(output, `plugin-clipped-${width}.png`), fullPage: true });
       assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width + 1, `plugin card clipped at ${width}: ${JSON.stringify(bounds)}`);
-      for (const button of await page.locator('#plugin-check-updates, #plugin-market-grid button, #plugin-cards-grid button').all()) {
+      for (const button of await page.locator('#plugin-check-updates:visible, #plugin-cards-grid button:visible').all()) {
         const action = await button.boundingBox();
         assert(action && action.x >= 0 && action.x + action.width <= width + 1, `plugin action clipped at ${width}: ${await button.textContent()}`);
       }
@@ -152,7 +191,14 @@ fs.mkdirSync(output, { recursive: true });
       const dialog = await page.locator('#plugin-upgrade-dialog').boundingBox();
       assert(dialog && dialog.x >= 0 && dialog.x + dialog.width <= width + 1, `upgrade dialog clipped at ${width}`);
       await page.locator('[data-close-dialog="plugin-upgrade-dialog"]').click();
-      if (width === 390) await page.screenshot({ path: path.join(output, 'plugin-platform-mobile.png'), fullPage: true });
+      await page.locator('#plugin-tab-market').click();
+      for (const button of await page.locator('#plugin-market-grid button:visible').all()) {
+        const action = await button.boundingBox();
+        assert(action && action.x >= 0 && action.x + action.width <= width + 1, `market action clipped at ${width}: ${await button.textContent()}`);
+      }
+      if (width === 390) await page.screenshot({ path: path.join(output, 'plugin-market-mobile.png'), fullPage: true, animations: 'disabled' });
+      await page.locator('#plugin-tab-installed').click();
+      if (width === 390) await page.screenshot({ path: path.join(output, 'plugin-platform-mobile.png'), fullPage: true, animations: 'disabled' });
     }
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ result: 'passed', actionsMocked: actions.length, installationsMocked: installations.length, screenshots: output }));

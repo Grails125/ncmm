@@ -183,6 +183,10 @@ func (m *pluginDaemonManager) startLocked(name string) error {
 	if err != nil {
 		return err
 	}
+	executable, err := filepath.Abs(plugin.Path)
+	if err != nil {
+		return fmt.Errorf("无法定位守护插件程序，请检查安装目录")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed || m.ctx.Err() != nil {
@@ -200,7 +204,7 @@ func (m *pluginDaemonManager) startLocked(name string) error {
 		ConfigPath string `json:"config_path"`
 	}{m.opts.Version, "plugin daemon", m.home, m.opts.ConfigPath})
 	output := newTailBuffer(defaultProcessOutputLimit)
-	process, err := m.supervisor.Start(m.ctx, processSpec{Kind: "plugin-daemon", Command: plugin.Path, Args: append([]string(nil), settings.Args...), Dir: filepath.Dir(plugin.Path), Env: append(os.Environ(), "NCMM_PLUGIN=1", "NCMM_HOME="+m.home, "NCMM_CONFIG_PATH="+m.opts.ConfigPath), Stdin: bytes.NewReader(input), Stdout: output, Stderr: output})
+	process, err := m.supervisor.Start(m.ctx, processSpec{Kind: "plugin-daemon", Command: executable, Args: append([]string(nil), settings.Args...), Dir: filepath.Dir(executable), Env: append(os.Environ(), "NCMM_PLUGIN=1", "NCMM_HOME="+m.home, "NCMM_CONFIG_PATH="+m.opts.ConfigPath), Stdin: bytes.NewReader(input), Stdout: output, Stderr: output})
 	if err != nil {
 		m.failures[plugin.Name] = "守护插件启动失败，请检查可执行文件及运行环境"
 		return fmt.Errorf("%s", m.failures[plugin.Name])

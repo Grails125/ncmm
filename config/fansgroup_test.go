@@ -18,7 +18,7 @@ func TestFansGroupDefaultsAndIndependentCommentCredentials(t *testing.T) {
 		t.Fatal("account credentials crossed")
 	}
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte("version: 1.2.2\nfansgroup:\n  webSession: true\n  commentCheckTokens:\n    account-a.json: web-a\n"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 1.2.2-grails.1\nfansgroup:\n  webSession: true\n  commentCheckTokens:\n    account-a.json: web-a\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if err := AutoUpgradeConfig(path); err != nil {

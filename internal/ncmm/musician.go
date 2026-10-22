@@ -807,20 +807,10 @@ func (c *Musician) handlePlayTask(ctx context.Context, db database.Database, sub
 	cfg := c.root.Cfg.Musician.Play
 	rootPlayCfg := c.root.Cfg.PlayIds
 
-	// 1. 确定并集去重候选歌曲 ID 来源
-	var idsSource string
-	var idsFileSource config.StringOrSlice
-
-	if cfg.IDs != "" || len(cfg.IDsFile) > 0 {
-		idsSource = cfg.IDs
-		idsFileSource = cfg.IDsFile
-	} else if rootPlayCfg != nil {
-		idsSource = rootPlayCfg.IDs
-		idsFileSource = rootPlayCfg.IDsFile
-	}
-
-	if idsSource == "" && len(idsFileSource) == 0 {
-		return fmt.Errorf("没有配置任何刷歌歌曲ID，请在 config.yaml 的 musician.play 或 playids 中配置 ids / idsFile")
+	// 歌单保留为来源，在每个实际听歌账号登录后读取，不能复用其他账号的访问结果。
+	songIDs, playlistSources := musicianPlaySources(cfg, rootPlayCfg)
+	if len(songIDs) == 0 && len(playlistSources) == 0 {
+		return fmt.Errorf("没有配置有效歌曲或歌单，请在 musician.play 配置 ids / idsFile，或在 playids 配置歌曲及 playlistIds")
 	}
 
 	// 2. 确定播放时间间隔与每日目标上限参数
@@ -921,7 +911,7 @@ func (c *Musician) handlePlayTask(ctx context.Context, db database.Database, sub
 		}
 
 		// 执行单账号播放打卡，返回该账号实际成功播放的"主歌"数量
-		effectivePlayed, err := p.executeForCookie(ctx, currentAccount, playCandidateIdsSource(cfg.IDs, cfg.IDsFile, rootPlayCfg))
+		effectivePlayed, err := p.executeForCookie(ctx, currentAccount, songIDs, playlistSources...)
 		if err != nil {
 			c.cmd.Printf("    [WARN] 账号 (%s) 运行异常: %s，正准备交由下一辅助号...\n", currentAccount, err)
 		} else {
@@ -942,15 +932,16 @@ func (c *Musician) handlePlayTask(ctx context.Context, db database.Database, sub
 	return nil
 }
 
-// playCandidateIdsSource 构建并集歌池传递给 executeForCookie 判定有效主歌上报
-func playCandidateIdsSource(vipIds string, vipIdsFile config.StringOrSlice, rootPlayCfg *config.PlayIdsConfig) []string {
+// 音乐人专属歌曲源优先；留空时继承普通播放的歌曲、文件和歌单。
+func musicianPlaySources(cfg config.MusicianPlayConf, rootPlayCfg *config.PlayIdsConfig) ([]string, []string) {
 	var rawIds []string
+	var playlistSources []string
 
-	if vipIds != "" || len(vipIdsFile) > 0 {
-		if vipIds != "" {
-			rawIds = append(rawIds, parsePlaySongIDs(vipIds)...)
+	if cfg.IDs != "" || len(cfg.IDsFile) > 0 {
+		if cfg.IDs != "" {
+			rawIds = append(rawIds, parsePlaySongIDs(cfg.IDs)...)
 		}
-		for _, file := range uniqueStrings(vipIdsFile) {
+		for _, file := range uniqueStrings(cfg.IDsFile) {
 			if file != "" {
 				fileIds, err := parseIdsFromFile(file)
 				if err == nil {
@@ -974,6 +965,9 @@ func playCandidateIdsSource(vipIds string, vipIdsFile config.StringOrSlice, root
 				}
 			}
 		}
+		for _, source := range rootPlayCfg.PlaylistIDs {
+			playlistSources = append(playlistSources, playSourceTokens(source)...)
+		}
 	}
 
 	uniqueIds := make([]string, 0)
@@ -984,7 +978,7 @@ func playCandidateIdsSource(vipIds string, vipIdsFile config.StringOrSlice, root
 			uniqueIds = append(uniqueIds, id)
 		}
 	}
-	return uniqueIds
+	return uniqueIds, uniqueStrings(playlistSources)
 }
 
 // ==================== doVipClaimPhase: 音乐人 VIP 自动领取 ====================

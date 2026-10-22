@@ -189,10 +189,10 @@ func TestMusicianCandidatesReuseSongInputParsingAndKeepIndependentPool(t *testin
 		t.Fatal(err)
 	}
 	root := &config.PlayIdsConfig{IDs: "1，2 # 99\n3；4", IDsFile: config.StringOrSlice{file}, PlaylistIDs: config.StringOrSlice{"999"}}
-	if got := playCandidateIdsSource("", nil, root); !reflect.DeepEqual(got, []string{"1", "2", "3", "4"}) {
-		t.Fatalf("fallback candidates = %v", got)
+	if got, playlists := musicianPlaySources(config.MusicianPlayConf{}, root); !reflect.DeepEqual(got, []string{"1", "2", "3", "4"}) || !reflect.DeepEqual(playlists, []string{"999"}) {
+		t.Fatalf("fallback candidates = %v, playlists = %v", got, playlists)
 	}
-	if got := playCandidateIdsSource("10，11 // 97\n12；10", config.StringOrSlice{file}, root); !reflect.DeepEqual(got, []string{"10", "11", "12", "3", "4"}) {
-		t.Fatalf("independent candidates = %v", got)
+	if got, playlists := musicianPlaySources(config.MusicianPlayConf{IDs: "10，11 // 97\n12；10", IDsFile: config.StringOrSlice{file}}, root); !reflect.DeepEqual(got, []string{"10", "11", "12", "3", "4"}) || len(playlists) != 0 {
+		t.Fatalf("independent candidates = %v, playlists = %v", got, playlists)
 	}
 }

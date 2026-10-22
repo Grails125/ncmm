@@ -38,6 +38,41 @@ func newTestDaemons(t *testing.T) (*pluginDaemonManager, *daemonTestPlugins) {
 	return m, plugins
 }
 
+func TestPluginDaemonStartsRelativeExecutableFromItsOwnDirectory(t *testing.T) {
+	t.Chdir(t.TempDir())
+	relative := filepath.Join("plugins", "ncmm-demo", "ncmm-demo.exe")
+	if err := os.MkdirAll(filepath.Dir(relative), 0755); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(relative, data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	ready := filepath.Join(home, "ready")
+	plugins := &daemonTestPlugins{items: []PluginInfo{{Name: "demo", Type: "daemon", Path: relative}}}
+	supervisor := newProcessSupervisor()
+	m, err := newPluginDaemonManager(context.Background(), Options{Home: home}, plugins, supervisor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { m.close(); supervisor.Close(time.Second) })
+	if err := m.configure("demo", pluginDaemonSettings{Args: []string{"-test.run=^TestProcessSupervisorHelperProcess$", "--", processSupervisorHelperMarker, "wait", ready}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.start("demo"); err != nil {
+		t.Fatal(err)
+	}
+	waitForFile(t, ready)
+	state, err := m.state("demo")
+	if err != nil || !state.Running {
+		t.Fatalf("relative daemon did not stay running: %+v %v", state, err)
+	}
+}
+
 func TestPluginDaemonLifecycleAndPersistentOptIn(t *testing.T) {
 	m, plugins := newTestDaemons(t)
 	m.startAutomatic()

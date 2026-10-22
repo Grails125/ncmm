@@ -2,6 +2,7 @@
 setlocal
 cd /d "%~dp0"
 set "NCMM_EXE=%~dp0ncmm.exe"
+set "NCMM_HOME_DIR=%~dp0."
 set "NCMM_WEB_PRESERVE_LEGACY_SCHEDULES=true"
 
 if not exist "%NCMM_EXE%" (
@@ -10,11 +11,13 @@ if not exist "%NCMM_EXE%" (
     exit /b 1
 )
 
-:: 启动服务（新窗口运行，避免阻塞批处理）
-start "NCMM Server" "%NCMM_EXE%" web
-
-:: 等待 2 秒，确保 Web 端口监听已就绪
-timeout /t 2 /nobreak >nul
+:: 后台启动命令确认当前实例就绪后才返回。
+"%NCMM_EXE%" --home "%NCMM_HOME_DIR%" web --background
+if errorlevel 1 (
+    echo [ERROR] WebUI failed to start. Check the output above.
+    pause
+    exit /b 1
+)
 
 :: 打开浏览器访问
 start "" "http://127.0.0.1:3899"

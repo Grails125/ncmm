@@ -9,17 +9,61 @@ const boot = /\r?\n  boot\(\);\r?\n\}\)\(\);\s*$/;
 
 function harness(request) {
   const nodes = new Map(), messages = [];
+  let now = Date.UTC(2026, 9, 22, 12);
+  let timer;
   const document = { querySelector(selector) {
     if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', textContent: '', value: '', checked: false, disabled: false, dataset: {}, classList: { add() {}, remove() {}, toggle() {} }, showModal() { this.open = true; }, close() { this.open = false; }, addEventListener() {} });
     return nodes.get(selector);
-  } };
-  const context = vm.createContext({ document, request, report: (...args) => messages.push(args) });
-  vm.runInContext(source.replace(boot, '\n api = request; toast = report; globalThis.ui = { state, renderPlugins, updateSchedulePluginPanel, checkPluginUpdates, openDaemonSettings, openPluginUpgrade, installPlugin };\n})();'), context);
-  return { ...context.ui, nodes, get: document.querySelector, messages };
+  }, querySelectorAll() { return []; } };
+  const context = vm.createContext({ document, request, Date: class extends Date { static now() { return now; } }, setTimeout(fn) { timer = fn; return 1; }, clearTimeout() { timer = null; }, report: (...args) => messages.push(args) });
+  vm.runInContext(source.replace(boot, '\n api = request; toast = report; globalThis.ui = { state, renderPlugins, loadPluginMarket, updateSchedulePluginPanel, checkPluginUpdates, openDaemonSettings, openPluginUpgrade, installPlugin };\n})();'), context);
+  return { ...context.ui, nodes, get: document.querySelector, messages, advance(ms) { now += ms; const callback = timer; timer = null; callback?.(); } };
 }
 
 const daemon = { name: 'qqbot', title: 'QQ 机器人', type: 'daemon', running: true, autoStart: true, source: { tag: 'v1.0.1' }, update: { latestTag: 'v1.0.2', updateAvailable: true } };
 const task = { name: 'demo', title: '<script>alert(1)</script>', type: 'task', recommendedCron: '0 8 * * *' };
+
+test('市场卡片关联已安装来源、显示真实版本与管理升级入口，并转义元数据', async () => {
+  const ui = harness(async () => [{ name: 'qqbot', title: 'QQ 机器人', repository: 'crossgg/ncmm-qqbot', author: '<img src=x>', features: ['扫码登录', '<script>'], update: { latestTag: 'v1.0.2' } }]);
+  ui.state.plugins = [{ ...daemon, source: { repository: 'crossgg/ncmm-qqbot', tag: 'v1.0.1' } }];
+  await ui.loadPluginMarket();
+  const html = ui.get('#plugin-market-grid').innerHTML;
+  assert.match(html, /crossgg\/ncmm-qqbot/);
+  assert.match(html, /v1\.0\.2/);
+  assert.match(html, /已安装/);
+  assert.match(html, /前往管理/);
+  assert.match(html, /data-market-upgrade="qqbot"/);
+  assert(!html.includes('data-market-install='));
+  assert(!html.includes('<img src=x>'));
+  assert(!html.includes('<script>'));
+  ui.state.plugins = [];
+  await ui.loadPluginMarket();
+  assert.match(ui.get('#plugin-market-grid').innerHTML, /data-market-install=/);
+});
+
+test('手动检查成功后展示60秒倒计时，重复检查被拦截，到时恢复', async () => {
+  let checks = 0;
+  const ui = harness(async url => {
+    if (url.endsWith('/updates')) { checks++; return [{ repository: 'owner/demo', checkedAt: '2026-10-22T12:00:00Z', latestTag: 'v2' }]; }
+    return [];
+  });
+  await ui.checkPluginUpdates(true);
+  assert.equal(ui.get('#plugin-check-updates').disabled, true);
+  assert.match(ui.get('#plugin-check-updates').textContent, /60/);
+  await ui.checkPluginUpdates(true);
+  assert.equal(checks, 1);
+  ui.advance(30000);
+  assert.match(ui.get('#plugin-check-updates').textContent, /30/);
+  ui.advance(30000);
+  assert.equal(ui.get('#plugin-check-updates').disabled, false);
+});
+
+test('重新读取市场缓存恢复检查倒计时，不依赖浏览器存储', async () => {
+  const ui = harness(async () => [{ name: 'qqbot', title: 'QQ 机器人', repository: 'crossgg/ncmm-qqbot', update: { checkedAt: '2026-10-22T11:59:40Z', latestTag: 'v1' } }]);
+  await ui.loadPluginMarket();
+  assert.equal(ui.get('#plugin-check-updates').disabled, true);
+  assert.match(ui.get('#plugin-check-updates').textContent, /40/);
+});
 
 test('常驻与任务插件操作分离，定时表单只接受任务插件且文本转义', () => {
   const ui = harness();

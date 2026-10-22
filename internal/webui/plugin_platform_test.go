@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/3899/ncmm/internal/plugininstall"
 )
@@ -23,6 +24,32 @@ func (p *pluginPlatformTestManager) UpgradePlugin(_ context.Context, name, token
 func (p *pluginPlatformTestManager) CheckPluginUpdates(_ context.Context, force bool) ([]plugininstall.Update, error) {
 	p.force = force
 	return []plugininstall.Update{{Name: "demo", LatestTag: "v2"}}, nil
+}
+
+func (p *pluginPlatformTestManager) CheckPublicPluginRepositories(_ context.Context, repositories []string, force bool) ([]plugininstall.Update, error) {
+	if len(repositories) != 1 || repositories[0] != "crossgg/ncmm-qqbot" {
+		return nil, context.Canceled
+	}
+	return []plugininstall.Update{{Repository: repositories[0], LatestTag: "v2.3.4", CheckedAt: time.Now().UTC()}}, nil
+}
+
+func TestPluginMarketExposesMetadataAndRealCachedVersion(t *testing.T) {
+	server := &Server{plugins: &pluginPlatformTestManager{}}
+	response := httptest.NewRecorder()
+	server.handlePluginMarket(response, httptest.NewRequest("GET", "/api/v1/plugins/market", nil))
+	var entries []struct {
+		Repository string               `json:"repository"`
+		Author     string               `json:"author"`
+		Features   []string             `json:"features"`
+		Update     plugininstall.Update `json:"update"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &entries); err != nil || len(entries) != 1 {
+		t.Fatalf("invalid market response: %s %v", response.Body.String(), err)
+	}
+	entry := entries[0]
+	if entry.Author != "crossgg" || len(entry.Features) == 0 || entry.Update.LatestTag != "v2.3.4" || entry.Update.CheckedAt.IsZero() || entry.Update.Repository != entry.Repository {
+		t.Fatalf("market metadata/version missing: %+v", entry)
+	}
 }
 func TestPluginPlatformAPIContracts(t *testing.T) {
 	manager := &pluginPlatformTestManager{}

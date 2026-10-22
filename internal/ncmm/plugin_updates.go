@@ -56,6 +56,34 @@ func (p *Plugin) readPluginUpdateCache() map[string]plugininstall.Update {
 
 // CheckPluginUpdates 自动检查使用24小时磁盘缓存，手动检查也至少间隔60秒。
 func (p *Plugin) CheckPluginUpdates(ctx context.Context, force bool) ([]plugininstall.Update, error) {
+	sources := []pluginUpdateSource{}
+	for _, info := range p.DiscoverPlugins() {
+		if source := readPluginSource(filepath.Dir(info.Path)); source != nil {
+			sources = append(sources, pluginUpdateSource{name: info.Name, source: *source})
+		}
+	}
+	return p.checkPluginUpdateSources(ctx, sources, force)
+}
+
+type pluginUpdateSource struct {
+	name   string
+	source plugininstall.Source
+}
+
+// CheckPublicPluginRepositories 仅为内置公开市场查询版本，不安装程序、不接收凭据。
+func (p *Plugin) CheckPublicPluginRepositories(ctx context.Context, repositories []string, force bool) ([]plugininstall.Update, error) {
+	sources := make([]pluginUpdateSource, 0, len(repositories))
+	for _, repository := range repositories {
+		target, err := (plugininstall.Options{Target: repository}).ParseTarget()
+		if err != nil || target.Repository != repository {
+			return nil, fmt.Errorf("公开插件仓库标识无效")
+		}
+		sources = append(sources, pluginUpdateSource{source: plugininstall.Source{Repository: repository}})
+	}
+	return p.checkPluginUpdateSources(ctx, sources, force)
+}
+
+func (p *Plugin) checkPluginUpdateSources(ctx context.Context, sources []pluginUpdateSource, force bool) ([]plugininstall.Update, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	lock, err := filelock.Acquire(ctx, p.pluginUpdateCachePath()+".lock")
@@ -65,11 +93,8 @@ func (p *Plugin) CheckPluginUpdates(ctx context.Context, force bool) ([]pluginin
 	defer lock.Close()
 	cache := p.readPluginUpdateCache()
 	result := []plugininstall.Update{}
-	for _, info := range p.DiscoverPlugins() {
-		source := readPluginSource(filepath.Dir(info.Path))
-		if source == nil {
-			continue
-		}
+	for _, item := range sources {
+		source := item.source
 		key := strings.ToLower(source.Repository)
 		update := cache[key]
 		ttl := 24 * time.Hour
@@ -88,9 +113,9 @@ func (p *Plugin) CheckPluginUpdates(ctx context.Context, force bool) ([]pluginin
 			}
 			cache[key] = update
 		}
-		update.Name = info.Name
+		update.Name = item.name
 		update.CurrentTag = source.Tag
-		update.UpdateAvailable = update.Error == "" && update.LatestTag != "" && update.LatestTag != source.Tag
+		update.UpdateAvailable = source.Tag != "" && update.Error == "" && update.LatestTag != "" && update.LatestTag != source.Tag
 		result = append(result, update)
 	}
 	data, err := json.MarshalIndent(cache, "", "  ")

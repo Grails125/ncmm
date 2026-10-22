@@ -11,11 +11,11 @@
 在青龙面板的 **订阅管理** 中添加订阅，或在终端直接运行以下指令：
 
 ```bash
-ql repo https://github.com/3899/ncmm.git "ncmm-" "" "" "" "py"
+ql repo https://github.com/Grails125/ncmm.git "ncmm-" "" "" "" "py"
 ```
 
 > 💡 **国内镜像备用**：若 GitHub 连接较慢，可使用代理地址：
-> `ql repo https://gh-proxy.com/https://github.com/3899/ncmm.git "ncmm-" "" "" "" "py"`
+> `ql repo https://gh-proxy.com/https://github.com/Grails125/ncmm.git "ncmm-" "" "" "" "py"`
 
 ---
 
@@ -23,7 +23,8 @@ ql repo https://github.com/3899/ncmm.git "ncmm-" "" "" "" "py"
 
 ### Step 1. 安装/更新二进制主程序
 1. 在青龙面板的定时任务列表中找到 **`NCMM 安装、更新`** (`ncmm-update.py`)。
-2. 手动运行该脚本，系统会自动识别宿主机/容器平台与架构，并下载最新的 `ncmm` 二进制文件与默认配置文件。
+2. 手动运行该脚本，系统会识别平台与架构，仅下载 `Grails125/ncmm` 中带 `-grails.N` 标识的原生发布。若仓库尚未发布符合要求的包，需先从本仓库源码构建对应平台程序，再放到脚本同级目录；不会回退下载上游程序。
+3. 已有上游程序时先备份数据并替换为本分支构建，不能委托旧上游程序执行更新来完成迁移。`ncmm-update.py` 遇到非原生程序会停止；更新失败不会按进程名强杀其他任务。
 
 ---
 

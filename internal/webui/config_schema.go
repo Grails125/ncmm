@@ -198,6 +198,11 @@ func mainConfigSchema() configTargetSchema {
 		schemaField("network.user_agent.weapi", "Web / PC User-Agent", "WEAPI 协议请求使用。", "user-agent", "string", "textarea"),
 		schemaField("network.user_agent.eapi", "iOS User-Agent", "iPhone/iPad EAPI 请求使用。", "user-agent", "string", "textarea"),
 		schemaField("network.user_agent.xeapi", "Android User-Agent", "Android XEAPI/AEAPI 请求使用。", "user-agent", "string", "textarea"),
+		func() configSchemaField {
+			f := schemaField("play.webSession", "[已废弃] 通用网页播放会话", "旧版字段仅用于配置兼容，始终关闭。剔除 os Cookie 可能触发风控；仅乐迷团保留独立的网页会话开关。", "play-source", "boolean", "switch")
+			f.ReadOnly = true
+			return f
+		}(),
 
 		schemaField("task.sign", "日常一键签到", "在 task 批量执行中包含 sign。", "tasks", "boolean", "switch"),
 		schemaField("task.playids", "播放指定歌曲", "在 task 批量执行中包含 playids。", "tasks", "boolean", "switch"),

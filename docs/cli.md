@@ -60,7 +60,7 @@ ncmm update
 ncmm update --apply
 ```
 
-单文件安装更新后需重启 `ncmm`。官方 Docker 镜像仅允许检查版本，应通过宿主机拉取新镜像。
+单文件安装更新后需重启 `ncmm`。本仓库受 Launcher 管理的 Web 容器可暂存原生更新，经重启健康确认后启用；没有启动器的旧容器需重建。Compose 默认关闭自动下载，不影响手动更新，详见 [Docker 运行时](docker-runtime.md)。
 
 > [!IMPORTANT]
 > **强制升级**：如果发布方在某个 release 里声明了必须升级（普通更新不会声明），那么过了宽限期后，业务命令（`task` / `sign` / `playids` / `musician` / `note` / `daily-song-share` / `vip-member-gift` / `fansgroup` / `plugin`）会被拦截，进程以**退出码 3** 结束，并打印要求版本、原因与升级方式；`update`、`version`、`web`、`login`、`auth`、`help` 始终可用，因此随时可以自救。宽限期内只打印一行提醒，功能不受影响。详见 [配置说明](configuration.md) 的 `updater` 一节。
@@ -207,7 +207,7 @@ ncmm --home run playids --playlist-ids 18425795840 --playlist-ids 'https://music
 
 歌单支持纯数字 ID、`music.163.com` / `y.music.163.com` 的完整歌单链接，以及 `163cn.tv` 官方短链。短链只允许跳转到官方域名，不发送账号 Cookie。每个听歌账号登录后独立读取可访问歌曲，优先使用完整 `trackIds`；权限不足或单个来源失败会提示并跳过，保留其他有效来源。合并后去重，再沿用当前账号的本人及合作作品过滤；歌曲详情或播放权限不足的条目不会被保证可播放。
 
-> **关于播放计数**：`playids`（以及复用它的日推播放、音乐人有效播放）会随 `play.webSession`（默认开启）在播放请求中剔除 `os` cookie，让服务端按网页端会话下发带 `authSecret` 的媒体地址；**上报内容、上报域名与"整首时长等待"逻辑与旧版本完全一致**，不会改变刷歌节奏。
+> **关于播放计数**：普通 `playids`、日推播放和音乐人有效播放保留账号原有 `os` Cookie 及整首等待。`play.webSession` 已废弃，历史值不会开启该行为；只有乐迷团播放由独立 `fansgroup.webSession` 控制。请求成功不代表有效播放入账，实际进度以官方返回为准。
 
 ---
 
@@ -371,7 +371,7 @@ ncmm --home run task --fansgroup
 1. **账号选择**：命令行传入 `--cookie-file` 时只执行该账号；否则根据 `fansGroup.enableMain` 和 `fansGroup.enableSecondaries` 读取 `accounts.main` / `accounts.secondary`。
 2. **任务状态查询**：自动拉取乐迷团详情、加入状态和任务列表，日志中按“已完成 / 未完成”展示当前进度。
 3. **按剩余进度执行**：每项任务执行次数按 `allProgress - currentProgress` 计算，例如 `发布图文笔记 (0/2)` 会发布 2 次，`(1/2)` 只补 1 次。
-4. **播放任务**：解析任务按钮中的 `songIds`，按**网页端真机形态**上报到 `clientlogusf.music.163.com/weapi/feedback/weblog`（`startplay` + `play`，均带 `mainsiteWeb:"1"`），并完整下载一次音频资源。播放链路默认启用 `play.webSession`（请求剔除 `os` cookie），服务端才会下发带 `authSecret` 的媒体地址并把播放计入任务；日志里会打印 `播放地址 authSecret=true/false` 便于确认。**不再等待整首时长**（实测开播+整文件下载即计数，2 首约 15 秒完成）。
+4. **播放任务**：仅在 `fansgroup.webSession: true` 时执行；默认关闭则跳过播放，其他任务继续。独立会话临时过滤 `os`，要求媒体地址带 `authSecret`，完整下载后向 `clientlogusf` 上报网页形态的 `startplay` 和 `play`，不等待整首时长。每轮重新查询官方进度，不能仅凭请求成功认定计数。
 5. **黑胶「每日听3首VIP歌曲」**：实测该任务计数走 App 端专有通道（6 组对照实验均无法推进进度），命令会跳过并提示"需在 App/手机内手动完成"，不影响其它任务。
 5. **图文、分享、点赞任务**：图文任务复用 `note` 配置发布并按 `fansGroup.autoDeleteNote` / `note.autoDelete` 自动删除；分享任务提交分享进度；点赞任务从乐迷团推荐内容中过滤本人和已点赞帖子后执行。
 

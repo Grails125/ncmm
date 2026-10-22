@@ -195,7 +195,7 @@ func TestMusicPartnerFileRangesCannotBeFilledOverInvalidInput(t *testing.T) {
 }
 
 func TestNewerSourceConfigCannotBeDowngraded(t *testing.T) {
-	for _, version := range []string{"1.2.9", "1.3.0", "2.0.0"} {
+	for _, version := range []string{"1.2.10", "1.3.0", "2.0.0"} {
 		t.Run(version, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")
 			original := []byte("version: " + version + "\nfutureField: keep-me\n")

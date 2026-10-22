@@ -330,6 +330,7 @@ type Config struct {
 	Network        *api.Config         `json:"network" yaml:"network"`
 	Database       *database.Config    `json:"database" yaml:"database"`
 	PlayIds        *PlayIdsConfig      `json:"playids" yaml:"playids"`
+	Play           *DeprecatedPlayConf `json:"play" yaml:"play"`
 	Sign           *SignConf           `json:"sign" yaml:"sign"`
 	MixPlay        *MixPlayConf        `json:"mixPlay" yaml:"mixPlay"`
 	Note           *NoteConf           `json:"note" yaml:"note"`
@@ -341,6 +342,11 @@ type Config struct {
 	Task           *TaskConf           `json:"task" yaml:"task"`
 	Updater        *UpdaterConf        `json:"updater" yaml:"updater"`
 	Notify         *NotifyConf         `json:"notify" yaml:"notify"`
+}
+
+// DeprecatedPlayConf 仅兼容旧配置；普通播放不再允许移除 os Cookie。
+type DeprecatedPlayConf struct {
+	WebSession bool `json:"webSession" yaml:"webSession"`
 }
 
 // MusicianConf 音乐人任务配置
@@ -436,6 +442,12 @@ type MusicianPlayConf struct {
 func (c *Config) Validate() error {
 	if err := validateSourceVersion(c.Version); err != nil {
 		return err
+	}
+	if c.Play != nil {
+		c.Play.WebSession = false
+	}
+	if needsOfficialSessionSafetyMigration(c.Version) && c.FansGroup != nil {
+		c.FansGroup.WebSession = false
 	}
 	if c.MusicPartner == nil {
 		c.MusicPartner = &MusicPartnerConf{EnableMain: true, ExtraTasks: true}
@@ -760,90 +772,12 @@ type verStruct struct {
 
 // AutoUpgradeConfigIfNeeded 检查配置文件版本，并在版本不符时自动执行迁移和结构升级合并
 func AutoUpgradeConfigIfNeeded(cfgPath string) error {
-	lock, err := acquireConfigWriteLock(cfgPath)
-	if err != nil {
-		return err
-	}
-	data, err := os.ReadFile(cfgPath)
-	_ = lock.Close()
-	if err != nil {
-		return err
-	}
-	var v verStruct
-	if err := yaml.Unmarshal(data, &v); err != nil {
-		return err
-	}
-	if err := validateSourceVersion(v.Version); err != nil {
-		return err
-	}
-
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return err
-	}
-	partnerUpgrade, err := migrateMusicPartnerRangeNodes(&root)
-	if err != nil {
-		return err
-	}
-	if v.Version != defaultConfig.Version || partnerUpgrade {
-		if _, err := BackupConfigFile(cfgPath, 2); err != nil {
-			log.Warn("[config] 升级前自动备份配置文件失败: %v", err)
-		}
-		// 先执行原有的字段名重命名迁移
-		_ = MigrateConfigFile(cfgPath)
-		// 再执行 AST 级的新配置模板字段与注释合并升级
-		return AutoUpgradeConfig(cfgPath)
-	}
-	return nil
+	return upgradeConfigFile(cfgPath)
 }
 
-// AutoUpgradeConfig 读取旧配置文件，将其与嵌入的新配置模板进行 AST 级递归合并，保存最新结构与中文注释的同时保留用户值
+// AutoUpgradeConfig 合并已验证的默认字段，保留原文、用户值及恢复备份。
 func AutoUpgradeConfig(cfgPath string) error {
-	lock, err := acquireConfigWriteLock(cfgPath)
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
-
-	if _, err := BackupConfigFile(cfgPath, 2); err != nil {
-		log.Warn("[config] 升级前自动备份配置文件失败: %v", err)
-	}
-
-	userData, err := os.ReadFile(cfgPath)
-	if err != nil {
-		return err
-	}
-	var version verStruct
-	if err := yaml.Unmarshal(userData, &version); err != nil {
-		return err
-	}
-	if err := validateSourceVersion(version.Version); err != nil {
-		return err
-	}
-
-	var userRoot yaml.Node
-	if err := yaml.Unmarshal(userData, &userRoot); err != nil {
-		return err
-	}
-	if _, err := migrateMusicPartnerRangeNodes(&userRoot); err != nil {
-		return err
-	}
-
-	var defaultRoot yaml.Node
-	if err := yaml.Unmarshal(defaultConfigByte, &defaultRoot); err != nil {
-		return err
-	}
-
-	if len(defaultRoot.Content) > 0 && len(userRoot.Content) > 0 {
-		mergeYAMLNodes(defaultRoot.Content[0], userRoot.Content[0])
-	}
-
-	output, err := yaml.Marshal(&defaultRoot)
-	if err != nil {
-		return err
-	}
-
-	return atomicfile.Write(cfgPath, output, 0644)
+	return upgradeConfigFile(cfgPath)
 }
 
 // 合并新模板前先展开旧字段，防止模板默认范围覆盖用户原有策略和目标。
@@ -884,7 +818,7 @@ func migrateMusicPartnerRangeNodes(root *yaml.Node) (bool, error) {
 	return changed, nil
 }
 
-// 本分支恢复自 1.2.2，拒绝将未公开源码版本的配置降级写回。
+// 已逐项兼容公开到 1.2.9 的配置；未知未来版本仍拒绝改写。
 func validateSourceVersion(version string) error {
 	core := strings.SplitN(strings.TrimPrefix(strings.TrimSpace(version), "v"), "-", 2)[0]
 	if core == "" {
@@ -894,7 +828,7 @@ func validateSourceVersion(version string) error {
 	if len(parts) > 3 {
 		return fmt.Errorf("无法识别配置版本，请为本分支使用独立数据目录")
 	}
-	baseline := []int{1, 2, 2}
+	baseline := []int{1, 2, 9}
 	for i := 0; i < 3; i++ {
 		n := 0
 		if i < len(parts) {
@@ -905,63 +839,13 @@ func validateSourceVersion(version string) error {
 			}
 		}
 		if n > baseline[i] {
-			return fmt.Errorf("当前源码基于 1.2.2，不能降级读取较新版本配置，请使用独立数据目录")
+			return fmt.Errorf("配置版本高于已验证的 1.2.9，请先使用独立数据目录核对兼容性")
 		}
 		if n < baseline[i] {
 			return nil
 		}
 	}
 	return nil
-}
-
-func mergeYAMLNodes(dest, src *yaml.Node) {
-	if dest.Kind != src.Kind {
-		return
-	}
-	switch dest.Kind {
-	case yaml.DocumentNode:
-		if len(dest.Content) > 0 && len(src.Content) > 0 {
-			mergeYAMLNodes(dest.Content[0], src.Content[0])
-		}
-	case yaml.MappingNode:
-		for i := 0; i < len(dest.Content); i += 2 {
-			destKey := dest.Content[i].Value
-			destVal := dest.Content[i+1]
-
-			var srcVal *yaml.Node
-			for j := 0; j < len(src.Content); j += 2 {
-				if src.Content[j].Value == destKey {
-					srcVal = src.Content[j+1]
-					break
-				}
-			}
-
-			if srcVal != nil {
-				if destKey == "version" {
-					continue
-				}
-				if destKey == "antiCheatTokens" || destKey == "commentCheckTokens" || destKey == "comments" {
-					destVal.Kind = srcVal.Kind
-					destVal.Tag = srcVal.Tag
-					destVal.Style = srcVal.Style
-					destVal.Value = srcVal.Value
-					destVal.Content = srcVal.Content
-					destVal.FootComment = srcVal.FootComment
-					continue
-				}
-				if destVal.Kind == yaml.MappingNode && srcVal.Kind == yaml.MappingNode {
-					mergeYAMLNodes(destVal, srcVal)
-				} else if destVal.Kind == yaml.SequenceNode && srcVal.Kind == yaml.SequenceNode {
-					destVal.Content = srcVal.Content
-				} else {
-					destVal.Value = srcVal.Value
-					destVal.Tag = srcVal.Tag
-					destVal.Kind = srcVal.Kind
-					destVal.Content = srcVal.Content
-				}
-			}
-		}
-	}
 }
 
 // MigrateConfigFile 自动将旧的 primary / enablePrimary 配置字段升级迁移为 main / enableMain
@@ -971,28 +855,28 @@ func MigrateConfigFile(cfgPath string) error {
 		return err
 	}
 	defer lock.Close()
-
-	if _, err := BackupConfigFile(cfgPath, 2); err != nil {
-		log.Warn("[config] 升级前自动备份配置文件失败: %v", err)
-	}
-
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return err
 	}
-
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
+	var original yaml.Node
+	if err := yaml.Unmarshal(data, &original); err != nil {
 		return err
 	}
-
-	modified := migrateNode(&root)
-	if !modified {
+	var sourceValues any
+	if err := original.Decode(&sourceValues); err != nil {
+		return err
+	}
+	updated := cloneYAMLNode(&original)
+	if !migrateNode(updated) {
 		return nil
 	}
-
-	output, err := yaml.Marshal(&root)
+	preserveChangedAliasValues(&original, updated)
+	output, err := renderYAMLChanges(data, &original, updated)
 	if err != nil {
+		return err
+	}
+	if _, err := BackupConfigFile(cfgPath, 5); err != nil {
 		return err
 	}
 	return atomicfile.Write(cfgPath, output, 0644)
@@ -1093,6 +977,10 @@ func migrateNode(node *yaml.Node) bool {
 
 // BackupConfigFile 在配置文件的同级 backups 子目录下创建备份，并自动保留最新的 maxBackups 份
 func BackupConfigFile(cfgPath string, maxBackups int) (string, error) {
+	return backupConfigFileAt(cfgPath, maxBackups, time.Now())
+}
+
+func backupConfigFileAt(cfgPath string, maxBackups int, now time.Time) (string, error) {
 	if cfgPath == "" || cfgPath == "default" {
 		return "", nil
 	}
@@ -1108,7 +996,7 @@ func BackupConfigFile(cfgPath string, maxBackups int) (string, error) {
 	}
 
 	if maxBackups <= 0 {
-		maxBackups = 2
+		maxBackups = 5
 	}
 
 	cfgDir := filepath.Dir(cfgPath)
@@ -1121,14 +1009,14 @@ func BackupConfigFile(cfgPath string, maxBackups int) (string, error) {
 	ext := filepath.Ext(baseName)
 	prefix := strings.TrimSuffix(baseName, ext)
 
-	// 检查已有的备份文件
-	pattern := filepath.Join(backupDir, fmt.Sprintf("%s_*%s", prefix, ext))
-	matches, _ := filepath.Glob(pattern)
+	backups, err := sortedConfigBackups(backupDir, prefix, ext)
+	if err != nil {
+		return "", err
+	}
 
 	// 检查最新备份内容是否与当前文件完全一致（避免同一更新流程中重复生成冗余备份）
-	if len(matches) > 0 {
-		sort.Strings(matches)
-		latestBackup := matches[len(matches)-1]
+	if len(backups) > 0 {
+		latestBackup := backups[len(backups)-1].path
 		if latestData, err := os.ReadFile(latestBackup); err == nil {
 			if bytes.Equal(latestData, data) {
 				return latestBackup, nil
@@ -1136,16 +1024,38 @@ func BackupConfigFile(cfgPath string, maxBackups int) (string, error) {
 		}
 	}
 
-	timestamp := time.Now().Format("20060102_150405")
-	backupName := fmt.Sprintf("%s_%s%s", prefix, timestamp, ext)
-	backupPath := filepath.Join(backupDir, backupName)
-
-	if _, err := os.Stat(backupPath); err == nil {
-		backupName = fmt.Sprintf("%s_%s_%03d%s", prefix, timestamp, time.Now().Nanosecond()/1e6, ext)
-		backupPath = filepath.Join(backupDir, backupName)
+	timestamp := now.Format("20060102_150405")
+	var sequence uint64
+	for _, backup := range backups {
+		stamp, number, ok := configBackupOrder(backup.path, prefix, ext)
+		if ok && stamp == timestamp && number > sequence {
+			sequence = number
+		}
+	}
+	var backupPath string
+	for {
+		sequence++
+		if sequence == 0 {
+			return "", fmt.Errorf("backup sequence exhausted")
+		}
+		backupPath = filepath.Join(backupDir, fmt.Sprintf("%s_%s_%020d%s", prefix, timestamp, sequence, ext))
+		// 独占预留文件名，避免同一时刻的备份或并发调用覆盖已有内容。
+		reserved, err := os.OpenFile(backupPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("reserve backup file: %w", err)
+		}
+		if err := reserved.Close(); err != nil {
+			_ = os.Remove(backupPath)
+			return "", err
+		}
+		break
 	}
 
 	if err := atomicfile.Write(backupPath, data, 0644); err != nil {
+		_ = os.Remove(backupPath)
 		return "", fmt.Errorf("write backup file: %w", err)
 	}
 
@@ -1156,31 +1066,74 @@ func BackupConfigFile(cfgPath string, maxBackups int) (string, error) {
 	return backupPath, nil
 }
 
-func cleanOldBackups(backupDir, prefix, ext string, maxBackups int) {
+type configBackupFile struct {
+	path    string
+	modTime time.Time
+}
+
+func sortedConfigBackups(backupDir, prefix, ext string) ([]configBackupFile, error) {
 	pattern := filepath.Join(backupDir, fmt.Sprintf("%s_*%s", prefix, ext))
 	matches, err := filepath.Glob(pattern)
-	if err != nil || len(matches) <= maxBackups {
-		return
+	if err != nil {
+		return nil, err
 	}
 
-	type fileItem struct {
-		path    string
-		modTime time.Time
-	}
-	items := make([]fileItem, 0, len(matches))
+	items := make([]configBackupFile, 0, len(matches))
 	for _, m := range matches {
 		fi, err := os.Stat(m)
-		if err == nil {
-			items = append(items, fileItem{path: m, modTime: fi.ModTime()})
+		// 空的独占预留文件尚未完成原子写入，不能参与去重或清理。
+		if err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
+			items = append(items, configBackupFile{path: m, modTime: fi.ModTime()})
 		}
 	}
 
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].modTime.Equal(items[j].modTime) {
+			stampI, sequenceI, okI := configBackupOrder(items[i].path, prefix, ext)
+			stampJ, sequenceJ, okJ := configBackupOrder(items[j].path, prefix, ext)
+			if okI != okJ {
+				return !okI
+			}
+			if okI && okJ {
+				if stampI != stampJ {
+					return stampI < stampJ
+				}
+				if sequenceI != sequenceJ {
+					return sequenceI < sequenceJ
+				}
+			}
 			return items[i].path < items[j].path
 		}
 		return items[i].modTime.Before(items[j].modTime)
 	})
+	return items, nil
+}
+
+func configBackupOrder(path, prefix, ext string) (string, uint64, bool) {
+	name := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), prefix+"_"), ext)
+	const layout = "20060102_150405"
+	if len(name) < len(layout) {
+		return "", 0, false
+	}
+	stamp := name[:len(layout)]
+	if _, err := time.Parse(layout, stamp); err != nil {
+		return "", 0, false
+	}
+	if len(name) == len(layout) {
+		return stamp, 0, true
+	}
+	if name[len(layout)] != '_' {
+		return "", 0, false
+	}
+	sequence, err := strconv.ParseUint(name[len(layout)+1:], 10, 64)
+	return stamp, sequence, err == nil
+}
+
+func cleanOldBackups(backupDir, prefix, ext string, maxBackups int) {
+	items, err := sortedConfigBackups(backupDir, prefix, ext)
+	if err != nil || len(items) <= maxBackups {
+		return
+	}
 
 	toDelete := len(items) - maxBackups
 	for i := 0; i < toDelete; i++ {
