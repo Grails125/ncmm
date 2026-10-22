@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -160,13 +161,26 @@ func TestUpgradeRejectsAmbiguousYAMLWithoutWriting(t *testing.T) {
 
 func TestDefaultBackupWindowKeepsFiveDifferentVersions(t *testing.T) {
 	path := writeCompatibilityConfig(t, "version: 1.2.1\n")
+	now := time.Date(2000, time.January, 2, 3, 4, 5, 647000000, time.UTC)
 	var latest []string
 	for i := 0; i < 7; i++ {
-		if err := os.WriteFile(path, []byte(fmt.Sprintf("version: 1.2.1\n# 编辑 %d\n", i)), 0600); err != nil {
+		content := []byte(fmt.Sprintf("version: 1.2.1\n# 编辑 %d\n", i))
+		if err := os.WriteFile(path, content, 0600); err != nil {
 			t.Fatal(err)
 		}
-		backup, err := BackupConfigFile(path, 0)
+		backup, err := backupConfigFileAt(path, 0, now)
 		if err != nil {
+			t.Fatal(err)
+		}
+		for _, previous := range latest {
+			if backup == previous {
+				t.Fatalf("different contents reused backup path %q", backup)
+			}
+		}
+		if got, err := os.ReadFile(backup); err != nil || !bytes.Equal(got, content) {
+			t.Fatalf("new backup content = %q, %v", got, err)
+		}
+		if err := os.Chtimes(backup, now, now); err != nil {
 			t.Fatal(err)
 		}
 		latest = append(latest, backup)
@@ -175,10 +189,98 @@ func TestDefaultBackupWindowKeepsFiveDifferentVersions(t *testing.T) {
 	if err != nil || len(files) != 5 {
 		t.Fatalf("backup count = %d, %v", len(files), err)
 	}
-	for _, path := range latest[2:] {
-		if _, err := os.Stat(path); err != nil {
-			t.Fatal("latest backup missing", err)
+	for i, backup := range latest {
+		got, err := os.ReadFile(backup)
+		if i < 2 {
+			if !os.IsNotExist(err) {
+				t.Fatalf("old backup not pruned: %s, %v", backup, err)
+			}
+			continue
 		}
+		if want := fmt.Sprintf("version: 1.2.1\n# 编辑 %d\n", i); err != nil || string(got) != want {
+			t.Fatalf("latest backup content = %q, %v; want %q", got, err, want)
+		}
+	}
+	if duplicate, err := backupConfigFileAt(path, 0, now); err != nil || duplicate != latest[len(latest)-1] {
+		t.Fatalf("latest identical backup was not reused: %q, %v", duplicate, err)
+	}
+}
+
+func TestBackupOrderingWithLegacyNamesAndEqualModificationTimes(t *testing.T) {
+	path := writeCompatibilityConfig(t, "version: 1.2.1\n")
+	now := time.Date(2000, time.January, 2, 3, 4, 5, 647000000, time.UTC)
+	dir := filepath.Join(filepath.Dir(path), "backups")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	var contents []string
+	stamp := now.Format("20060102_150405")
+	for i, name := range []string{"config_" + stamp + ".yaml", "config_" + stamp + "_001.yaml", "config_" + stamp + "_999.yaml"} {
+		backup := filepath.Join(dir, name)
+		content := fmt.Sprintf("version: 1.2.1\n# 旧备份 %d\n", i)
+		if err := os.WriteFile(backup, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(backup, now, now); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, backup)
+		contents = append(contents, content)
+	}
+	for i := 0; i < 4; i++ {
+		content := fmt.Sprintf("version: 1.2.1\n# 新备份 %d\n", i)
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		backup, err := backupConfigFileAt(path, 0, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(backup, now, now); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, backup)
+		contents = append(contents, content)
+		if duplicate, err := backupConfigFileAt(path, 0, now); err != nil || duplicate != backup {
+			t.Fatalf("newest equal-mtime backup not reused: %q, %v; want %q", duplicate, err, backup)
+		}
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "config_*.yaml"))
+	if err != nil || len(files) != 5 {
+		t.Fatalf("retained backups = %d, %v", len(files), err)
+	}
+	for i, backup := range paths {
+		got, err := os.ReadFile(backup)
+		if i < 2 {
+			if !os.IsNotExist(err) {
+				t.Fatalf("old legacy backup not pruned: %s, %v", backup, err)
+			}
+			continue
+		}
+		if err != nil || string(got) != contents[i] {
+			t.Fatalf("retained backup = %q, %v; want %q", got, err, contents[i])
+		}
+	}
+}
+
+func TestBackupDoesNotOverwriteOrPruneReservedName(t *testing.T) {
+	path := writeCompatibilityConfig(t, "version: 1.2.1\n")
+	now := time.Date(2000, time.January, 2, 3, 4, 5, 647000000, time.UTC)
+	dir := filepath.Join(filepath.Dir(path), "backups")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	reserved := filepath.Join(dir, "config_"+now.Format("20060102_150405")+"_00000000000000000001.yaml")
+	if err := os.WriteFile(reserved, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	backup, err := backupConfigFileAt(path, 1, now)
+	if err != nil || backup == reserved {
+		t.Fatalf("reserved name was reused: %q, %v", backup, err)
+	}
+	if data, err := os.ReadFile(reserved); err != nil || len(data) != 0 {
+		t.Fatalf("incomplete reservation was overwritten or pruned: %q, %v", data, err)
 	}
 }
 

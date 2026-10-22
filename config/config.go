@@ -977,6 +977,10 @@ func migrateNode(node *yaml.Node) bool {
 
 // BackupConfigFile 在配置文件的同级 backups 子目录下创建备份，并自动保留最新的 maxBackups 份
 func BackupConfigFile(cfgPath string, maxBackups int) (string, error) {
+	return backupConfigFileAt(cfgPath, maxBackups, time.Now())
+}
+
+func backupConfigFileAt(cfgPath string, maxBackups int, now time.Time) (string, error) {
 	if cfgPath == "" || cfgPath == "default" {
 		return "", nil
 	}
@@ -1005,14 +1009,14 @@ func BackupConfigFile(cfgPath string, maxBackups int) (string, error) {
 	ext := filepath.Ext(baseName)
 	prefix := strings.TrimSuffix(baseName, ext)
 
-	// 检查已有的备份文件
-	pattern := filepath.Join(backupDir, fmt.Sprintf("%s_*%s", prefix, ext))
-	matches, _ := filepath.Glob(pattern)
+	backups, err := sortedConfigBackups(backupDir, prefix, ext)
+	if err != nil {
+		return "", err
+	}
 
 	// 检查最新备份内容是否与当前文件完全一致（避免同一更新流程中重复生成冗余备份）
-	if len(matches) > 0 {
-		sort.Strings(matches)
-		latestBackup := matches[len(matches)-1]
+	if len(backups) > 0 {
+		latestBackup := backups[len(backups)-1].path
 		if latestData, err := os.ReadFile(latestBackup); err == nil {
 			if bytes.Equal(latestData, data) {
 				return latestBackup, nil
@@ -1020,16 +1024,38 @@ func BackupConfigFile(cfgPath string, maxBackups int) (string, error) {
 		}
 	}
 
-	timestamp := time.Now().Format("20060102_150405")
-	backupName := fmt.Sprintf("%s_%s%s", prefix, timestamp, ext)
-	backupPath := filepath.Join(backupDir, backupName)
-
-	if _, err := os.Stat(backupPath); err == nil {
-		backupName = fmt.Sprintf("%s_%s_%03d%s", prefix, timestamp, time.Now().Nanosecond()/1e6, ext)
-		backupPath = filepath.Join(backupDir, backupName)
+	timestamp := now.Format("20060102_150405")
+	var sequence uint64
+	for _, backup := range backups {
+		stamp, number, ok := configBackupOrder(backup.path, prefix, ext)
+		if ok && stamp == timestamp && number > sequence {
+			sequence = number
+		}
+	}
+	var backupPath string
+	for {
+		sequence++
+		if sequence == 0 {
+			return "", fmt.Errorf("backup sequence exhausted")
+		}
+		backupPath = filepath.Join(backupDir, fmt.Sprintf("%s_%s_%020d%s", prefix, timestamp, sequence, ext))
+		// 独占预留文件名，避免同一时刻的备份或并发调用覆盖已有内容。
+		reserved, err := os.OpenFile(backupPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("reserve backup file: %w", err)
+		}
+		if err := reserved.Close(); err != nil {
+			_ = os.Remove(backupPath)
+			return "", err
+		}
+		break
 	}
 
 	if err := atomicfile.Write(backupPath, data, 0644); err != nil {
+		_ = os.Remove(backupPath)
 		return "", fmt.Errorf("write backup file: %w", err)
 	}
 
@@ -1040,31 +1066,74 @@ func BackupConfigFile(cfgPath string, maxBackups int) (string, error) {
 	return backupPath, nil
 }
 
-func cleanOldBackups(backupDir, prefix, ext string, maxBackups int) {
+type configBackupFile struct {
+	path    string
+	modTime time.Time
+}
+
+func sortedConfigBackups(backupDir, prefix, ext string) ([]configBackupFile, error) {
 	pattern := filepath.Join(backupDir, fmt.Sprintf("%s_*%s", prefix, ext))
 	matches, err := filepath.Glob(pattern)
-	if err != nil || len(matches) <= maxBackups {
-		return
+	if err != nil {
+		return nil, err
 	}
 
-	type fileItem struct {
-		path    string
-		modTime time.Time
-	}
-	items := make([]fileItem, 0, len(matches))
+	items := make([]configBackupFile, 0, len(matches))
 	for _, m := range matches {
 		fi, err := os.Stat(m)
-		if err == nil {
-			items = append(items, fileItem{path: m, modTime: fi.ModTime()})
+		// 空的独占预留文件尚未完成原子写入，不能参与去重或清理。
+		if err == nil && fi.Mode().IsRegular() && fi.Size() > 0 {
+			items = append(items, configBackupFile{path: m, modTime: fi.ModTime()})
 		}
 	}
 
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].modTime.Equal(items[j].modTime) {
+			stampI, sequenceI, okI := configBackupOrder(items[i].path, prefix, ext)
+			stampJ, sequenceJ, okJ := configBackupOrder(items[j].path, prefix, ext)
+			if okI != okJ {
+				return !okI
+			}
+			if okI && okJ {
+				if stampI != stampJ {
+					return stampI < stampJ
+				}
+				if sequenceI != sequenceJ {
+					return sequenceI < sequenceJ
+				}
+			}
 			return items[i].path < items[j].path
 		}
 		return items[i].modTime.Before(items[j].modTime)
 	})
+	return items, nil
+}
+
+func configBackupOrder(path, prefix, ext string) (string, uint64, bool) {
+	name := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), prefix+"_"), ext)
+	const layout = "20060102_150405"
+	if len(name) < len(layout) {
+		return "", 0, false
+	}
+	stamp := name[:len(layout)]
+	if _, err := time.Parse(layout, stamp); err != nil {
+		return "", 0, false
+	}
+	if len(name) == len(layout) {
+		return stamp, 0, true
+	}
+	if name[len(layout)] != '_' {
+		return "", 0, false
+	}
+	sequence, err := strconv.ParseUint(name[len(layout)+1:], 10, 64)
+	return stamp, sequence, err == nil
+}
+
+func cleanOldBackups(backupDir, prefix, ext string, maxBackups int) {
+	items, err := sortedConfigBackups(backupDir, prefix, ext)
+	if err != nil || len(items) <= maxBackups {
+		return
+	}
 
 	toDelete := len(items) - maxBackups
 	for i := 0; i < toDelete; i++ {
