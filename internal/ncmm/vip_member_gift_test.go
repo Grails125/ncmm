@@ -86,7 +86,7 @@ func TestVipMemberGiftExecuteClaimsWithoutTokenAndProtectsSecondaries(t *testing
 			}
 			var output bytes.Buffer
 			command.Command().SetOut(&output)
-			giftCalls, acceptCalls := 0, 0
+			giftCalls, acceptCalls, artistSubscriptionCalls := 0, 0, 0
 			command.newClient = func(network *api.Config, l *log.Logger) (*api.Client, error) {
 				client, err := api.NewClient(network, l)
 				if err != nil {
@@ -100,6 +100,7 @@ func TestVipMemberGiftExecuteClaimsWithoutTokenAndProtectsSecondaries(t *testing
 					case "/weapi/w/nuser/account/get":
 						return giftJSONResponse(request, `{"code":200,"account":{"id":42},"profile":{"nickname":"测试用户"}}`), nil
 					case "/weapi/artist/sub":
+						artistSubscriptionCalls++
 						return giftJSONResponse(request, `{"code":200}`), nil
 					case "/eapi/vipactivity/app/vip/invitation/page/info":
 						giftCalls++
@@ -118,6 +119,9 @@ func TestVipMemberGiftExecuteClaimsWithoutTokenAndProtectsSecondaries(t *testing
 			}
 			if err := command.ExecuteForCookie(context.Background(), accountPath); err != nil {
 				t.Fatal(err)
+			}
+			if artistSubscriptionCalls != 0 {
+				t.Fatalf("会员礼品任务不应额外关注歌手，实际请求 %d 次", artistSubscriptionCalls)
 			}
 			if giftCalls != tc.wantGiftCalls || acceptCalls != 1 || cloudReads.Load() != 1 || cloudSuccesses.Load() != 1 {
 				t.Fatalf("gift=%d want=%d accept=%d cloud_reads=%d success=%d log=%s", giftCalls, tc.wantGiftCalls, acceptCalls, cloudReads.Load(), cloudSuccesses.Load(), output.String())

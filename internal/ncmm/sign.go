@@ -492,12 +492,6 @@ func (c *SignIn) runSignForCookie(
 		log.Debug("TokenRefresh err: %s", err)
 	}
 
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Duration(5+rand.Intn(11)) * time.Second):
-		syncSessionConfig(ctx, cli, cookieFile, userId, nil, c.root.Cfg.Database)
-	}
-
 	c.cmd.Printf("[sign] -----------------------------------------------\n\n")
 	return nil
 }

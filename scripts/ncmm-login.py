@@ -73,6 +73,19 @@ def split_items(val, extra_separators=""):
         s = s.replace(';', '\n')
     return [line.strip() for line in s.splitlines() if line.strip()]
 
+def run_login(cmd):
+    """只记录操作结果，避免参数、子进程报错或调试输出泄漏登录凭据。"""
+    try:
+        res = subprocess.run(cmd, cwd=current_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        print("[ERROR] 登录子进程执行异常，请检查程序和运行环境。")
+        return False
+    if res.returncode != 0:
+        print(f"[ERROR] 登录命令执行失败 (exit code: {res.returncode})，请检查登录配置。")
+        return False
+    print("[LOG] 登录命令执行完成。")
+    return True
+
 def login_by_cookiecloud(binary_path):
     """方式 1：通过 CookieCloud 自动同步登录"""
     uuid = os.getenv("NCMM_COOKIECLOUD_UUID") or os.getenv("COOKIECLOUD_UUID")
@@ -85,11 +98,9 @@ def login_by_cookiecloud(binary_path):
               "http://127.0.0.1:8088")
 
     if uuid and password:
-        print(f"[LOG] 检测到 CookieCloud 配置 (UUID: {uuid[:6]}***)，正在从 {server} 同步...")
+        print("[LOG] 检测到 CookieCloud 配置，正在同步登录...")
         cmd = [binary_path, "login", "cookiecloud", "-s", server, "-u", uuid, "-p", password]
-        print(f"[LOG] 正在执行: {' '.join(cmd)}")
-        res = subprocess.run(cmd, cwd=current_dir)
-        return res.returncode == 0
+        return run_login(cmd)
     return False
 
 def format_cookie(c_val):
@@ -109,9 +120,7 @@ def login_by_env_cookie(binary_path):
             c_str = format_cookie(main_cookie.strip())
             print(f"[LOG] 正在导入主账号 (来自 NCMM_MAIN_COOKIE)...")
             cmd = [binary_path, "login", "cookie", "-m", c_str]
-            print(f"[LOG] 正在执行: {' '.join(cmd)}")
-            res = subprocess.run(cmd, cwd=current_dir)
-            if res.returncode == 0:
+            if run_login(cmd):
                 success_count += 1
 
         if sec_cookie:
@@ -121,9 +130,7 @@ def login_by_env_cookie(binary_path):
                 c_str = format_cookie(c_val)
                 print(f"[LOG] 正在导入辅助账号 #{idx}...")
                 cmd = [binary_path, "login", "cookie", c_str]
-                print(f"[LOG] 正在执行: {' '.join(cmd)}")
-                res = subprocess.run(cmd, cwd=current_dir)
-                if res.returncode == 0:
+                if run_login(cmd):
                     success_count += 1
         return success_count > 0
 
@@ -143,9 +150,7 @@ def login_by_env_cookie(binary_path):
             cmd.append(c_str)
 
             print(f"[LOG] 正在导入账号 #{idx} ({'主账号' if idx == 1 else '辅助账号'})...")
-            print(f"[LOG] 正在执行: {' '.join(cmd)}")
-            res = subprocess.run(cmd, cwd=current_dir)
-            if res.returncode == 0:
+            if run_login(cmd):
                 success_count += 1
         return success_count > 0
 
@@ -172,14 +177,12 @@ def login_by_file(binary_path):
             if os.path.exists(main_path):
                 base_name = os.path.splitext(os.path.basename(main_path))[0]
                 json_file = f"{base_name}.json"
-                print(f"[LOG] 正在从文件导入主账号 (来自 NCMM_MAIN_COOKIE_FILE): {main_path}")
+                print("[LOG] 正在从文件导入主账号 (来自 NCMM_MAIN_COOKIE_FILE)...")
                 cmd = [binary_path, "login", "cookie", "-m", "-f", main_path, "-o", json_file]
-                print(f"[LOG] 正在执行: {' '.join(cmd)}")
-                res = subprocess.run(cmd, cwd=current_dir)
-                if res.returncode == 0:
+                if run_login(cmd):
                     success_count += 1
             else:
-                print(f"[WARNING] 指定的主账号 Cookie 文件不存在: {main_path}")
+                print("[WARNING] 指定的主账号 Cookie 文件不存在。")
 
         if sec_files_var:
             sec_file_list = split_items(sec_files_var, extra_separators=",;")
@@ -189,14 +192,12 @@ def login_by_file(binary_path):
                 if os.path.exists(sec_path):
                     base_name = os.path.splitext(os.path.basename(sec_path))[0]
                     json_file = f"{base_name}.json"
-                    print(f"[LOG] 正在从文件导入辅助账号 #{idx}: {sec_path}")
+                    print(f"[LOG] 正在从文件导入辅助账号 #{idx}...")
                     cmd = [binary_path, "login", "cookie", "-f", sec_path, "-o", json_file]
-                    print(f"[LOG] 正在执行: {' '.join(cmd)}")
-                    res = subprocess.run(cmd, cwd=current_dir)
-                    if res.returncode == 0:
+                    if run_login(cmd):
                         success_count += 1
                 else:
-                    print(f"[WARNING] 指定的辅助账号 Cookie 文件不存在: {sec_path}")
+                    print(f"[WARNING] 指定的辅助账号 #{idx} Cookie 文件不存在。")
         return success_count > 0
 
     # 情况 B：配置了通用 NCMM_COOKIE_FILE（或 COOKIE_FILE），与 NCMM_COOKIE 保持完全相同的逻辑
@@ -217,13 +218,11 @@ def login_by_file(binary_path):
                     cmd.append("-m")
                 cmd.extend(["-f", f_path, "-o", json_file])
 
-                print(f"[LOG] 正在从文件导入账号 #{idx} ({'主账号' if idx == 1 else '辅助账号'}): {f_path}")
-                print(f"[LOG] 正在执行: {' '.join(cmd)}")
-                res = subprocess.run(cmd, cwd=current_dir)
-                if res.returncode == 0:
+                print(f"[LOG] 正在从文件导入账号 #{idx} ({'主账号' if idx == 1 else '辅助账号'})...")
+                if run_login(cmd):
                     success_count += 1
             else:
-                print(f"[WARNING] 指定的 Cookie 文件不存在: {f_path}")
+                print(f"[WARNING] 指定的账号 #{idx} Cookie 文件不存在。")
         return success_count > 0
 
     # 情况 C：未配置任何文件环境变量，默认使用同级目录下的 cookie.txt 作为主账号文件
@@ -231,11 +230,9 @@ def login_by_file(binary_path):
     if os.path.exists(default_txt):
         base_name = "cookie"
         json_file = f"{base_name}.json"
-        print(f"[LOG] 未配置环境变量，使用默认主账号文件导入: {default_txt}")
+        print("[LOG] 未配置环境变量，使用默认主账号文件导入...")
         cmd = [binary_path, "login", "cookie", "-m", "-f", default_txt, "-o", json_file]
-        print(f"[LOG] 正在执行: {' '.join(cmd)}")
-        res = subprocess.run(cmd, cwd=current_dir)
-        return res.returncode == 0
+        return run_login(cmd)
 
     return False
 

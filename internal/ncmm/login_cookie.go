@@ -140,7 +140,7 @@ func (c *loginCookieCmd) execute(ctx context.Context, args []string) error {
 		return fmt.Errorf("format is not support: %v", c.format)
 	}
 
-	log.Debug("args: format=%v, file=%v, content=%v", c.format, c.File, content)
+	log.Debug("args: format=%v, file_input=%t, cookie_input=%t", c.format, c.File != "", content != "")
 
 	var cookies []*http.Cookie
 	if c.File != "" {
@@ -160,12 +160,12 @@ func (c *loginCookieCmd) execute(ctx context.Context, args []string) error {
 
 			cookies, err = ParseCookeJson(f)
 			if err != nil {
-				return fmt.Errorf("ParseCookeJson: %w", err)
+				return fmt.Errorf("JSON Cookie 格式不正确，请检查输入内容")
 			}
 		case "netscape", "netscaple":
 			ck, err := mozcookie.Read(c.File)
 			if err != nil {
-				return fmt.Errorf("mozcookie.Read: %w", err)
+				return fmt.Errorf("Netscape Cookie 格式不正确，请检查输入内容")
 			}
 			cookies = ck
 		case "header":
@@ -175,7 +175,7 @@ func (c *loginCookieCmd) execute(ctx context.Context, args []string) error {
 			}
 			ck, err := http.ParseCookie(string(data))
 			if err != nil {
-				return fmt.Errorf("ParseCookie: %w", err)
+				return fmt.Errorf("Header Cookie 格式不正确，请检查输入内容")
 			}
 			cookies = ck
 		default:
@@ -192,38 +192,38 @@ func (c *loginCookieCmd) execute(ctx context.Context, args []string) error {
 		case "json":
 			ck, err := ParseCookeJson(binary)
 			if err != nil {
-				return fmt.Errorf("ParseCookeJson: %w", err)
+				return fmt.Errorf("JSON Cookie 格式不正确，请检查输入内容")
 			}
 			cookies = ck
 		case "netscape", "netscaple":
 			ck, err := mozcookie.Decode(binary)
 			if err != nil {
-				return fmt.Errorf("mozcookie.Decode: %w", err)
+				return fmt.Errorf("Netscape Cookie 格式不正确，请检查输入内容")
 			}
 			cookies = ck
 		case "header":
 			ck, err := http.ParseCookie(content)
 			if err != nil {
-				return fmt.Errorf("ParseCookie: %w", err)
+				return fmt.Errorf("Header Cookie 格式不正确，请检查输入内容")
 			}
 			cookies = ck
 		default:
 			// 走探测逻辑
 			ck, err := mozcookie.Decode(strings.NewReader(content))
 			if err != nil {
-				log.Debug("retry decode netscape err: %s", err)
+				log.Debug("Cookie 格式探测未匹配 Netscape")
 			}
 			cookies = ck
 			if len(cookies) <= 0 {
 				cookies, err = ParseCookeJson(strings.NewReader(content))
 				if err != nil {
-					log.Debug("retry parse json ere: %s", err)
+					log.Debug("Cookie 格式探测未匹配 JSON")
 				}
 			}
 			if len(cookies) <= 0 {
 				cookies, err = http.ParseCookie(content)
 				if err != nil {
-					return fmt.Errorf("ParseCookie: %w", err)
+					return fmt.Errorf("无法识别 Cookie 格式，请检查输入内容")
 				}
 			}
 		}
@@ -331,7 +331,7 @@ func parseCookieFile(path string) ([]*http.Cookie, error) {
 	if err == nil && len(cookies) > 0 {
 		return cookies, nil
 	}
-	log.Debug("parseCookieFile netscape err: %v", err)
+	log.Debug("Cookie 文件格式探测未匹配 Netscape")
 
 	// 读取文件内容用于后续尝试
 	data, err := os.ReadFile(path)
@@ -347,7 +347,7 @@ func parseCookieFile(path string) ([]*http.Cookie, error) {
 		if err == nil && len(cookies) > 0 {
 			return cookies, nil
 		}
-		log.Debug("parseCookieFile json array err: %v", err)
+		log.Debug("Cookie 文件格式探测未匹配 JSON")
 	}
 
 	// 尝试 Resty cookie jar 格式
@@ -355,14 +355,14 @@ func parseCookieFile(path string) ([]*http.Cookie, error) {
 	if err == nil && len(cookies) > 0 {
 		return cookies, nil
 	}
-	log.Debug("parseCookieFile resty jar err: %v", err)
+	log.Debug("Cookie 文件格式探测未匹配 Resty Cookie jar")
 
 	// 尝试 Header 格式
 	cookies, err = http.ParseCookie(string(data))
 	if err == nil && len(cookies) > 0 {
 		return cookies, nil
 	}
-	log.Debug("parseCookieFile http.ParseCookie err: %v", err)
+	log.Debug("Cookie 文件格式探测未匹配 Header")
 
 	// fallback: 宽容模式手动解析
 	cookies = parseCookieStringFallback(string(data))
