@@ -41,4 +41,18 @@ func TestManagedDockerUpdateViewPendingAndRollback(t *testing.T) {
 	if view.RestartRequired || view.UpdateStatus != "failed" || !strings.Contains(view.LastError, "test version mismatch") {
 		t.Fatalf("rollback view = %+v", view)
 	}
+	good, err := managedruntime.Stage(root, "1.2.2-grails.2", []byte("healthy rebuilt executable"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := managedruntime.Confirm(root, good); err != nil {
+		t.Fatal(err)
+	}
+	server.opts.Version = good.Version
+	server.opts.Executable, _ = managedruntime.CurrentExecutable(root)
+	view = server.makeUpdateView(receipt)
+	if view.UpdateStatus == "failed" || view.LastError != "" {
+		t.Fatalf("obsolete rollback remained after healthy recovery: %+v", view)
+	}
+
 }

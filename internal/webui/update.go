@@ -158,8 +158,12 @@ func (s *Server) makeUpdateView(state updateState) updateView {
 	}
 	if containerUpdate && docker && installedDigest != "" {
 		if runtimeState, err := managedruntime.Read(managedruntime.Directory()); err == nil && runtimeState.RejectedSHA256 == installedDigest {
-			state.UpdateStatus = "failed"
-			state.LastError = "候选程序未通过健康检查，已保留原运行版本。" + runtimeState.LastError
+			if available {
+				state.UpdateStatus = "failed"
+				state.LastError = "候选程序未通过健康检查，已保留原运行版本。" + runtimeState.LastError
+			} else {
+				state.UpdateStatus, state.UpdatedVersion, state.InstalledSHA256, state.LastError = "idle", "", "", ""
+			}
 		}
 	}
 	restartRequired := installed
