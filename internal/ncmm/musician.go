@@ -168,6 +168,8 @@ func (c *Musician) initMusicianContext(ctx context.Context, cookieFile string, n
 	// 初始化网络客户端
 	networkCfg := *c.root.Cfg.Network
 	networkCfg.Cookie.Filepath = absPath
+	// 领取等写请求响应丢失时不能自动重提，下次执行先查询官方状态。
+	networkCfg.Retry = 0
 	cli, err := api.NewClient(&networkCfg, c.l)
 	if err != nil {
 		return nil, fmt.Errorf("实例化客户端失败: %w", err)
@@ -743,12 +745,11 @@ func (c *Musician) doVipPhase(ctx context.Context, mctx *musicianContext, cookie
 
 	// 遍历子任务，检查并执行
 	for _, sub := range mctx.resp.Data.FurtherTask.Children {
-		progress := sub.ProgressRate
-		if sub.MissionCode == "mission_code_recently_play_count" {
-			progress = mctx.resp.Data.RecentPlayCount30
+		if sub.MissionCode == musicianPlayPercentCode {
+			c.cmd.Printf("    - 任务: %s — 状态: %d, 播放进度百分比: %d/%d\n", sub.Name, sub.MissionStatus, sub.ProgressRate, sub.TotalCompleteNum)
+		} else {
+			c.cmd.Printf("    - 任务: %-15s — 状态: %d, 进度: %d/%d\n", sub.Name, sub.MissionStatus, sub.ProgressRate, sub.TotalCompleteNum)
 		}
-		c.cmd.Printf("    - 任务: %-15s — 状态: %d, 进度: %d/%d\n",
-			sub.Name, sub.MissionStatus, progress, sub.TotalCompleteNum)
 
 		if sub.MissionStatus == 100 {
 			c.cmd.Printf("    ✅ 任务已完成: %s\n", sub.Name)
@@ -771,7 +772,7 @@ func (c *Musician) doVipPhase(ctx context.Context, mctx *musicianContext, cookie
 				}
 			}
 
-		case "mission_code_recently_play_count":
+		case musicianPlayCountCode, musicianPlayPercentCode:
 			if c.root.Cfg.Musician.EnableVipPlay != nil && !*c.root.Cfg.Musician.EnableVipPlay {
 				c.cmd.Println("    ℹ️ 播放任务已在配置中关闭 (enableVipPlay = false)，跳过")
 			} else if err := c.handlePlayTask(ctx, mctx.db, sub, mctx.resp.Data.RecentPlayCount30); err != nil {
@@ -788,6 +789,20 @@ func (c *Musician) doVipPhase(ctx context.Context, mctx *musicianContext, cookie
 // handlePlayTask 处理播放任务
 func (c *Musician) handlePlayTask(ctx context.Context, db database.Database, sub eapi.MusicianVipSubTask, recentPlayCount30 int) error {
 	c.cmd.Println("    👉 处理播放任务...")
+	neededEffective, err := calcNeededPlayCount(sub)
+	if err != nil {
+		c.cmd.Printf("    ⚠️ 播放任务无法计算：类型=%s, 状态=%d, 进度=%d/%d, 原因=%s\n", sub.MissionCode, sub.MissionStatus, sub.ProgressRate, sub.TotalCompleteNum, err)
+		return err
+	}
+	c.cmd.Printf("    - 本期预计尚缺有效播放: %d 次；近30天历史总播放: %d 次（不参与本期计算）\n", neededEffective, recentPlayCount30)
+	if neededEffective == 0 {
+		if sub.MissionStatus == 100 {
+			c.cmd.Println("    ℹ️ 官方播放任务已完成，无需播放")
+		} else {
+			c.cmd.Println("    ℹ️ 官方播放进度已达到目标，等待任务状态更新")
+		}
+		return nil
+	}
 
 	cfg := c.root.Cfg.Musician.Play
 	rootPlayCfg := c.root.Cfg.PlayIds
@@ -833,14 +848,6 @@ func (c *Musician) handlePlayTask(ctx context.Context, db database.Database, sub
 	}
 	if gapMax <= 0 {
 		gapMax = 20
-	}
-
-	// 3. 计算还缺少的有效播放数 N
-	neededEffective := int64(sub.TotalCompleteNum - recentPlayCount30)
-	c.cmd.Printf("    - 当前进度: %d/%d, 今日尚缺有效播放: %d 次\n", recentPlayCount30, sub.TotalCompleteNum, neededEffective)
-	if neededEffective <= 0 {
-		c.cmd.Println("    ℹ️ 播放量已达标，无需刷播")
-		return nil
 	}
 
 	// 4. 获取执行刷歌的辅助账号池 (secondary)
@@ -918,7 +925,7 @@ func (c *Musician) handlePlayTask(ctx context.Context, db database.Database, sub
 		if err != nil {
 			c.cmd.Printf("    [WARN] 账号 (%s) 运行异常: %s，正准备交由下一辅助号...\n", currentAccount, err)
 		} else {
-			c.cmd.Printf("    ✅ 账号 (%s) 播放完成，实际贡献主歌有效上报数: %d 次\n", currentAccount, effectivePlayed)
+			c.cmd.Printf("    ✅ 账号 (%s) 播放完成，主歌成功上报数: %d 次（有效播放以官方统计为准）\n", currentAccount, effectivePlayed)
 			neededEffective -= effectivePlayed
 		}
 
@@ -927,9 +934,9 @@ func (c *Musician) handlePlayTask(ctx context.Context, db database.Database, sub
 	}
 
 	if neededEffective <= 0 {
-		c.cmd.Println("    ✅ 经过多个辅助账号的接力刷歌，主账号的播放任务已圆满达标！")
+		c.cmd.Println("    ✅ 本轮预计播放上报量已完成，任务是否达标以官方进度更新为准")
 	} else {
-		c.cmd.Printf("    ⚠️ 所有配置的辅助账号今天均已达到日风控随机上限，播放任务终止。主号今天仍缺有效播放 %d 次。\n", neededEffective)
+		c.cmd.Printf("    ⚠️ 本轮辅助账号执行结束，预计仍缺有效播放 %d 次；请以官方任务进度为准\n", neededEffective)
 	}
 
 	return nil
@@ -994,8 +1001,11 @@ func playCandidateIdsSource(vipIds string, vipIdsFile config.StringOrSlice, root
 
 // ==================== doVipClaimPhase: 音乐人 VIP 自动领取 ====================
 
-func musicianVipClaimCacheKey(cookieFile, month string) string {
-	return fmt.Sprintf("musician:vip:claim:%s:%s", cookieFile, month)
+func musicianVipClaimCacheKey(cookieFile string, cycle int64) string {
+	if cycle <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("musician:vip:claim:%s:%d", cookieFile, cycle)
 }
 
 // doVipClaimPhase 执行第三阶段：音乐人 VIP 领取
@@ -1005,15 +1015,7 @@ func (c *Musician) doVipClaimPhase(ctx context.Context, mctx *musicianContext, c
 		return
 	}
 
-	c.cmd.Println("  👉 [第三阶段] 检查并尝试领取本月音乐人黑胶 VIP...")
-
-	currentMonth := time.Now().Format("2006-01")
-	if mctx.db != nil {
-		if cached, _ := mctx.db.Exists(ctx, musicianVipClaimCacheKey(cookieFile, currentMonth)); cached {
-			c.cmd.Printf("    ✅ 本月 (%s) 音乐人黑胶 VIP 已领取 (来自本地缓存记录)\n", currentMonth)
-			return
-		}
-	}
+	c.cmd.Println("  👉 [第三阶段] 检查并尝试领取本期音乐人黑胶 VIP...")
 
 	// 1. 查询最新的音乐人 VIP 权益与任务状态 (WEAPI)
 	info, err := mctx.weapiCli.MusicianVipInfo(ctx, &weapi.MusicianVipInfoReq{})
@@ -1022,12 +1024,23 @@ func (c *Musician) doVipClaimPhase(ctx context.Context, mctx *musicianContext, c
 		return
 	}
 	if info.Code != 200 {
-		c.cmd.Printf("    ⚠️ 查询音乐人 VIP 状态提示: code=%d msg=%s\n", info.Code, info.Message)
+		c.cmd.Printf("    ⚠️ 查询音乐人 VIP 状态失败: code=%d\n", info.Code)
 		return
 	}
 
 	data := info.Data
 	nowMs := time.Now().UnixMilli()
+	// 先读取官方周期，再查本期成功记录；旧版自然月缓存可能来自预约误判，不能沿用。
+	cacheKey := musicianVipClaimCacheKey(cookieFile, data.FurtherVipGetTime)
+	if mctx.db != nil && cacheKey != "" {
+		cached, err := mctx.db.Exists(ctx, cacheKey)
+		if err != nil {
+			c.cmd.Printf("    ⚠️ 读取音乐人 VIP 本期成功记录失败，将按官方状态判断: %v\n", err)
+		} else if cached {
+			c.cmd.Printf("    ✅ 本期音乐人黑胶 VIP 已领取 (成功记录，周期: %d)\n", data.FurtherVipGetTime)
+			return
+		}
+	}
 
 	// 2. 检查任务达成状态
 	taskFinished := data.TaskStatus
@@ -1045,22 +1058,14 @@ func (c *Musician) doVipClaimPhase(ctx context.Context, mctx *musicianContext, c
 		return
 	}
 
-	// 3. 检查是否已经领取过或未到领取时间
-	if !data.CanOpen && data.FurtherVipGetTime > nowMs {
-		c.cmd.Printf("    ✅ 本月音乐人 VIP 已成功领取 (下次可领时间: %s)\n", getTimeStr)
-		if mctx.db != nil {
-			_ = mctx.db.Set(ctx, musicianVipClaimCacheKey(cookieFile, currentMonth), "1", 35*24*time.Hour)
-		}
-		return
-	}
-
+	// 3. 预约状态不等于已领取，只有实际成功的领取请求才能写入缓存。
 	if data.FurtherVipGetTime > nowMs {
-		c.cmd.Printf("    ℹ️ 进阶任务已全部达标，但尚未到达领取时间 (预计可领时间: %s)\n", getTimeStr)
+		c.cmd.Printf("    ℹ️ 进阶任务已全部达标！本期 VIP 将于 %s 开放领取，到达时间后由后续任务运行自动领取\n", getTimeStr)
 		return
 	}
 
 	if !data.CanOpen {
-		c.cmd.Println("    ℹ️ 当前账号暂不满足 VIP 开启条件 (canOpen = false)")
+		c.cmd.Println("    ℹ️ 当前账号暂不可领取 VIP (canOpen = false)，未记录领取成功")
 		return
 	}
 
@@ -1069,6 +1074,9 @@ func (c *Musician) doVipClaimPhase(ctx context.Context, mctx *musicianContext, c
 	if strings.TrimSpace(antiCheatToken) == "" {
 		c.cmd.Println("    ⚠️ 当前已满足音乐人 VIP 领取条件，但 accounts.antiCheatTokens 中未配置该账号的 token，已跳过领取")
 		return
+	}
+	if cacheKey == "" {
+		c.cmd.Println("    ⚠️ 官方未返回有效领取周期，本次按可领取状态提交，成功后不写入周期缓存")
 	}
 
 	// 5. 调用 WEAPI vip/get 接口领取
@@ -1081,11 +1089,13 @@ func (c *Musician) doVipClaimPhase(ctx context.Context, mctx *musicianContext, c
 		return
 	}
 	if claimResp.Code == 200 && claimResp.Data {
-		c.cmd.Println("    🎉 恭喜！成功领取本月音乐人黑胶 VIP！")
-		if mctx.db != nil {
-			_ = mctx.db.Set(ctx, musicianVipClaimCacheKey(cookieFile, currentMonth), "1", 35*24*time.Hour)
+		c.cmd.Println("    🎉 成功领取本期音乐人黑胶 VIP！")
+		if mctx.db != nil && cacheKey != "" {
+			if err := mctx.db.Set(ctx, cacheKey, "1", 35*24*time.Hour); err != nil {
+				c.cmd.Printf("    ⚠️ 领取已成功，但保存本期成功记录失败: %v\n", err)
+			}
 		}
 	} else {
-		c.cmd.Printf("    ❌ 领取音乐人黑胶 VIP 失败: code=%d msg=%s\n", claimResp.Code, claimResp.Message)
+		c.cmd.Printf("    ❌ 领取音乐人黑胶 VIP 未确认成功: code=%d result=%t，未保存成功记录\n", claimResp.Code, claimResp.Data)
 	}
 }
