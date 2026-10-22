@@ -13,6 +13,7 @@ type workflowStep struct {
 	Name            string            `yaml:"name"`
 	ID              string            `yaml:"id"`
 	Uses            string            `yaml:"uses"`
+	If              string            `yaml:"if"`
 	Run             string            `yaml:"run"`
 	With            map[string]string `yaml:"with"`
 	Env             map[string]string `yaml:"env"`
@@ -32,8 +33,11 @@ type workflowJob struct {
 }
 
 type workflowDocument struct {
-	On   yaml.Node              `yaml:"on"`
-	Jobs map[string]workflowJob `yaml:"jobs"`
+	On          yaml.Node              `yaml:"on"`
+	Jobs        map[string]workflowJob `yaml:"jobs"`
+	Concurrency struct {
+		Group string `yaml:"group"`
+	} `yaml:"concurrency"`
 }
 
 func readWorkflow(t *testing.T, name string) workflowDocument {
@@ -99,7 +103,7 @@ func TestReleaseWorkflowsGateEveryPublishedCommit(t *testing.T) {
 				if publishJob == "docker" {
 					selector = "build_image"
 				}
-				if publish.If != "github.event_name == 'push' || inputs."+selector {
+				if publish.If != "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs."+selector {
 					t.Fatal("发布只能按产物选择开关过滤，不得用 always 或成功状态表达式绕过门禁")
 				}
 				if containsNeed(publish.Needs, "build") || containsNeed(publish.Needs, "docker") {
@@ -215,9 +219,153 @@ func TestReusableQualityChecksUseRequestedCommitAndKeepAllGates(t *testing.T) {
 			t.Fatalf("%s 必须核验检出 SHA", name)
 		}
 	}
-	for _, required := range []string{"node --check", "node --test", "python3 -m unittest discover -s tests -p test_ncmm_update_script.py", "go vet ./...", "go test ./...", "go test -race", "./internal/selfupdate", "./internal/filelock", "./internal/atomicfile", "tests/webui_smoke.js", "tests/webui_music_partner.js", "tests/webui_cookie_status.js", "tests/webui_task_config.js", "tests/webui_mobile_config.js", "docker compose config --quiet", "docker build", "--network none"} {
+	for _, required := range []string{"node --check", "node --test", "python3 -m unittest discover -s tests -p test_ncmm_update_script.py", "python3 -m unittest discover -s tests -p test_release_guard.py", "go vet ./...", "go test ./...", "go test -race", "./internal/selfupdate", "./internal/filelock", "./internal/atomicfile", "tests/webui_smoke.js", "tests/webui_music_partner.js", "tests/webui_cookie_status.js", "tests/webui_task_config.js", "tests/webui_mobile_config.js", "docker compose config --quiet", "docker build", "--network none"} {
 		if !strings.Contains(commands.String(), required) {
 			t.Errorf("发布质量门禁缺少既有检查: %s", required)
 		}
+	}
+}
+
+func TestReleaseGuardPrecedesEveryPublicationAndPreservesAssets(t *testing.T) {
+	workflow := readWorkflow(t, "release.yml")
+	if workflow.Concurrency.Group != "ncmm-release-${{ github.repository }}" {
+		t.Fatal("所有版本输入必须共用仓库级发布队列，避免同版本同时发布")
+	}
+	if workflow.Jobs["resolve"].Outputs["version"] != "${{ steps.release.outputs.version }}" {
+		t.Fatal("发布版本必须随不可变提交只解析一次")
+	}
+	for _, name := range []string{"resolve", "build", "docker"} {
+		job := workflow.Jobs[name]
+		guarded := false
+		reserved := false
+		publications := 0
+		for _, step := range job.Steps {
+			if strings.Contains(step.Run, "release_guard.py") {
+				guarded = !step.ContinueOnError && strings.Contains(step.Run, "--source-sha") && strings.Contains(step.Run, "--version")
+				reserved = guarded && strings.Contains(step.Run, "--reserve-tag") && step.Env["GH_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+			}
+			if strings.Contains(step.Run, "git tag -d") || strings.Contains(step.Run, "git push --force") {
+				t.Fatal("发布不得删除或覆盖既有标签")
+			}
+			isRelease := strings.HasPrefix(step.Uses, "softprops/action-gh-release@")
+			isImage := strings.HasPrefix(step.Uses, "docker/build-push-action@") && step.With["push"] == "true"
+			if isRelease || isImage {
+				publications++
+				if !guarded || step.ContinueOnError {
+					t.Fatalf("%s 未在发布前拒绝远端标签冲突", name)
+				}
+				if !reserved || job.Permissions["contents"] != "write" {
+					t.Fatalf("%s 必须在包或镜像发布前原子预留同 SHA 的远端版本标签", name)
+				}
+				if isRelease && step.With["overwrite_files"] != "false" {
+					t.Fatal("既有 Release 资产不得被同名重跑覆盖")
+				}
+				guarded = false
+			}
+		}
+		if name == "resolve" && !guarded {
+			t.Fatal("必须在构建及质量检查前验证标签身份")
+		}
+		if name != "resolve" && publications != 1 {
+			t.Fatalf("%s 预期一个受保护发布步骤", name)
+		}
+	}
+}
+
+func TestReusableReleasePackageStepsRespectSelectedProducts(t *testing.T) {
+	workflow := readWorkflow(t, "release.yml")
+	for _, step := range workflow.Jobs["build"].Steps {
+		if strings.HasPrefix(step.Uses, "goreleaser/goreleaser-action@") && step.Env["GORELEASER_CURRENT_TAG"] != "v${{ env.VERSION }}" {
+			t.Fatal("同一提交存在多个标签时，程序包版本必须仍使用已验证的目标版本")
+		}
+		if step.Name == "Create local Git Tag for GoReleaser" || step.Name == "Generate Custom Changelog" || strings.HasPrefix(step.Uses, "softprops/action-gh-release@") {
+			// workflow_call 沿用 caller 的事件，不能再按 dispatch/tag 限制已选中的包发布。
+			if step.If != "" {
+				t.Fatal("已选中的包发布不得重新按 caller 的事件类型过滤")
+			}
+		}
+	}
+}
+
+func TestVIPGiftCloudPublicationUsesItsOwnValidatedCommit(t *testing.T) {
+	workflow := readWorkflow(t, "build-vipgift-image.yml")
+	resolve := workflow.Jobs["resolve"]
+	if resolve.Outputs["commit_sha"] != "${{ steps.commit.outputs.sha }}" || resolve.Permissions["contents"] != "read" {
+		t.Fatal("辅助服务必须先只读解析发布提交")
+	}
+	gate := workflow.Jobs["quality"]
+	if gate.Uses != "./.github/workflows/quality-vipgift.yml" || !containsNeed(gate.Needs, "resolve") || gate.With["commit_sha"] != "${{ needs.resolve.outputs.commit_sha }}" || gate.If != "" || gate.ContinueOnError {
+		t.Fatal("辅助发布必须通过独立实际质量检查，不能重复运行主程序门禁或忽略失败")
+	}
+	publish := workflow.Jobs["docker-cloud"]
+	if !containsNeed(publish.Needs, "quality") || !containsNeed(publish.Needs, "resolve") || publish.ContinueOnError {
+		t.Fatal("辅助镜像发布必须依赖固定提交的完整辅助服务检查")
+	}
+	if checkoutStep(t, publish.Steps).With["ref"] != "${{ needs.resolve.outputs.commit_sha }}" {
+		t.Fatal("辅助服务不得在门禁之后重新解析移动分支")
+	}
+	for _, job := range workflow.Jobs {
+		for _, step := range job.Steps {
+			if strings.Contains(step.Run, "${{") {
+				t.Fatal("辅助服务的手动输入必须通过环境变量传入脚本")
+			}
+		}
+	}
+}
+
+func TestVIPGiftCloudQualityActuallyExercisesAPIsAndBuildsWithoutPublishing(t *testing.T) {
+	workflow := readWorkflow(t, "quality-vipgift.yml")
+	var events map[string]yaml.Node
+	if err := workflow.On.Decode(&events); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []string{"push", "pull_request", "workflow_call"} {
+		if events[event].Kind == 0 {
+			t.Errorf("辅助质量检查缺少 %s 入口", event)
+		}
+	}
+	var commands strings.Builder
+	for _, job := range workflow.Jobs {
+		if job.If != "" || job.ContinueOnError {
+			t.Fatal("辅助质量检查不得跳过或忽略失败")
+		}
+		if checkoutStep(t, job.Steps).With["ref"] != "${{ inputs.commit_sha || github.sha }}" {
+			t.Fatal("辅助质量检查未使用请求的固定提交")
+		}
+		for _, step := range job.Steps {
+			if step.ContinueOnError || step.With["push"] == "true" || strings.HasPrefix(step.Uses, "docker/login-action@") {
+				t.Fatal("辅助质量检查不得发布镜像、登录或忽略失败")
+			}
+			commands.WriteString(step.Run)
+			commands.WriteByte('\n')
+		}
+	}
+	for _, required := range []string{"git rev-parse HEAD", "python3 -m py_compile", "python3 -m unittest discover -s tests -p test_vip_gift_cloud.py", "docker compose", "config --quiet", "docker build", "--network none"} {
+		if !strings.Contains(commands.String(), required) {
+			t.Errorf("辅助质量检查缺少实际验证: %s", required)
+		}
+	}
+}
+
+func TestVIPGiftComposeRunsTheDocumentedLocalBuild(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "tools", "vip_member_gift_cloud", "docker-compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compose struct {
+		Services map[string]struct {
+			Image      string `yaml:"image"`
+			PullPolicy string `yaml:"pull_policy"`
+			Build      struct {
+				Context string `yaml:"context"`
+			} `yaml:"build"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(data, &compose); err != nil {
+		t.Fatal(err)
+	}
+	service := compose.Services["ncmm-vip-member-gift-cloud"]
+	if service.Image != "ncmm-vip-member-gift-cloud:local" || service.PullPolicy != "never" || service.Build.Context != "." {
+		t.Fatal("Compose 必须直接构建和运行文档中的本地镜像，不得误拉上游替代")
 	}
 }

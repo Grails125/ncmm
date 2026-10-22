@@ -1,18 +1,19 @@
 # 👥 多账号隔离最佳实践
 
-在多账号运作或需要使用多个辅助号为自己（音乐人主账号）刷播放量的场景下，推荐使用 `--home` 构建如下目录结构：
+在多账号运作或需要使用多个辅助号为自己（音乐人主账号）刷播放量的场景下，使用 `--home` 指定实例目录。配置中的相对 Cookie、数据库、日志和本地素材路径以最终实例 home 为基准，程序不会修改调用者的工作目录；YAML 中仍保留用户填写的路径。推荐目录结构如下：
 
 ```text
 run/
 ├── config.yaml       # 多账号公共/专用配置文件（配置了顶级 accounts 以及 sign/mixPlay）
-├── .ncmm/            # 存储数据（cookie、database、log 等）
-│   ├── cookie.json       # 主账号 cookie（网易云音乐人主号，由 login cookie 生成）
-│   ├── fan1.json         # 辅助账号 1 cookie（用于帮主账号刷播放量，隔离存储）
-│   ├── fan2.json         # 辅助账号 2 cookie（用于接力帮主账号刷播放量，隔离存储）
-│   ├── database/         # Badger 数据库存放目录（按账号 UID 隔离数据，无冲突风险）
-│   └── log/
-│       └── ncm.log       # 运行日志
+├── cookie.json       # 主账号 Cookie
+├── fan1.json         # 辅助账号 1 Cookie
+├── fan2.json         # 辅助账号 2 Cookie
+├── database/         # 业务缓存与进度
+└── log/
+    └── ncm.log       # 运行日志
 ```
+
+优先级为显式 `--home`、`NCMM_HOME`、默认或自动发现的实例目录。自动发现配置时以所选配置所在目录作为 home；显式 `--config` 只选择配置文件，不改变已选 home。`login cookie -f run/fan1.txt` 等显式输入文件仍相对调用时的工作目录读取，登录输出和配置内的数据路径归属实例 home。使用新 home 时先复制需要迁移的文件，不会自动搬动旧目录中的账号或数据库。
 
 ---
 
@@ -30,7 +31,7 @@ ncmm --home run login qrcode -m
 # 示例 2：使用 Cookie 导入主账号
 ncmm --home run login cookie 'MUSIC_U=xxxx...' -m
 ```
-*登录成功后，主账号 of Cookie 路径（例如 `cookie.json`）与对应昵称注释会自动回写并绑定在 `run/config.yaml` 的 `accounts.main` 下。*
+*登录成功后，主账号 Cookie 路径（例如 `cookie.json`）与对应昵称注释会自动回写并绑定在 `run/config.yaml` 的 `accounts.main` 下。*
 
 ### 3. 第三步：登录/导入各辅助账号
 辅助账号为刷播放量的粉丝小号。所有的登录子命令默认即登录为辅助账号，无需特别指定。

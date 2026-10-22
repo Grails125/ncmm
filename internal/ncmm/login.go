@@ -9,12 +9,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/3899/ncmm/config"
+	"github.com/3899/ncmm/internal/atomicfile"
+	"github.com/3899/ncmm/internal/filelock"
 	"github.com/3899/ncmm/internal/loginresult"
 	"github.com/3899/ncmm/pkg/log"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 type Login struct {
@@ -126,7 +130,7 @@ func (c *Login) saveLoginResult(ctx context.Context, nickname, avatarURL string,
 	}
 
 	// 规范化显示路径为包含 ${HOME} 的相对路径形式（若位于 Home 目录下）
-	finalPathDisplay := formatHomePath(finalPath)
+	finalPathDisplay := formatHomePath(finalPath, c.root.Opts.Home)
 	result := loginresult.Result{
 		UID: uid, Nickname: nickname, AvatarURL: avatarURL, CookiePath: finalPath,
 		AccountPath: finalPathDisplay, Main: c.isMain,
@@ -148,64 +152,94 @@ func (c *Login) saveLoginResult(ctx context.Context, nickname, avatarURL string,
 		return writeResult()
 	}
 
+	// 在同一个写锁中重新读取并复用既有路径拼写，保留令牌映射和账号元数据的键。
+	storedPath, err := c.saveAccountConfig(ctx, finalPath, finalPathDisplay, nickname)
+	if err != nil {
+		return fmt.Errorf("回写配置文件失败: %w", err)
+	}
+	result.AccountPath = storedPath
 	if c.root.Cfg.Accounts == nil {
 		c.root.Cfg.Accounts = &config.AccountsConf{}
 	}
-
-	var mainPath string
-	var secondaryPaths []string
-
 	if c.isMain {
-		mainPath = finalPathDisplay
-		secondaryPaths = make([]string, len(c.root.Cfg.Accounts.Secondary))
-		for i, sec := range c.root.Cfg.Accounts.Secondary {
-			secondaryPaths[i] = formatHomePath(sec)
-		}
+		c.root.Cfg.Accounts.Main = finalPath
+		c.root.Cfg.Network.Cookie.Filepath = finalPath
 	} else {
-		mainPath = formatHomePath(c.root.Cfg.Accounts.Main)
-		secondaryPaths = make([]string, 0, len(c.root.Cfg.Accounts.Secondary)+1)
 		found := false
-		for _, sec := range c.root.Cfg.Accounts.Secondary {
-			secFmt := formatHomePath(sec)
-			if secFmt == finalPathDisplay {
+		for _, path := range c.root.Cfg.Accounts.Secondary {
+			if accountPathKey(path, c.root.Opts.Home) == accountPathKey(finalPath, c.root.Opts.Home) {
 				found = true
+				break
 			}
-			secondaryPaths = append(secondaryPaths, secFmt)
 		}
 		if !found {
-			secondaryPaths = append(secondaryPaths, finalPathDisplay)
+			c.root.Cfg.Accounts.Secondary = append(c.root.Cfg.Accounts.Secondary, finalPath)
 		}
-	}
-
-	// 更新内存配置
-	c.root.Cfg.Accounts.Main = mainPath
-	c.root.Cfg.Accounts.Secondary = secondaryPaths
-
-	// 更新配置文件时重新读取最新内容，并只合并当前账号，避免覆盖并发修改。
-	err := config.UpdateAccountInFile(c.root.CfgPath, finalPathDisplay, nickname, c.isMain)
-	if err != nil {
-		return fmt.Errorf("回写配置文件失败: %w", err)
 	}
 
 	c.cmd.Printf("账号登录配置已更新成功！\nCookie 文件: %s\n", finalPath)
 	return writeResult()
 }
 
-func formatHomePath(path string) string {
+func (c *Login) saveAccountConfig(ctx context.Context, finalPath, displayPath, nickname string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	lock, err := filelock.Acquire(ctx, c.root.CfgPath+".lock")
+	if err != nil {
+		return "", err
+	}
+	defer lock.Close()
+	data, err := os.ReadFile(c.root.CfgPath)
+	if err != nil {
+		return "", err
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return "", err
+	}
+	var stored struct {
+		Accounts *config.AccountsConf `yaml:"accounts"`
+	}
+	if err := document.Decode(&stored); err != nil {
+		return "", err
+	}
+	if stored.Accounts != nil {
+		paths := stored.Accounts.Secondary
+		if c.isMain {
+			paths = []string{stored.Accounts.Main, stored.Accounts.Primary}
+		}
+		for _, path := range paths {
+			if path != "" && accountPathKey(path, c.root.Opts.Home) == accountPathKey(finalPath, c.root.Opts.Home) {
+				displayPath = path
+				break
+			}
+		}
+	}
+	if err := config.ApplyAccountUpdate(&document, displayPath, nickname, c.isMain); err != nil {
+		return "", err
+	}
+	output, err := yaml.Marshal(&document)
+	if err != nil {
+		return "", err
+	}
+	if err := atomicfile.Write(c.root.CfgPath, output, 0644); err != nil {
+		return "", err
+	}
+	return displayPath, nil
+}
+
+func formatHomePath(path, home string) string {
 	if path == "" {
 		return ""
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	if home == "" {
 		return filepath.ToSlash(path)
 	}
 	home = filepath.Clean(home)
 	cleanedPath := filepath.Clean(path)
-	if strings.HasPrefix(cleanedPath, home) {
-		rel, err := filepath.Rel(home, cleanedPath)
-		if err == nil {
-			return "${HOME}/" + filepath.ToSlash(rel)
-		}
+	rel, err := filepath.Rel(home, cleanedPath)
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+		return "${HOME}/" + filepath.ToSlash(rel)
 	}
 	return filepath.ToSlash(path)
 }

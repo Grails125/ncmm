@@ -95,7 +95,7 @@ musicPartner:
   extraTasks: true
   # false=按下方目标范围补齐每日累计数量；true=处理本次接口返回的全部待评额外作品。
   fullExtraTasks: false
-  # 每次运行随机选择额外评分目标，已完成数量计入目标；上下限均为 1～500。
+  # 由每日任务 ID 和目标范围确定当日额外评分目标，重复运行保持一致；上下限均为 1～500。
   extraLimitMin: 7
   extraLimitMax: 7
   # 每首提交前随机等待的秒数，上下限均为 1～300。
@@ -338,7 +338,7 @@ notify:
 updater:
   # 检查新版本并记录提醒，每天最多请求一次 GitHub API。
   check: true
-  # 检测到新版本后自动替换二进制；容器环境会忽略此项。
+  # 检测到新版本后自动下载安装；受 Launcher 管理的容器支持，Compose 默认通过环境变量关闭自动下载。
   auto_update: true
   # 新版本安装后，仅在没有运行、排队或延迟任务时自动重启 WebUI；手动更新保留 30 秒确认时间
   auto_restart: true

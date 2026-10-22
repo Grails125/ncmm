@@ -49,18 +49,18 @@ Docker 镜像已基于轻量级 `python:3.12-alpine` 构建，解压后体积仅
 
 ### 方法二：Docker 部署
 
-目录中已包含 `Dockerfile` 和 `docker-compose.yml`。推荐使用 Docker Compose 进行管理。
+目录中已包含 `Dockerfile` 和 `docker-compose.yml`。Compose 构建并使用本地镜像 `ncmm-vip-member-gift-cloud:local`，不会拉取上游镜像替代当前源码。
 
 1. **构建镜像**：
    如果你是第一次使用，先构建 Docker 镜像（基于极轻量 `python:3.12-alpine`）：
    ```bash
-   docker build -t ncmm-vip-member-gift-cloud .
+   docker compose build
    ```
 
 2. **启动服务**：
    在当前目录运行以下命令后台启动服务：
    ```bash
-   docker compose up -d
+   docker compose up -d --build
    ```
 
 3. **配置参数**：
@@ -79,3 +79,6 @@ Docker 镜像已基于轻量级 `python:3.12-alpine` 构建，解压后体积仅
 5. **常用命令**：
    * 查看运行日志：`docker compose logs -f`
    * 停止并删除容器：`docker compose down`
+   * 源码更新后重建服务：`docker compose up -d --build`
+
+辅助服务修改在普通 Push / PR 中单独运行 Python 语法、临时数据库的 HTTP API 测试、Compose 校验及不发布的 Docker 构建。手动发布辅助镜像时复用同一门禁，并以固定提交构建多架构镜像；主程序发布流程保持独立。

@@ -32,7 +32,7 @@ Compose 从当前源码构建 `ncmm-native:local`，不会下载 `ghcr.io/3899/n
 1. 打开 WebUI，设置管理员密码。
 2. 在账号中心扫码或导入 Cookie，按需要登记主账号和辅助账号。评分账号必须具有音乐合伙人资格。
 3. 在策略配置中选择所需的现有任务，并开启批量任务中的“音乐合伙人评分”。
-4. 设置评分策略、额外任务及账号范围。默认策略按歌名和作者名中的英文字母选择 3–4 分，不分析音频质量；额外任务默认目标为当天累计 7 首，可选择处理本次列表全部待评作品。
+4. 设置账号范围、评分范围、额外评分目标和等待时间。默认每首在 3–4 分之间随机取整数，不分析音频质量；额外任务默认目标为当天累计 7 首，也可处理本次列表全部待评作品。1–5 分可分别配置乐评池，留空则不提交乐评。
 5. 保存后可先单独运行“音乐合伙人评分”检查结果。完成设置后，默认 08:30 的批量规则会自动包含已启用的评分任务。
 
 对应 YAML 字段（仅展示评分部分，其余已有配置保留）：
@@ -44,13 +44,21 @@ task:
 musicPartner:
   enableMain: true
   enableSecondaries: false
-  score: 3
+  scoreMin: 3
+  scoreMax: 4
   extraTasks: true
   fullExtraTasks: false
-  extraLimit: 7
+  extraLimitMin: 7
+  extraLimitMax: 7
   waitMin: 15
   waitMax: 20
   syncYunCircle: false
+  comments:
+    "1": []
+    "2": []
+    "3": []
+    "4": []
+    "5": []
 ```
 
 评分任务启用后应位于 `task.slow_tasks` 列表中，名称为 `music-partner`。默认模板包含此项；已有自定义队列需保留或补入此项。新功能不会自动改写其他任务的业务开关。Cookie 过期、没有合伙人资格或其他任务缺少移动端凭据时，需要在原账号/配置页面处理，Docker 不会绕过这些条件。

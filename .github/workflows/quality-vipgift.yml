@@ -1,0 +1,63 @@
+name: VIP Gift Cloud Quality
+
+on:
+  push:
+    branches: [main, master, 'codex/**']
+    paths:
+      - 'tools/vip_member_gift_cloud/**'
+      - 'tests/test_vip_gift_cloud.py'
+      - '.github/workflows/quality-vipgift.yml'
+      - '.github/workflows/build-vipgift-image.yml'
+  pull_request:
+    paths:
+      - 'tools/vip_member_gift_cloud/**'
+      - 'tests/test_vip_gift_cloud.py'
+      - '.github/workflows/quality-vipgift.yml'
+      - '.github/workflows/build-vipgift-image.yml'
+  workflow_call:
+    inputs:
+      commit_sha:
+        description: '已经解析的待发布辅助服务提交 SHA'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout requested source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify requested source commit
+        env:
+          EXPECTED_COMMIT: ${{ inputs.commit_sha }}
+        run: |
+          if [ -n "$EXPECTED_COMMIT" ]; then
+            [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+            test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check Python syntax and isolated HTTP APIs
+        run: |
+          python3 -m py_compile tools/vip_member_gift_cloud/vip_member_gift_cloud.py
+          python3 -m unittest discover -s tests -p test_vip_gift_cloud.py
+
+      - name: Check helper Compose configuration
+        run: docker compose -f tools/vip_member_gift_cloud/docker-compose.yml config --quiet
+
+      - name: Build helper image without publishing
+        run: |
+          docker build --network none -t ncmm-vip-member-gift-cloud:validation tools/vip_member_gift_cloud
+          docker run --rm --network none ncmm-vip-member-gift-cloud:validation python -m py_compile /app/vip_member_gift_cloud.py
+          docker run --rm --network none ncmm-vip-member-gift-cloud:validation python /app/vip_member_gift_cloud.py --help

@@ -25,6 +25,8 @@ import shutil
 import zipfile
 import tarfile
 import subprocess
+import stat
+import tempfile
 
 # 1. 稳定获取当前脚本所在的真实目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -207,7 +209,7 @@ def query_binary_version(binary_path):
     code, output = run_ncmm_cli(binary_path, ["--version"], timeout=30, capture=True)
     if code != 0:
         return None
-    match = re.search(r'Version:\s*([0-9][0-9A-Za-z\.\-]*)', output)
+    match = re.search(r'Version:\s*(\S+)', output)
     if match:
         return match.group(1)
     return None
@@ -226,119 +228,119 @@ def update_with_ncmm(binary_path, binary_name):
     print(f"[LOG] 请根据上方错误检查网络、文件权限和配置，再手动重试；脚本不会终止其他 {binary_name} 进程。")
     return code
 
-# 7. 首次安装（没有任何可调用的 ncmm 二进制时）：下载 release 安装包并落地
+# 7. 首次安装（没有任何可调用的 ncmm 二进制时）：先验真，再落地
+MAX_INSTALL_FILE_BYTES = 256 * 1024 * 1024
+
+
+def extract_install_files(archive_path, ext, binary_name, directory):
+    """只读取普通程序和配置文件，不向磁盘展开包内路径或链接。"""
+    package = zipfile.ZipFile(archive_path) if ext == ".zip" else tarfile.open(archive_path, "r:gz")
+    result = {}
+    with package:
+        members = package.infolist() if ext == ".zip" else package.getmembers()
+        for member in members:
+            name = member.filename if ext == ".zip" else member.name
+            base = name.replace("\\", "/").rsplit("/", 1)[-1]
+            if base not in (binary_name, "config.yaml"):
+                continue
+            if ext == ".zip":
+                kind = stat.S_IFMT(member.external_attr >> 16)
+                regular = not member.is_dir() and kind in (0, stat.S_IFREG)
+                size = member.file_size
+            else:
+                regular, size = member.isfile(), member.size
+            if not regular or base in result or size > MAX_INSTALL_FILE_BYTES:
+                raise ValueError("安装包文件不是唯一、大小受限的普通文件")
+            destination = os.path.join(directory, base)
+            source = package.open(member) if ext == ".zip" else package.extractfile(member)
+            with source, open(destination, "xb") as output:
+                remaining = MAX_INSTALL_FILE_BYTES
+                while True:
+                    chunk = source.read(min(1024 * 1024, remaining + 1))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    if remaining < 0:
+                        raise ValueError("安装包文件超出大小限制")
+                    output.write(chunk)
+            result[base] = destination
+    return result
+
+
 def install_from_archive(remote_tag, assets, binary_name, binary_path, config_path, version_file):
-    os_part, arch_part, ext = get_platform_info()
-    print(f"[LOG] 判定当前主机系统为: {os_part}, 架构为: {arch_part}, 下载格式为: {ext}")
-
-    download_url = None
-    asset_filename = f"ncmm_{os_part}_{arch_part}{ext}"
-
-    if assets:
-        for asset in assets:
-            name = asset.get('name', '')
-            if os_part.lower() in name.lower() and arch_part.lower() in name.lower() and name.endswith(ext):
-                download_url = asset.get('browser_download_url')
-                print(f"[LOG] 匹配到 release 资源: {name}")
-                break
-
-    if not download_url:
-        print("[WARNING] GitHub API 资源匹配失败，尝试手动拼接下载链接...")
-        download_url = f"https://github.com/Grails125/ncmm/releases/download/{remote_tag}/{asset_filename}"
-
-    # 创建本地临时解压目录
-    temp_dir = os.path.join(current_dir, "_temp_ncmm_update_")
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-    os.makedirs(temp_dir, exist_ok=True)
-
-    archive_tmp_path = os.path.join(temp_dir, asset_filename)
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
-    }
-
-    try:
-        print(f"[LOG] 正在下载安装包到 {archive_tmp_path} ...")
-        if not download_file_with_fallback(download_url, archive_tmp_path, headers=headers, timeout=45):
-            print("[ERROR] 尝试所有镜像源与原地址均无法成功下载安装包，安装中止。")
-            return False
-
-        extract_dir = os.path.join(temp_dir, "extracted")
-        os.makedirs(extract_dir, exist_ok=True)
-        print(f"[LOG] 正在解压至 {extract_dir} ...")
-        if ext == ".zip":
-            with zipfile.ZipFile(archive_tmp_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
-        else:
-            with tarfile.open(archive_tmp_path, "r:gz") as tar_ref:
-                try:
-                    tar_ref.extractall(extract_dir, filter='data')
-                except TypeError:
-                    tar_ref.extractall(extract_dir)
-        print("[LOG] 解压成功")
-
-        # 定位二进制文件
-        extracted_binary_path = os.path.join(extract_dir, binary_name)
-        if not os.path.exists(extracted_binary_path):
-            for root, dirs, files in os.walk(extract_dir):
-                if binary_name in files:
-                    extracted_binary_path = os.path.join(root, binary_name)
-                    break
-
-        if not os.path.exists(extracted_binary_path):
-            print(f"[ERROR] 解压出的产物中找不到二进制文件: {binary_name}，安装中止。")
-            return False
-
-        # 查找 config.yaml 默认配置；本地已有配置时不覆盖（配置结构升级由 ncmm 启动时自行完成）
-        default_config_path = os.path.join(extract_dir, "config.yaml")
-        if not os.path.exists(default_config_path):
-            for root, dirs, files in os.walk(extract_dir):
-                if "config.yaml" in files:
-                    default_config_path = os.path.join(root, "config.yaml")
-                    break
-
-        if not os.path.exists(default_config_path):
-            # 兼容处理：如果解包产物中无 config.yaml，从 GitHub 仓库直接下载最新默认配置
-            raw_config_url = f"https://raw.githubusercontent.com/Grails125/ncmm/{remote_tag}/config/config.yaml"
-            print("[LOG] 解压缩产物中缺少 config.yaml，正在从 GitHub 下载默认配置文件备用...")
-            default_config_path = os.path.join(temp_dir, "config.yaml")
-            if not download_file_with_fallback(raw_config_url, default_config_path, headers=headers, timeout=15):
-                print("[ERROR] 无法从 GitHub 获取默认配置文件，安装中止。")
-                return False
-
-        print("[LOG] 正在写入二进制文件...")
-        shutil.copy2(extracted_binary_path, binary_path)
-
-        if os.path.exists(config_path):
-            print("[LOG] 本地已存在 config.yaml，保留用户配置不覆盖。")
-        else:
-            print("[LOG] 未发现本地 config.yaml，写入默认配置文件。")
-            shutil.copy2(default_config_path, config_path)
-
-        # 赋予执行权限
-        if 'windows' not in platform.system().lower():
-            try:
-                os.chmod(binary_path, 0o755)
-                print("[LOG] 成功为二进制文件授予 0755 执行权限。")
-            except Exception as e:
-                print(f"[WARNING] 为二进制授权失败: {e}，请稍后手动排查。")
-
-        write_local_version(version_file, remote_tag)
-        print(f"[SUCCESS] ncmm 已成功安装 {remote_tag} 版本！")
-        return True
-
-    except Exception as e:
-        print(f"[ERROR] 安装流程发生严重异常: {e}")
+    if not isinstance(remote_tag, str) or not re.fullmatch(r'v?[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+', remote_tag):
+        print("[ERROR] 首次安装仅接受本仓库的原生评分版本标签。")
+        return False
+    if os.path.lexists(binary_path) or os.path.lexists(binary_path + ".old"):
+        print("[ERROR] 程序或恢复备份已存在，已停止首次安装并保留现有文件。")
         return False
 
-    finally:
-        # 清理临时文件
-        if os.path.exists(temp_dir):
+    os_part, arch_part, ext = get_platform_info()
+    asset_filename = f"ncmm_{os_part}_{arch_part}{ext}"
+    download_url = f"https://github.com/Grails125/ncmm/releases/download/{remote_tag}/{asset_filename}"
+    for asset in assets or []:
+        if asset.get("name") == asset_filename and asset.get("browser_download_url") != download_url:
+            print("[ERROR] 发布资源来源与本仓库、目标标签或平台文件不一致，安装中止。")
+            return False
+
+    installed = []
+    committed = False
+    try:
+        # 与目标目录同一文件系统，确保最终硬链接创建是原子的且不能覆盖既有文件。
+        with tempfile.TemporaryDirectory(prefix=".ncmm-install-", dir=target_dir) as directory:
+            archive_path = os.path.join(directory, asset_filename)
+            if not download_file_with_fallback(download_url, archive_path, timeout=45):
+                print("[ERROR] 无法从本仓库下载目标安装包，安装中止。")
+                return False
+            files = extract_install_files(archive_path, ext, binary_name, directory)
+            candidate = files.get(binary_name)
+            if not candidate:
+                raise ValueError("安装包中缺少目标程序")
+            if 'windows' not in platform.system().lower():
+                os.chmod(candidate, 0o755)
+            expected_version = remote_tag[1:] if remote_tag.startswith("v") else remote_tag
+            if query_binary_version(candidate) != expected_version:
+                raise ValueError("安装包程序实际版本与目标原生版本不一致")
+
+            default_config = files.get("config.yaml")
+            if not os.path.lexists(config_path) and not default_config:
+                default_config = os.path.join(directory, "config.yaml")
+                config_url = f"https://raw.githubusercontent.com/Grails125/ncmm/{remote_tag}/config/config.yaml"
+                if not download_file_with_fallback(config_url, default_config, timeout=15):
+                    raise ValueError("无法获取目标版本的默认配置")
+
+            version_candidate = os.path.join(directory, "VERSION")
+            with open(version_candidate, "w", encoding="utf-8") as output:
+                output.write(expected_version + "\n")
+            candidate_stat = os.stat(candidate)
+            os.link(candidate, binary_path)
+            installed.append((binary_path, candidate_stat))
+            if not os.path.lexists(config_path):
+                try:
+                    config_stat = os.stat(default_config)
+                    os.link(default_config, config_path)
+                    installed.append((config_path, config_stat))
+                except FileExistsError:
+                    # 另一个进程先写入的用户配置也必须保留。
+                    pass
+            os.replace(version_candidate, version_file)
+            committed = True
+            print(f"[SUCCESS] ncmm 已验证并安装 {remote_tag}，已有配置保持不变。")
+            return True
+    except Exception as error:
+        if committed:
+            print(f"[WARNING] 安装已经完成，但临时目录清理失败: {error}")
+            return True
+        print(f"[ERROR] 首次安装失败，已保留原有文件: {error}")
+        # 只回收本次创建的文件，不删除其他进程替换后的文件。
+        for destination, created in reversed(installed):
             try:
-                shutil.rmtree(temp_dir)
-                print("[LOG] 已清理临时文件目录。")
-            except Exception as e:
-                print(f"[WARNING] 清理临时目录失败: {e}")
+                current = os.lstat(destination)
+                if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                    os.remove(destination)
+            except OSError as cleanup_error:
+                print(f"[WARNING] 清理本次安装文件失败: {cleanup_error}")
+        return False
 
 def main():
     print(f"[LOG] Python脚本所在目录: {current_dir}")
