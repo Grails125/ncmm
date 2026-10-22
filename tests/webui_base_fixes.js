@@ -17,6 +17,8 @@ if (!baseURL || !testRoot || !['127.0.0.1', 'localhost'].includes(new URL(baseUR
   const output = path.join(testRoot, 'screenshots');
   fs.mkdirSync(output, { recursive: true });
   page.on('pageerror', error => errors.push(error.message));
+  await page.route('**/api/v1/plugins/market', route => route.fulfill({ json: [] }));
+  await page.route('**/api/v1/plugins/updates', route => route.fulfill({ json: [] }));
   await page.route('**/api/v1/plugins/install', route => {
     installations.push(route.request().postDataJSON());
     return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ success: true, name: 'test-demo' }) });

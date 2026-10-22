@@ -285,7 +285,11 @@ async function hasHorizontalScroll(locator, label) {
   assert(await firstConfigSection.getAttribute('data-section') === 'task' && (await firstConfigSection.innerText()).includes('批量任务'), 'batch tasks were not the first simplified navigation item');
   assert((await page.locator('#config-current-title').innerText()).includes('规则配置面板'), 'continuous flow title was not rendered');
   assert(await page.locator('.card-flow-section').count() === 16, 'configuration did not render all 16 modules');
-  assert(await page.locator('.config-card-box').count() === 33, 'configuration card flow did not include all cards and per-score comments');
+  assert(await page.locator('.config-card-box').count() === 34, 'configuration card flow did not include all cards, per-score comments and deprecated play warning');
+  assert(await page.locator('#config-block-play').count() === 0, 'deprecated play created an extra configuration module');
+  const deprecatedPlay = page.locator('#config-block-playids input[data-path=\'["play","webSession"]\']');
+  assert(await deprecatedPlay.count() === 1 && await deprecatedPlay.isDisabled() && !await deprecatedPlay.isChecked(), 'deprecated play warning must stay disabled inside playids');
+  assert((await page.locator('#config-block-playids').innerText()).includes('已废弃') && (await page.locator('#config-block-playids').innerText()).includes('风控'), 'deprecated play risk explanation missing');
   assert(await page.locator('#config-block-musicPartner .range-inputs-row').count() === 3, 'partner score, extra target and wait ranges were incomplete');
   assert(await page.locator('#config-block-musicPartner textarea[data-kind="array"]').count() === 5, 'partner per-score comment pools were incomplete');
   assert(await page.locator('#config-block-task .task-card').count() === 9, 'task matrix did not render nine task cards');

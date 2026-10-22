@@ -106,6 +106,46 @@ func TestPluginUpdateCheckUsesHEADAndPersistentDebounce(t *testing.T) {
 	}
 }
 
+func TestPublicPluginMarketVersionsUseSharedCacheWithoutInstallation(t *testing.T) {
+	home := t.TempDir()
+	p := NewPlugin(&Root{Opts: RootOpts{Home: home}}, nil)
+	calls := 0
+	p.client.Transport = pluginInstallTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.Method != http.MethodHead || r.URL.String() != "https://github.com/crossgg/ncmm-qqbot/releases/latest" || r.Header.Get("Authorization") != "" {
+			t.Fatalf("unexpected public market request: %s %s", r.Method, r.URL)
+		}
+		return &http.Response{StatusCode: 302, Header: http.Header{"Location": {"https://github.com/crossgg/ncmm-qqbot/releases/tag/v2.3.4"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	updates, err := p.CheckPublicPluginRepositories(context.Background(), []string{"crossgg/ncmm-qqbot"}, false)
+	if err != nil || len(updates) != 1 || updates[0].LatestTag != "v2.3.4" || updates[0].UpdateAvailable || updates[0].CheckedAt.IsZero() || len(p.DiscoverPlugins()) != 0 {
+		t.Fatalf("market version without install: %+v %v", updates, err)
+	}
+	p2 := NewPlugin(&Root{Opts: RootOpts{Home: home}}, nil)
+	p2.client.Transport = p.client.Transport
+	if _, err := p2.CheckPublicPluginRepositories(context.Background(), []string{"crossgg/ncmm-qqbot"}, true); err != nil || calls != 1 {
+		t.Fatalf("market debounce lost across restart: calls=%d err=%v", calls, err)
+	}
+	if _, err := p2.CheckPublicPluginRepositories(context.Background(), []string{"https://untrusted.invalid/repo"}, false); err == nil || calls != 1 {
+		t.Fatalf("untrusted public target reached network: calls=%d err=%v", calls, err)
+	}
+	dir := filepath.Join(p.DefaultPluginDir(), "ncmm-qqbot")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ncmm-qqbot.exe"), []byte("not executed"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	source, _ := json.Marshal(plugininstall.Source{Repository: "crossgg/ncmm-qqbot", Tag: "v2.0.0"})
+	if err := os.WriteFile(filepath.Join(dir, "source.json"), source, 0600); err != nil {
+		t.Fatal(err)
+	}
+	updates, err = p2.CheckPluginUpdates(context.Background(), false)
+	if err != nil || len(updates) != 1 || !updates[0].UpdateAvailable || calls != 1 {
+		t.Fatalf("installed plugin ignored market cache: updates=%+v calls=%d err=%v", updates, calls, err)
+	}
+}
+
 func TestPluginLatestTagMirrorFallbackValidatesRedirect(t *testing.T) {
 	p := NewPlugin(&Root{Opts: RootOpts{Home: t.TempDir()}}, nil)
 	var hosts []string

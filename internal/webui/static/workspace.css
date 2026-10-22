@@ -7460,9 +7460,12 @@
       padding: 6px 12px;
     }
 
+    .plugin-tabs { margin-bottom: 18px; }
     .plugin-market-panel { margin-bottom: 24px; }
-    .plugin-market-panel summary { cursor: pointer; font-weight: 700; margin-bottom: 12px; }
     .plugin-market-panel > p { margin-bottom: 12px; }
+    .plugin-market-features { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 14px; }
+    .plugin-market-card .plugin-detail-row { align-items: flex-start; }
+    .plugin-market-card code { overflow-wrap: anywhere; min-width: 0; }
     .plugin-card p { overflow-wrap: anywhere; }
     #plugin-daemon-log-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 55vh; overflow: auto; font: 12px/1.6 monospace; }
 

@@ -53,6 +53,40 @@ func TestConfigurationSchemaPathsAreUniqueAndDefaultsMatch(t *testing.T) {
 	}
 }
 
+func TestDeprecatedPlaySessionIsReadOnlyAndWarnsAboutRisk(t *testing.T) {
+	schema := configurationSchema().Targets["config"]
+	if len(schema.Categories) != 16 {
+		t.Fatalf("config category count = %d; deprecated play must reuse playids", len(schema.Categories))
+	}
+	playSourceGroup := false
+	for _, category := range schema.Categories {
+		if category.ID == "play" {
+			t.Fatal("deprecated play must not create a separate configuration category")
+		}
+		if category.ID == "playids" {
+			for _, group := range category.Groups {
+				playSourceGroup = playSourceGroup || group.ID == "play-source"
+			}
+		}
+	}
+	var defaults any
+	if err := yaml.Unmarshal(config.DefaultYAML(), &defaults); err != nil {
+		t.Fatal(err)
+	}
+	if value, exists := schemaValueAt(defaults, "play.webSession"); !exists || value != false {
+		t.Fatalf("deprecated play compatibility default = %#v, exists = %t", value, exists)
+	}
+	for _, field := range schema.Fields {
+		if field.Path == "play.webSession" {
+			if !playSourceGroup || field.Group != "play-source" || !field.ReadOnly || !strings.Contains(field.Title, "已废弃") || !strings.Contains(field.Description, "风控") {
+				t.Fatalf("deprecated play session must not be enabled by the form: %+v", field)
+			}
+			return
+		}
+	}
+	t.Fatal("deprecated play session explanation missing")
+}
+
 func TestMainConfigurationSchemaCoversDefaultFields(t *testing.T) {
 	schema := configurationSchema().Targets["config"]
 	if len(schema.Categories) == 0 || schema.Categories[0].ID != "task" {

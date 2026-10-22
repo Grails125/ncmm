@@ -53,12 +53,18 @@
     consecutivePollFailures: 0,
     openLogContent: '',
     plugins: [],
+    pluginMarket: [],
+    pluginTab: 'installed',
+    pluginUpdates: [],
+    pluginChecking: false,
+    pluginCheckCooldownUntil: 0,
     pluginSearch: '',
     pluginInstalling: false,
   };
   let dashboardChartObserver = null;
   let dashboardChartResizeTimer = 0;
   let musicPartnerPointsController = null;
+  let pluginCheckTimer = null;
 
   const pageTitles = { dashboard: '仪表盘', accounts: '账号中心', schedules: '定时任务', plugins: '插件中心', config: '策略配置', runs: '运行日志', system: '系统设置' };
   const pageRoutes = { dashboard: '/', accounts: '/account', schedules: '/task', plugins: '/plugins', config: '/config', runs: '/logs', system: '/system' };
@@ -136,18 +142,18 @@
 
   const PRESET_STRATEGIES = {
     novice: {
-      name: '小白省心 (推荐)',
-      hint: '日常打卡、指定播放与日推混听、会员礼品；乐迷团按需开启',
+      name: '常用预设 (推荐)',
+      hint: '沿用默认日常任务与音乐人进阶，乐迷团和每日推歌按需开启',
       config: {
-        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': false, 'music-partner': false, note: false, 'daily-song-share': false, 'vip-member-gift': true, fansgroup: false, mode: 'by-task-group' },
-        sign: { automatic: true, enableMain: true, enableSecondaries: true, enableVipTask: true },
-        playids: { enableMain: true, enableSecondaries: true, daily_min: 40, daily_max: 100, run_min: 10, run_max: 30, gap_min: 15, gap_max: 35 },
-        mixPlay: { enabled: true, dailyRecommendRatio: 0.3, countTarget: true },
+        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': true, 'music-partner': false, note: false, 'daily-song-share': false, 'vip-member-gift': true, fansgroup: false, mode: 'by-task-group' },
+        sign: { automatic: true, enableMain: true, enableSecondaries: false, enableVipTask: true },
+        playids: { enableMain: false, enableSecondaries: true, daily_min: 80, daily_max: 200, run_min: 40, run_max: 80, gap_min: 0, gap_max: 5 },
+        mixPlay: { enabled: true, dailyRecommendRatio: 0.3, countTarget: false },
         vipMemberGift: { enableMain: true, enableSecondaries: true, enableGift: true, enableClaim: true },
-        fansgroup: { enableMain: true, enableSecondaries: true, autoDeleteNote: true },
+        fansgroup: { enableMain: true, enableSecondaries: false },
         network: { timeout: '60s', retry: 3, debug: false },
         updater: { check: true, auto_update: true },
-        log: { level: 'info', stdout: true }
+        log: { level: 'info', stdout: false }
       }
     },
     musician: {
@@ -1235,9 +1241,7 @@
     }
     const root = document.data;
     const targetSchema = activeConfigSchema();
-    const schemaOrder = (targetSchema?.categories || []).map(category => category.id);
-    const rootKeys = Object.keys(root).filter(key => state.configTarget !== 'config' || key !== 'version');
-    const keys = [...schemaOrder.filter(key => rootKeys.includes(key)), ...rootKeys.filter(key => !schemaOrder.includes(key))];
+    const keys = configSectionKeys(root, targetSchema, state.configTarget);
     if (!state.configSection || !keys.includes(state.configSection)) {
       state.configSection = state.configTarget === 'config' && keys.includes('task') ? 'task' : keys[0] || '';
     }
@@ -1263,6 +1267,12 @@
     const yamlFile = state.configTarget === 'notify' ? 'notify.yaml' : 'config.yaml';
     $('#yaml-file-label').textContent = `${yamlFile} · ${sectionLabels[state.configSection] || state.configSection}`;
     updateYAMLEditor(yaml, document.parseError || '');
+  }
+
+  function configSectionKeys(root, schema, target) {
+    const schemaOrder = (schema?.categories || []).map(category => category.id);
+    const rootKeys = Object.keys(root).filter(key => target !== 'config' || (key !== 'version' && key !== 'play'));
+    return [...schemaOrder.filter(key => rootKeys.includes(key)), ...rootKeys.filter(key => !schemaOrder.includes(key))];
   }
 
   function renderConfigSidebarItem(key, index) {
@@ -1756,7 +1766,8 @@
     const accountSwitches = `<div class="form-row"><label class="form-row-label">账号分工</label><div class="flow-inline-switches">${renderFlowField('playids.enableMain', { title: '主账号刷歌', description: '' })}${renderFlowField('playids.enableSecondaries', { title: '辅助账号刷歌（推荐开启）', description: '' })}</div></div>`;
     const target = renderFlowCard('刷歌分工与目标', `${accountSwitches}${renderFlowRange('每日播放随机目标 (daily_min ~ daily_max)', 'playids.daily_min', 'playids.daily_max', '首 / 天', '每日首次启动时在此范围内随机生成当日目标。')}${renderFlowRange('单次运行随机目标 (run_min ~ run_max)', 'playids.run_min', 'playids.run_max', '首 / 次', '填 0 表示不限制单次数量，直接刷满今日剩余目标。')}`, '核心冲量', 'cyan');
     const source = renderFlowCard('切歌间隔与歌曲源', `${renderFlowRange('切歌随机等待间隔 (gap_min ~ gap_max)', 'playids.gap_min', 'playids.gap_max', '秒')}${renderFlowField('playids.ids', { title: '歌曲 ID 池 (playids.ids)' })}${renderFlowField('playids.playlistIds', { title: '歌单 ID 或分享链接 (playlistIds)' })}${renderFlowField('playids.idsFile', { title: '歌曲 ID 远程/本地文件列表 (playids.idsFile)' })}`, 'playids', 'primary');
-    return `<div class="config-cards-grid">${target}${source}</div>`;
+    const deprecated = renderFlowField('play.webSession');
+    return `<div class="config-cards-grid">${target}${source}${deprecated ? renderFlowCard('旧版播放兼容', deprecated, '已废弃', 'amber') : ''}</div>`;
   }
 
   function renderFlowMixPlay() {
@@ -2368,6 +2379,8 @@
   }
 
   function renderPlugins() {
+    renderPluginMarket();
+    updatePluginCheckCooldown(state.plugins.map(plugin => plugin.update));
     const grid = $('#plugin-cards-grid');
     const badge = $('#plugin-nav-count');
     if (badge) badge.textContent = state.plugins.length;
@@ -2447,25 +2460,97 @@
   }
 
   const pluginActionsPending = new Set();
+
+  function selectPluginTab(tab, name = '') {
+    state.pluginTab = tab === 'market' ? 'market' : 'installed';
+    $$('[data-plugin-tab]').forEach(button => {
+      const selected = button.dataset.pluginTab === state.pluginTab;
+      button.classList.toggle('active', selected);
+      button.setAttribute('aria-selected', String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    });
+    $('#plugin-installed-panel')?.classList.toggle('hidden', state.pluginTab !== 'installed');
+    $('#plugin-market-panel')?.classList.toggle('hidden', state.pluginTab !== 'market');
+    $('#plugin-search')?.closest('.schedule-search-box')?.classList.toggle('hidden', state.pluginTab !== 'installed');
+    if (name) {
+      state.pluginSearch = name;
+      $('#plugin-search').value = name;
+      renderPlugins();
+    }
+  }
+
+  function marketInstalledPlugin(item) {
+    return state.plugins.find(plugin => plugin.source?.repository?.toLowerCase() === item.repository?.toLowerCase())
+      || state.plugins.find(plugin => !plugin.source?.repository && plugin.name === item.name);
+  }
+
+  function marketVersion(item, installed) {
+    return [installed?.update, item.update, ...state.pluginUpdates.filter(update => update.repository?.toLowerCase() === item.repository?.toLowerCase())]
+      .filter(Boolean).sort((left, right) => (Date.parse(right.checkedAt) || 0) - (Date.parse(left.checkedAt) || 0))[0] || {};
+  }
+
+  function renderPluginMarket() {
+    const grid = $('#plugin-market-grid');
+    if (!grid) return;
+    grid.innerHTML = state.pluginMarket.map(item => {
+      const installed = marketInstalledPlugin(item);
+      const update = marketVersion(item, installed);
+      const latest = update.latestTag || '';
+      const canUpgrade = installed?.source && latest && latest !== installed.source.tag && !update.error;
+      const features = (Array.isArray(item.features) ? item.features : []).map(feature => `<span class="badge-pill gray">${escapeHTML(feature)}</span>`).join('');
+      const installedTag = installed?.source?.tag || installed?.version || '版本未知';
+      return `<article class="plugin-card plugin-market-card" data-market-name="${escapeHTML(item.name)}">
+        <div class="plugin-card-title-row"><strong>${escapeHTML(item.title || item.name)}</strong><span class="badge-pill gray">${item.type === 'daemon' ? '常驻插件' : '任务插件'}</span>${installed ? '<span class="badge-pill success">已安装</span>' : ''}${canUpgrade ? `<span class="badge-pill primary">可更新 ${escapeHTML(latest)}</span>` : ''}</div>
+        <p class="plugin-card-desc">${escapeHTML(item.description)}</p>
+        <div class="plugin-card-details"><div class="plugin-detail-row"><span>仓库:</span><code>${escapeHTML(item.repository)}</code></div><div class="plugin-detail-row"><span>作者:</span><span>${escapeHTML(item.author || '未知')}</span></div><div class="plugin-detail-row"><span>最新版本:</span><span>${escapeHTML(latest || '暂未获取')}</span></div>${installed ? `<div class="plugin-detail-row"><span>已安装版本:</span><span>${escapeHTML(installedTag)}</span></div>` : ''}${update.error ? `<p class="notice warning">${escapeHTML(update.error)}</p>` : ''}</div>
+        <div class="plugin-market-features">${features}</div>
+        <div class="plugin-card-actions"><a class="btn btn-glass btn-sm" href="https://github.com/${escapeHTML(item.repository)}" target="_blank" rel="noopener noreferrer">项目说明</a>${installed ? `<button type="button" class="btn btn-glass btn-sm" data-market-manage="${escapeHTML(installed.name)}">前往管理</button>${canUpgrade ? `<button type="button" class="btn btn-primary btn-sm" data-market-upgrade="${escapeHTML(installed.name)}">一键升级</button>` : ''}` : `<button type="button" class="btn btn-primary btn-sm" data-market-install="${escapeHTML(item.repository)}">安装 / 选择版本</button>`}</div></article>`;
+    }).join('') || '<p class="muted">暂无公开市场项目。</p>';
+  }
+
+  function renderPluginCheckCountdown() {
+    clearTimeout(pluginCheckTimer);
+    pluginCheckTimer = null;
+    const button = $('#plugin-check-updates');
+    if (!button) return;
+    const remaining = Math.max(0, Math.ceil((state.pluginCheckCooldownUntil - Date.now()) / 1000));
+    button.disabled = state.pluginChecking || remaining > 0;
+    button.textContent = state.pluginChecking ? '正在检查…' : remaining > 0 ? `${remaining} 秒后可检查` : '检查插件更新';
+    if (remaining > 0) pluginCheckTimer = setTimeout(renderPluginCheckCountdown, 1000);
+  }
+
+  function updatePluginCheckCooldown(updates) {
+    const now = Date.now();
+    for (const update of updates || []) {
+      const checkedAt = Date.parse(update?.checkedAt);
+      if (Number.isFinite(checkedAt) && checkedAt <= now + 5000) state.pluginCheckCooldownUntil = Math.max(state.pluginCheckCooldownUntil, Math.min(now + 60000, checkedAt + 60000));
+    }
+    renderPluginCheckCountdown();
+  }
+
   async function loadPluginMarket() {
     try {
       const items = await api('/api/v1/plugins/market');
-      $('#plugin-market-grid').innerHTML = (Array.isArray(items) ? items : []).map(item => `
-        <article class="plugin-card"><div class="plugin-card-title-row"><strong>${escapeHTML(item.title)}</strong><span class="badge-pill gray">${item.type === 'daemon' ? '常驻插件' : '任务插件'}</span></div>
-        <p>${escapeHTML(item.description)}</p><div class="plugin-card-actions"><a class="btn btn-glass btn-sm" href="https://github.com/${escapeHTML(item.repository)}" target="_blank" rel="noopener noreferrer">项目说明</a><button type="button" class="btn btn-primary btn-sm" data-market-install="${escapeHTML(item.repository)}">安装 / 选择版本</button></div></article>`).join('');
+      state.pluginMarket = Array.isArray(items) ? items : [];
+      updatePluginCheckCooldown(state.pluginMarket.map(item => item.update));
+      renderPluginMarket();
     } catch (error) { $('#plugin-market-grid').textContent = `市场加载失败：${error.message}`; }
   }
 
   async function checkPluginUpdates(force = false) {
-    const button = $('#plugin-check-updates');
-    if (button?.disabled) return;
-    if (button) button.disabled = true;
+    if (state.pluginChecking || (force && state.pluginCheckCooldownUntil > Date.now())) return;
+    state.pluginChecking = true;
+    renderPluginCheckCountdown();
     try {
-      await api('/api/v1/plugins/updates', { method: 'POST', body: { force } });
+      const updates = await api('/api/v1/plugins/updates', { method: 'POST', body: { force } });
+      state.pluginUpdates = Array.isArray(updates) ? updates : [];
+      updatePluginCheckCooldown(state.pluginUpdates);
+      if (force && state.pluginCheckCooldownUntil <= Date.now()) state.pluginCheckCooldownUntil = Date.now() + 60000;
       await refreshPlugins();
-      if (force) toast('版本检查完成，60 秒内重复检查使用缓存');
+      await loadPluginMarket();
+      if (force) toast('版本检查完成');
     } catch (error) { if (force) toast(error.message, true); }
-    finally { if (button) button.disabled = false; }
+    finally { state.pluginChecking = false; renderPluginCheckCountdown(); }
   }
 
   async function openDaemonSettings(plugin) {
@@ -3828,11 +3913,27 @@
     });
 
     $('#plugin-refresh')?.addEventListener('click', refreshPlugins);
+    $$('[data-plugin-tab]').forEach(button => {
+      button.addEventListener('click', () => selectPluginTab(button.dataset.pluginTab));
+      button.addEventListener('keydown', event => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        const tab = event.key === 'Home' ? 'installed' : event.key === 'End' ? 'market' : state.pluginTab === 'installed' ? 'market' : 'installed';
+        selectPluginTab(tab);
+        $(`[data-plugin-tab="${tab}"]`)?.focus();
+      });
+    });
     $('#plugin-check-updates')?.addEventListener('click', () => checkPluginUpdates(true));
     $('#plugin-install-proxy')?.addEventListener('change', event => $('#plugin-install-proxy-custom-label').classList.toggle('hidden', event.target.value !== 'custom'));
     $('#plugin-market-grid')?.addEventListener('click', event => {
-      const button = event.target.closest('[data-market-install]');
+      const button = event.target.closest('[data-market-install], [data-market-manage], [data-market-upgrade]');
       if (!button) return;
+      if (button.dataset.marketManage) { selectPluginTab('installed', button.dataset.marketManage); return; }
+      if (button.dataset.marketUpgrade) {
+        const plugin = state.plugins.find(item => item.name === button.dataset.marketUpgrade);
+        if (plugin) openPluginUpgrade(plugin);
+        return;
+      }
       $('#plugin-install-open').click();
       $('#plugin-install-repo').value = button.dataset.marketInstall;
     });

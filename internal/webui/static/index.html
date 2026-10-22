@@ -739,15 +739,21 @@
             </div>
           </div>
 
-		  <details class="plugin-market-panel" open><summary>在线市场</summary>
-			<p class="muted">公开插件由各作者维护，安装后自行配置。音乐合伙人评分继续使用内置任务。</p>
-			<div id="plugin-market-grid" class="plugin-cards-grid"></div>
-		  </details>
+          <div class="sim-tabs-bar plugin-tabs" role="tablist" aria-label="插件分类">
+            <button type="button" id="plugin-tab-installed" class="sim-tab-item active" role="tab" aria-selected="true" aria-controls="plugin-installed-panel" data-plugin-tab="installed">已安装插件</button>
+            <button type="button" id="plugin-tab-market" class="sim-tab-item" role="tab" tabindex="-1" aria-selected="false" aria-controls="plugin-market-panel" data-plugin-tab="market">在线插件市场</button>
+          </div>
+          <div id="plugin-installed-panel" role="tabpanel" aria-labelledby="plugin-tab-installed">
           <div id="plugin-cards-grid" class="plugin-cards-grid">
             <div class="plugin-empty-box">
               <svg class="plugin-empty-icon" aria-hidden="true"><use href="#i-plugin" /></svg>
               <p>正在加载插件列表...</p>
             </div>
+          </div>
+          </div>
+          <div id="plugin-market-panel" class="plugin-market-panel hidden" role="tabpanel" aria-labelledby="plugin-tab-market">
+            <p class="muted">公开插件由各作者维护，安装后自行配置。音乐合伙人评分继续使用内置任务。</p>
+            <div id="plugin-market-grid" class="plugin-cards-grid"></div>
           </div>
         </section>
 
@@ -1045,7 +1051,7 @@
         </div>
         <div id="schedule-plugin-dynamic-fields" class="plugin-dynamic-fields"></div>
       </div>
-      <label>命令参数<input id="schedule-args" placeholder="如 --only-fast 或 run withdraw --target 15"></label>
+      <label>命令参数<input id="schedule-args" placeholder="如 --only-fast 或 run demo -- --days 7"></label>
       <p id="schedule-music-partner-help" class="field-note hidden">音乐合伙人使用“策略配置”中的账号与评分规则；可留空，或填写 --cookie-file 指定一个账号的 Cookie 文件。</p>
       <div class="dialog-actions"><button type="button" class="button subtle dialog-close">取消</button><button
           id="schedule-submit" type="submit" class="button primary"><svg>
@@ -1132,7 +1138,7 @@
         </div><button type="button" class="icon-button plugin-install-close" title="关闭">×</button>
       </div>
       <p class="field-note" style="margin-bottom:12px;">支持 owner/repo、完整 GitHub 仓库链接或 Release 安装包直链。版本 Tag 仅用于仓库安装，直链请留空。</p>
-      <label class="form-group"><span class="form-label">仓库或下载地址</span><input id="plugin-install-repo" class="form-input" placeholder="3899/ncmm-withdraw 或 https://..." required autocomplete="off"></label>
+      <label class="form-group"><span class="form-label">仓库或下载地址</span><input id="plugin-install-repo" class="form-input" placeholder="crossgg/ncmm-qqbot 或 https://..." required autocomplete="off"></label>
 	  <label class="form-group"><span class="form-label">公开下载镜像</span><select id="plugin-install-proxy" class="form-select"><option value="">直连 GitHub</option><option value="https://gh-proxy.com">gh-proxy.com</option><option value="https://ghproxy.net">ghproxy.net</option><option value="https://githubproxy.cc">githubproxy.cc</option><option value="custom">自定义 HTTPS 镜像</option></select></label>
 	  <label id="plugin-install-proxy-custom-label" class="form-group hidden"><span class="form-label">自定义镜像地址</span><input id="plugin-install-proxy-custom" class="form-input" type="url" placeholder="https://mirror.example.com"></label>
 	  <p class="muted">镜像失败后自动尝试直连；提供 Token 时始终直连，Token 仅用于本次安装。</p>
