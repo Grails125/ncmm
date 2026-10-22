@@ -349,7 +349,7 @@ log:
     # 滚动日志文件路径。
     filename: "./log/ncm.log"
     # 单个日志文件最大大小，单位：MB。
-    maxsize: 100
+    maxsize: 5
     # 历史日志保留天数。
     maxage: 7
     # 最多保留的历史日志文件数量。

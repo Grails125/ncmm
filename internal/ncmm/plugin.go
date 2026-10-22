@@ -13,13 +13,16 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/3899/ncmm/config"
+	"github.com/3899/ncmm/internal/plugininstall"
 	"github.com/3899/ncmm/internal/webui"
 	"github.com/3899/ncmm/pkg/log"
 	"github.com/3899/ncmm/pkg/notify"
@@ -29,14 +32,17 @@ import (
 )
 
 type Plugin struct {
-	root *Root
-	l    *log.Logger
-	cmd  *cobra.Command
+	root   *Root
+	l      *log.Logger
+	cmd    *cobra.Command
+	client *http.Client
 }
 
 type PluginParamSchema = webui.PluginParamSchema
 type PluginManifest = webui.PluginManifest
 type PluginInfo = webui.PluginInfo
+
+type PluginInstallOptions = plugininstall.Options
 
 func DefaultWithdrawManifest() PluginManifest {
 	return PluginManifest{
@@ -134,7 +140,7 @@ type PluginNotify struct {
 }
 
 func NewPlugin(root *Root, l *log.Logger) *Plugin {
-	p := &Plugin{root: root, l: l}
+	p := &Plugin{root: root, l: l, client: &http.Client{Timeout: 2 * time.Minute, CheckRedirect: pluginDownloadRedirect}}
 	p.cmd = &cobra.Command{
 		Use:     "plugin",
 		Short:   "Manage and execute external ncmm plugins",
@@ -453,11 +459,18 @@ func (p *Plugin) listCommand() *cobra.Command {
 }
 
 func (p *Plugin) runCommand() *cobra.Command {
+	var pluginArgs []string
 	cmd := &cobra.Command{
 		Use:                "run <plugin-name> [-- extra args...]",
 		Short:              "Run a specific plugin with forwarded arguments",
 		DisableFlagParsing: true,
+		Args: func(cmd *cobra.Command, args []string) error {
+			var err error
+			pluginArgs, err = parsePluginRunHostFlags(cmd, args)
+			return err
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			args = pluginArgs
 			if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 				return cmd.Help()
 			}
@@ -471,10 +484,12 @@ func (p *Plugin) runCommand() *cobra.Command {
 			// Extract forwarded arguments and detect optional account file
 			var accountFile string
 			var extraArgs []string
+			forwardOnly := false
 			rawArgs := args[1:]
 			for i := 0; i < len(rawArgs); i++ {
 				arg := rawArgs[i]
-				if i == 0 && arg == "--" {
+				if !forwardOnly && arg == "--" {
+					forwardOnly = true
 					continue
 				}
 				if arg == "-a" || arg == "--account" {
@@ -524,6 +539,7 @@ func (p *Plugin) runCommand() *cobra.Command {
 func (p *Plugin) installCommand() *cobra.Command {
 	var token string
 	var destDir string
+	var tag string
 
 	cmd := &cobra.Command{
 		Use:   "install <url-or-github-repo>",
@@ -544,21 +560,27 @@ Examples:
 				home := utils.Ternary(p.root.Opts.Home != "", p.root.Opts.Home, config.HomeDir)
 				destDir = filepath.Join(home, "plugins")
 			}
-			if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-				_, err := p.InstallFromURL(cmd.Context(), target, token, destDir, cmd.Printf)
-				return err
-			}
-			if strings.Contains(target, "/") {
-				_, err := p.InstallFromGitHub(cmd.Context(), target, token, destDir, cmd.Printf)
-				return err
-			}
-			return fmt.Errorf("invalid install target %q: expected URL or 'owner/repo'", target)
+			_, err := p.InstallPlugin(cmd.Context(), PluginInstallOptions{Target: target, Tag: tag, Token: token, DestDir: destDir}, cmd.Printf)
+			return err
 		},
 	}
 
 	cmd.Flags().StringVarP(&token, "token", "t", "", "GitHub Personal Access Token (for private repositories)")
 	cmd.Flags().StringVarP(&destDir, "dir", "d", "", "target plugins directory (default: {home}/plugins)")
+	cmd.Flags().StringVar(&tag, "tag", "", "GitHub Release Tag (default: latest)")
 	return cmd
+}
+
+// InstallPlugin 统一处理 CLI 与 WebUI 的仓库、版本和直链输入。
+func (p *Plugin) InstallPlugin(ctx context.Context, options PluginInstallOptions, logFn func(string, ...any)) (string, error) {
+	target, err := options.ParseTarget()
+	if err != nil {
+		return "", err
+	}
+	if target.Repository != "" {
+		return p.installGitHubRelease(ctx, target.Repository, strings.TrimSpace(options.Tag), strings.TrimSpace(options.Token), options.DestDir, logFn)
+	}
+	return p.InstallFromURL(ctx, target.URL, strings.TrimSpace(options.Token), options.DestDir, logFn)
 }
 
 func (p *Plugin) DefaultPluginDir() string {
@@ -580,12 +602,11 @@ func (p *Plugin) InstallFromURL(ctx context.Context, targetURL, token, destDir s
 	if err != nil {
 		return "", err
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	// GitHub 凭据不得随任意下载直链发送给第三方站点。
+	setPluginGitHubToken(req, token)
 
-	logFn("Downloading %s...\n", targetURL)
-	resp, err := http.DefaultClient.Do(req)
+	logFn("Downloading %s://%s%s...\n", req.URL.Scheme, req.URL.Host, req.URL.EscapedPath())
+	resp, err := p.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("download: %w", err)
 	}
@@ -600,10 +621,7 @@ func (p *Plugin) InstallFromURL(ctx context.Context, targetURL, token, destDir s
 		return "", fmt.Errorf("read body: %w", err)
 	}
 
-	base := filepath.Base(targetURL)
-	if idx := strings.Index(base, "?"); idx != -1 {
-		base = base[:idx]
-	}
+	base := filepath.Base(req.URL.Path)
 
 	installedName, err := p.InstallFromArchive(data, base, destDir)
 	if err != nil {
@@ -615,6 +633,10 @@ func (p *Plugin) InstallFromURL(ctx context.Context, targetURL, token, destDir s
 }
 
 func (p *Plugin) InstallFromGitHub(ctx context.Context, repo, token, destDir string, logFn func(string, ...any)) (string, error) {
+	return p.InstallPlugin(ctx, PluginInstallOptions{Target: repo, Token: token, DestDir: destDir}, logFn)
+}
+
+func (p *Plugin) installGitHubRelease(ctx context.Context, repo, tag, token, destDir string, logFn func(string, ...any)) (string, error) {
 	if logFn == nil {
 		logFn = func(string, ...any) {}
 	}
@@ -622,17 +644,18 @@ func (p *Plugin) InstallFromGitHub(ctx context.Context, repo, token, destDir str
 		destDir = p.DefaultPluginDir()
 	}
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+	if tag != "" && !strings.EqualFold(tag, "latest") {
+		apiURL = fmt.Sprintf("https://api.github.com/repos/%s/releases/tags/%s", repo, url.PathEscape(tag))
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	setPluginGitHubToken(req, token)
 
-	logFn("Querying latest release from GitHub: %s...\n", repo)
-	resp, err := http.DefaultClient.Do(req)
+	logFn("Querying GitHub release: %s (%s)...\n", repo, utils.Ternary(tag != "", tag, "latest"))
+	resp, err := p.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("query GitHub releases: %w", err)
 	}
@@ -693,11 +716,9 @@ func (p *Plugin) InstallFromGitHub(ctx context.Context, repo, token, destDir str
 		return "", err
 	}
 	dlReq.Header.Set("Accept", "application/octet-stream")
-	if token != "" {
-		dlReq.Header.Set("Authorization", "Bearer "+token)
-	}
+	setPluginGitHubToken(dlReq, token)
 
-	dlResp, err := http.DefaultClient.Do(dlReq)
+	dlResp, err := p.client.Do(dlReq)
 	if err != nil {
 		return "", fmt.Errorf("download asset: %w", err)
 	}
@@ -719,6 +740,30 @@ func (p *Plugin) InstallFromGitHub(ctx context.Context, repo, token, destDir str
 
 	logFn("✅ Plugin [%s] installed successfully into %s!\n", installedName, destDir)
 	return installedName, nil
+}
+
+func setPluginGitHubToken(req *http.Request, token string) {
+	if token != "" && req.URL.Scheme == "https" && req.URL.User == nil && (req.URL.Port() == "" || req.URL.Port() == "443") && (strings.EqualFold(req.URL.Hostname(), "github.com") || strings.EqualFold(req.URL.Hostname(), "api.github.com")) {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+}
+
+// 每一跳重新限定认证范围，避免默认重定向向降级 HTTP、子域名或 CDN 传播令牌。
+func pluginDownloadRedirect(req *http.Request, via []*http.Request) error {
+	req.Header.Del("Authorization")
+	if len(via) >= 10 {
+		return fmt.Errorf("插件下载重定向次数超过限制")
+	}
+	if req.URL.User != nil {
+		return fmt.Errorf("插件下载重定向不能包含认证信息")
+	}
+	if len(via) > 0 {
+		auth := via[0].Header.Get("Authorization")
+		if strings.HasPrefix(auth, "Bearer ") {
+			setPluginGitHubToken(req, strings.TrimPrefix(auth, "Bearer "))
+		}
+	}
+	return nil
 }
 
 func (p *Plugin) InstallFromArchive(data []byte, filename, destDir string) (string, error) {

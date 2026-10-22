@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/3899/ncmm/internal/loginresult"
+	"github.com/3899/ncmm/internal/plugininstall"
 	webauth "github.com/3899/ncmm/internal/webui/auth"
 	"github.com/3899/ncmm/pkg/notify"
 	"gopkg.in/yaml.v3"
@@ -1084,31 +1085,36 @@ func (s *Server) handlePluginInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Target string `json:"target"`
-		Token  string `json:"token"`
+		Target    string `json:"target"`
+		RepoOrURL string `json:"repoOrURL"`
+		Tag       string `json:"tag"`
+		Token     string `json:"token"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	target := strings.TrimSpace(req.Target)
+	legacyTarget := strings.TrimSpace(req.RepoOrURL)
+	if target != "" && legacyTarget != "" && target != legacyTarget {
+		writeError(w, http.StatusBadRequest, "仓库或下载地址存在冲突")
+		return
+	}
+	if target == "" {
+		target = legacyTarget
+	}
 	if target == "" {
 		writeError(w, http.StatusBadRequest, "target URL or repo is required")
 		return
 	}
 
-	var name string
-	var err error
-	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
-		name, err = s.plugins.InstallFromURL(r.Context(), target, strings.TrimSpace(req.Token), "", nil)
-	} else if strings.Contains(target, "/") {
-		name, err = s.plugins.InstallFromGitHub(r.Context(), target, strings.TrimSpace(req.Token), "", nil)
-	} else {
-		writeError(w, http.StatusBadRequest, "invalid target format: expected URL or 'owner/repo'")
-		return
-	}
+	name, err := s.plugins.InstallPlugin(r.Context(), plugininstall.Options{Target: target, Tag: strings.TrimSpace(req.Tag), Token: strings.TrimSpace(req.Token)}, nil)
 
 	if err != nil {
+		if errors.Is(err, plugininstall.ErrInvalidOptions) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1173,6 +1179,9 @@ func (s *Server) handlePluginRun(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&req)
 	args := []string{"run", name}
+	if len(req.Args) > 0 && req.Args[0] != "--" {
+		args = append(args, "--")
+	}
 	args = append(args, req.Args...)
 	job := Schedule{
 		ID:      "plugin-" + name,
@@ -1180,7 +1189,8 @@ func (s *Server) handlePluginRun(w http.ResponseWriter, r *http.Request) {
 		Command: "plugin",
 		Args:    args,
 	}
-	record, err := s.runner.start(r.Context(), job)
+	// 页面请求结束不代表任务结束；任务随服务关闭或用户停止操作取消。
+	record, err := s.runner.start(s.scheduler.ctx, job)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
