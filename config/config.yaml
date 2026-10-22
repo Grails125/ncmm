@@ -30,9 +30,9 @@ network:
     # 默认兜底 UA；协议专用 UA 留空时可能回退到此值。
     default: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) NeteaseMusicDesktop/2.3.17.1034"
     # Web / PC 客户端 WEAPI 请求使用的 UA。
-    weapi: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) NeteaseMusicDesktop/2.3.17.1034"
+    weapi: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
     # iPhone / iPad 移动端 EAPI 请求使用的抓包 UA。
-    eapi: "NeteaseMusic 9.4.95/6806 (iPhone; iOS 16.6.1; zh_CN)"
+    eapi: "neteasemusic/9.6.05 (iPhone; iOS 16.6.1; Scale/2.00)"
     # Android XEAPI / AEAPI 请求使用的抓包 UA；Android 推歌和领会员需要配置。
     xeapi: ""
 
@@ -45,9 +45,9 @@ task:
   # 在批量执行中包含音乐人每日签到与云豆领取。
   musician-sign: true
   # 在批量执行中包含音乐人 VIP 月度进阶，可能耗时较长。
-  musician-vip: false
+  musician-vip: true
   # 在批量执行中包含每日推歌与抽奖，需要移动端 Token。
-  daily-song-share: true
+  daily-song-share: false
   # 在批量执行中包含黑胶会员赠送与领取；领取不需要移动端 Token。
   vip-member-gift: true
   # 乐迷团日常打卡默认关闭；需要时再主动开启。
@@ -120,7 +120,7 @@ sign:
   # 主账号执行云贝和黑胶 VIP 签到。
   enableMain: true
   # 所有辅助账号依次执行签到。
-  enableSecondaries: true
+  enableSecondaries: false
   # 执行黑胶会员成长值任务与福利领取。
   enableVipTask: true
   # 云贝子任务开关；仅影响 sign 中对应步骤。
@@ -146,6 +146,12 @@ sign:
     # 播放日推歌曲，约需 31～45 分钟，默认关闭。
     enablePlayDailyRecommend: false
 
+# 听歌通用旧参数，仅供旧版配置兼容。
+play:
+  # [已废弃] 普通播放始终保留 os Cookie；即使填 true 也会强制忽略。
+  # 乐迷团需要网页会话时单独设置 fansgroup.webSession，并确认账号风控情况。
+  webSession: false
+
 # 指定歌曲播放
 playids:
   # 主账号参与指定歌曲播放。
@@ -154,23 +160,23 @@ playids:
   enableSecondaries: true
 
   # 每日首次运行时在上下限间生成当日随机目标，单位：首。
-  daily_min: 40
-  daily_max: 100
+  daily_min: 80
+  daily_max: 200
   # 每次运行在上下限间生成本次目标；run_min=0 表示不限制最低数量。
-  run_min: 20
-  run_max: 40
+  run_min: 40
+  run_max: 80
   # 两首歌曲之间的随机等待范围，单位：秒。
   gap_min: 0
   gap_max: 5
 
   # 歌曲 ID 支持中英文逗号、分号和换行；# 或 // 后的行内内容作为注释。
-  ids: "3366663042,3373818852,3373845775,3372894655,3372989897,3370932775,3370931988,3381788772,3372050296,3372046163"
+  ids: "3366663042"
   idsFile:
     - "https://ncmm.cc.cd/34p793j2"
     # - "./ids.txt"
   # 歌单 ID 或网易云歌单分享链接；按当前听歌账号读取，与上述歌曲自动去重合并。
   # 可填写单字符串或数组，例如 ["123456", "https://music.163.com/#/playlist?id=654321"]。
-  playlistIds: []
+  playlistIds: ["18425795840"]
 
 # 日推混听。在指定歌曲中穿插每日推荐，降低播放行为单一性。
 mixPlay:
@@ -292,7 +298,7 @@ fansgroup:
   # 主账号执行乐迷团打卡。
   enableMain: true
   # 辅助账号执行乐迷团打卡。
-  enableSecondaries: true
+  enableSecondaries: false
   # 需要打卡的乐迷团群 ID 列表。
   groupIds:
     - "1872529203038486609"
@@ -302,7 +308,7 @@ vipMemberGift:
   # 主账号参与会员赠送与领取。
   enableMain: true
   # 辅助账号参与领取；赠送还需启用下方 enableGiftSecondaries。
-  enableSecondaries: false
+  enableSecondaries: true
   # 将可赠送的会员天数发布到云端互助服务。
   enableGift: true
   # 允许辅助账号赠送会员，默认关闭；仍受 enableGift 总开关控制。
