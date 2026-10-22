@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/3899/ncmm/config"
@@ -41,7 +42,8 @@ type Root struct {
 	// Report collects failures/skips for end-of-run notify summary.
 	Report *notify.Report
 	// Notifier is nil when notify is disabled or no channels are configured.
-	Notifier *notify.Dispatcher
+	Notifier               *notify.Dispatcher
+	upgradeGraceNoticeOnce sync.Once
 }
 
 func New() *Root {
@@ -86,10 +88,15 @@ func New() *Root {
 			}
 		} else {
 			c.CfgPath = "default"
-			c.Cfg = config.GetDefault()
+			c.Cfg, err = newDefaultRuntimeConfig()
+			if err != nil {
+				return fmt.Errorf("init default config error: %w", err)
+			}
 		}
 
-		c.Cfg.ReplaceMagicVariables("HOME", c.Opts.Home)
+		if err := normalizeRuntimePaths(c.Cfg, c.Opts.Home); err != nil {
+			return fmt.Errorf("config path error: %w", err)
+		}
 		if err := c.Cfg.Validate(); err != nil {
 			return fmt.Errorf("config validate error: %s", err)
 		}
@@ -133,7 +140,6 @@ func New() *Root {
 			c.Report.SetCommand(strings.TrimSpace(cmd.CommandPath()))
 		}
 		c.FlushNotify(strings.TrimSpace(cmd.CommandPath()))
-		c.ShowUpdateNotificationPostRun()
 		if c.l != nil {
 			return c.l.Close()
 		}
