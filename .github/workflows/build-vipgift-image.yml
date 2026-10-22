@@ -1,13 +1,10 @@
 name: Build vipGift Image
 
 on:
-  # push:
-  #   tags:
-  #     - 'v*'
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（例如：1.1.7，输入 auto 则读取 VERSION 文件）'
+        description: '原生版本号（例如：1.2.2-grails.1，auto 读取目标提交的 VERSION）'
         required: false
         type: string
         default: 'auto'
@@ -19,47 +16,65 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  docker-cloud:
-    name: Build & Push Cloud Server Image
+  resolve:
+    name: Resolve immutable helper source
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      commit_sha: ${{ steps.commit.outputs.sha }}
+      version: ${{ steps.commit.outputs.version }}
     steps:
-      - name: Checkout repository
+      - name: Checkout requested source
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.commit_sha || github.sha }}
-          fetch-depth: 0
+          ref: ${{ inputs.commit_sha || github.sha }}
+          persist-credentials: false
 
-      - name: Resolve Version
-        id: version
+      - name: Resolve source SHA and version
+        id: commit
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            INPUT_VERSION="${{ github.event.inputs.version }}"
-          else
-            if echo "${{ github.ref }}" | grep -q "^refs/tags/"; then
-              INPUT_VERSION=$(echo "${{ github.ref }}" | sed 's/refs\/tags\///')
-            else
-              INPUT_VERSION="auto"
-            fi
+          SOURCE_SHA=$(git rev-parse --verify 'HEAD^{commit}')
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          VERSION="$INPUT_VERSION"
+          if [ -z "$VERSION" ] || [ "$VERSION" = auto ]; then
+            VERSION=$(cat VERSION)
           fi
+          [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+$ ]]
+          VERSION=${VERSION#v}
+          printf 'sha=%s\nversion=%s\n' "$SOURCE_SHA" "$VERSION" >> "$GITHUB_OUTPUT"
 
-          if [ "$INPUT_VERSION" = "auto" ] || [ -z "$INPUT_VERSION" ]; then
-            CURRENT_COMMIT_TAG=$(git describe --tags --exact-match HEAD 2>/dev/null || echo "")
-            if [ -n "$CURRENT_COMMIT_TAG" ]; then
-              VERSION=$(echo "$CURRENT_COMMIT_TAG" | sed 's/^v//' | tr -d '[:space:]')
-            elif [ -f VERSION ]; then
-              VERSION=$(cat VERSION | tr -d '[:space:]')
-            else
-              VERSION="1.1.7"
-            fi
-          else
-            VERSION=$(echo "$INPUT_VERSION" | sed 's/^v//' | tr -d '[:space:]')
-          fi
+  quality:
+    name: Validate helper release source
+    needs: [resolve]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/quality-vipgift.yml
+    with:
+      commit_sha: ${{ needs.resolve.outputs.commit_sha }}
 
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Resolved version: $VERSION"
+  docker-cloud:
+    name: Build & Push Cloud Server Image
+    needs: [resolve, quality]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout validated source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.commit_sha }}
+          persist-credentials: false
+
+      - name: Verify validated source commit
+        env:
+          EXPECTED_COMMIT: ${{ needs.resolve.outputs.commit_sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_COMMIT"
 
       - name: Set up QEMU (for multi-platform builds)
         uses: docker/setup-qemu-action@v3
@@ -80,7 +95,7 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}-vip-member-gift-cloud
           tags: |
-            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=${{ needs.resolve.outputs.version }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
             type=ref,event=branch
 
