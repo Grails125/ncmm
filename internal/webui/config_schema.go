@@ -131,7 +131,7 @@ func mainConfigSchema() configTargetSchema {
 			schemaGroup("queue", "执行顺序", "高级", "gray")),
 		schemaCategory("accounts", "账号与凭据", "", "主辅账号 Cookie 路径以及移动端防风控凭证。",
 			schemaGroup("cookie", "Cookie 路径配置", "基础凭据", "cyan"),
-			schemaGroup("tokens", "移动端 X-antiCheatToken", "推歌 / 领会员", "amber")),
+			schemaGroup("tokens", "移动端 X-antiCheatToken", "推歌 / 音乐人 VIP", "amber")),
 		schemaCategory("network", "网络与代理", "", "请求超时、重试和多端协议 User-Agent。",
 			schemaGroup("network-main", "网络通信参数", "全局", "cyan"),
 			schemaGroup("user-agent", "多端 User-Agent", "协议", "gray")),
@@ -205,7 +205,7 @@ func mainConfigSchema() configTargetSchema {
 		schemaField("task.musician-vip", "音乐人 VIP 进阶", "执行每月领取 VIP 的进阶任务，可能耗时较长。", "tasks", "boolean", "switch"),
 		schemaField("task.note", "自动发布笔记", "执行公共图文笔记发布任务。", "tasks", "boolean", "switch"),
 		schemaField("task.daily-song-share", "每日推歌与抽奖", "需要匹配的移动端 Cookie、UA 和 Token。", "tasks", "boolean", "switch"),
-		schemaField("task.vip-member-gift", "黑胶会员赠送与领取", "领取任务需要对应账号的 antiCheatToken。", "tasks", "boolean", "switch"),
+		schemaField("task.vip-member-gift", "黑胶会员赠送与领取", "使用有效登录 Cookie 和协议 UA，领取不需要 antiCheatToken。", "tasks", "boolean", "switch"),
 		schemaField("task.fansgroup", "乐迷团日常任务", "执行配置的乐迷团打卡。", "tasks", "boolean", "switch"),
 		schemaField("task.music-partner", "音乐合伙人评分", "完成基础评分及已开启的额外评分，需要账号具备合伙人资格。", "tasks", "boolean", "switch"),
 		func() configSchemaField {
@@ -427,9 +427,10 @@ func mainConfigSchema() configTargetSchema {
 		schemaField("fansgroup.autoDeleteNote", "自动删除临时笔记", "留空时继承公共笔记的删除设置。", "fans", "boolean", "switch"),
 
 		schemaField("vipMemberGift.enableMain", "主账号参与会员礼品", "允许主账号发布或领取礼品。", "gift-main", "boolean", "switch"),
-		schemaField("vipMemberGift.enableSecondaries", "辅助账号参与会员礼品", "允许辅助账号发布或领取礼品。", "gift-main", "boolean", "switch"),
+		schemaField("vipMemberGift.enableSecondaries", "辅助账号参与会员礼品", "允许辅助账号领取礼品；赠送还需单独开启下方开关。", "gift-main", "boolean", "switch"),
 		schemaField("vipMemberGift.enableGift", "自动发布赠礼", "将可赠送会员发布到互助服务。", "gift-main", "boolean", "switch"),
-		schemaField("vipMemberGift.enableClaim", "自动领取会员", "需要移动端 Token 才能领取。", "gift-main", "boolean", "switch"),
+		schemaField("vipMemberGift.enableGiftSecondaries", "允许辅助账号赠礼", "默认关闭，避免辅助账号误赠送；同时启用自动发布赠礼后才生效。", "gift-main", "boolean", "switch"),
+		schemaField("vipMemberGift.enableClaim", "自动领取会员", "使用有效登录 Cookie 领取，不需要 antiCheatToken。", "gift-main", "boolean", "switch"),
 		func() configSchemaField {
 			f := schemaField("vipMemberGift.refer", "请求来源标识", "高级接口参数，通常无需设置。", "gift-cloud", "string", "text")
 			f.Advanced = true

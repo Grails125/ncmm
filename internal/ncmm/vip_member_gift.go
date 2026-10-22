@@ -42,11 +42,12 @@ type VipMemberGiftOpts struct {
 }
 
 type VipMemberGift struct {
-	root *Root
-	cmd  *cobra.Command
-	l    *log.Logger
-	rng  *rand.Rand
-	opts VipMemberGiftOpts
+	root      *Root
+	cmd       *cobra.Command
+	l         *log.Logger
+	rng       *rand.Rand
+	opts      VipMemberGiftOpts
+	newClient func(*api.Config, *log.Logger) (*api.Client, error)
 }
 
 type vipMemberGiftCloudClient struct {
@@ -108,9 +109,10 @@ type vipMemberGiftCloudStatusData struct {
 
 func NewVipMemberGift(root *Root, l *log.Logger) *VipMemberGift {
 	c := &VipMemberGift{
-		root: root,
-		l:    l,
-		rng:  rand.New(rand.NewSource(time.Now().UnixNano())),
+		root:      root,
+		l:         l,
+		rng:       rand.New(rand.NewSource(time.Now().UnixNano())),
+		newClient: api.NewClient,
 		cmd: &cobra.Command{
 			Use:     "vip-member-gift",
 			Short:   "[need login] Publish or claim VIP member gift invitations",
@@ -227,7 +229,7 @@ func (c *VipMemberGift) ExecuteForCookie(ctx context.Context, cookieFile string)
 
 	cfgCopy := *networkCfg
 	cfgCopy.Cookie.Filepath = absPath
-	cli, err := api.NewClient(&cfgCopy, c.l)
+	cli, err := c.newClient(&cfgCopy, c.l)
 	if err != nil {
 		return fmt.Errorf("NewClient: %w", err)
 	}
@@ -261,7 +263,7 @@ func (c *VipMemberGift) ExecuteForCookie(ctx context.Context, cookieFile string)
 	}
 
 	month := currentVipMemberGiftMonth()
-	if cfg.EnableGift {
+	if c.giftEnabledForCookie(cfg, cookieFile) {
 		if c.isLocalSuccessCached(ctx, db, user.Account.Id, month, "gift") {
 			c.cmd.Printf("[vip-member-gift] 跳过赠送：%s已赠送过。\n", month)
 		} else if ok, err := c.runGift(ctx, eapiCli, weapiCli, cloud, cfg, user.Account.Id, protocol); err != nil {
@@ -270,14 +272,13 @@ func (c *VipMemberGift) ExecuteForCookie(ctx context.Context, cookieFile string)
 		} else if ok {
 			c.saveLocalSuccessCache(ctx, db, user.Account.Id, month, "gift")
 		}
+	} else if cfg.EnableGift {
+		c.cmd.Println("[vip-member-gift] 跳过赠送：辅助账号默认仅领取，需启用 vipMemberGift.enableGiftSecondaries 才允许赠送。")
 	}
 	if cfg.EnableClaim {
-		antiCheatToken := c.root.Cfg.Accounts.AntiCheatTokenFor(cookieFile)
 		if c.isLocalSuccessCached(ctx, db, user.Account.Id, month, "claim") {
 			c.cmd.Printf("[vip-member-gift] 跳过领取：%s已领过。\n", month)
-		} else if antiCheatToken == "" {
-			c.cmd.Printf("[vip-member-gift] 跳过领取：accounts.antiCheatTokens 中未配置 %s 的 token\n", cookieFile)
-		} else if ok, err := c.runClaim(ctx, eapiCli, cloud, cfg, user.Account.Id, protocol, antiCheatToken); err != nil {
+		} else if ok, err := c.runClaim(ctx, eapiCli, cloud, cfg, user.Account.Id, protocol); err != nil {
 			c.cmd.Printf("[vip-member-gift] 领取失败: %v\n", err)
 			if firstErr == nil {
 				firstErr = err
@@ -287,6 +288,22 @@ func (c *VipMemberGift) ExecuteForCookie(ctx context.Context, cookieFile string)
 		}
 	}
 	return firstErr
+}
+
+func (c *VipMemberGift) giftEnabledForCookie(cfg *config.VipMemberGiftConf, cookieFile string) bool {
+	if !cfg.EnableGift {
+		return false
+	}
+	// 显式指定单个 Cookie 时按主账号执行；批量任务必须单独允许辅助账号赠送。
+	if c.opts.CookieFile != "" || cfg.EnableGiftSecondaries {
+		return true
+	}
+	if c.root.Cfg.Accounts == nil || strings.TrimSpace(c.root.Cfg.Accounts.Main) == "" {
+		return false
+	}
+	mainPath, mainErr := filepath.Abs(c.root.Cfg.Accounts.Main)
+	accountPath, accountErr := filepath.Abs(cookieFile)
+	return mainErr == nil && accountErr == nil && mainPath == accountPath
 }
 
 func (c *VipMemberGift) validateCommonPrerequisites(cfg *config.VipMemberGiftConf) error {
@@ -403,7 +420,7 @@ func (c *VipMemberGift) runGift(ctx context.Context, eapiCli *eapi.Api, weapiCli
 	return true, nil
 }
 
-func (c *VipMemberGift) runClaim(ctx context.Context, eapiCli *eapi.Api, cloud *vipMemberGiftCloudClient, cfg *config.VipMemberGiftConf, uid int64, protocol vipMemberGiftProtocol, antiCheatToken string) (bool, error) {
+func (c *VipMemberGift) runClaim(ctx context.Context, eapiCli *eapi.Api, cloud *vipMemberGiftCloudClient, cfg *config.VipMemberGiftConf, uid int64, protocol vipMemberGiftProtocol) (bool, error) {
 	month := currentVipMemberGiftMonth()
 	receiverUID := strconv.FormatInt(uid, 10)
 
@@ -439,7 +456,9 @@ func (c *VipMemberGift) runClaim(ctx context.Context, eapiCli *eapi.Api, cloud *
 			continue
 		}
 		if detail.Code != 200 {
-			_ = cloud.TokenFail(ctx, month, receiverUID, available.Token.TokenHash, "failed", detail.Message, 0)
+			if err := cloud.TokenFail(ctx, month, receiverUID, available.Token.TokenHash, vipMemberGiftFailureReason(detail.Code, detail.Message), detail.Message, 0); err != nil {
+				return false, fmt.Errorf("上报会员礼品查询失败结果失败: %w", err)
+			}
 			lastErr = fmt.Errorf("detail/info/get failed: code=%d msg=%s", detail.Code, detail.Message)
 			continue
 		}
@@ -474,7 +493,6 @@ func (c *VipMemberGift) runClaim(ctx context.Context, eapiCli *eapi.Api, cloud *
 			VipMemberGiftBaseReq: vipMemberGiftBaseReq(protocol),
 			Token:                token,
 			Refer:                strings.TrimSpace(cfg.Refer),
-			CheckToken:           antiCheatToken,
 		})
 		if err != nil {
 			_ = cloud.TokenFail(ctx, month, receiverUID, available.Token.TokenHash, "failed", err.Error(), 0)
@@ -483,19 +501,19 @@ func (c *VipMemberGift) runClaim(ctx context.Context, eapiCli *eapi.Api, cloud *
 			continue
 		}
 		if accept.Code != 200 {
-			reason := "failed"
-			if strings.Contains(accept.Message, "过期") {
-				reason = "expired"
-			} else if strings.Contains(accept.Message, "不是会员") || accept.Code == 12206 {
-				reason = "invalid"
+			if err := cloud.TokenFail(ctx, month, receiverUID, available.Token.TokenHash, vipMemberGiftFailureReason(accept.Code, accept.Message), accept.Message, 0); err != nil {
+				return false, fmt.Errorf("上报会员礼品领取失败结果失败: %w", err)
 			}
-			_ = cloud.TokenFail(ctx, month, receiverUID, available.Token.TokenHash, reason, accept.Message, 0)
 			lastErr = fmt.Errorf("accept failed: code=%d msg=%s", accept.Code, accept.Message)
 			c.cmd.Printf("[vip-member-gift] 领取失败 (code=%d msg=%s)，尝试匹配下一个云端VIP...\n", accept.Code, accept.Message)
 			continue
 		}
 		if accept.Data.Duration <= 0 {
-			lastErr = fmt.Errorf("accept succeeded but duration is empty")
+			lastErr = fmt.Errorf("领取接口未返回有效会员天数，未确认领取成功")
+			if err := cloud.TokenFail(ctx, month, receiverUID, available.Token.TokenHash, "invalid", lastErr.Error(), 0); err != nil {
+				return false, fmt.Errorf("上报无效会员礼品失败: %w", err)
+			}
+			c.cmd.Println("[vip-member-gift] 领取结果缺少有效会员天数，已上报云端作废该邀请，尝试匹配下一个...")
 			continue
 		}
 
@@ -515,6 +533,16 @@ func (c *VipMemberGift) runClaim(ctx context.Context, eapiCli *eapi.Api, cloud *
 		return true, nil
 	}
 	return false, lastErr
+}
+
+func vipMemberGiftFailureReason(code int, message string) string {
+	if code == 12200 || code == 12206 || strings.Contains(message, "不是会员") {
+		return "invalid"
+	}
+	if strings.Contains(message, "过期") {
+		return "expired"
+	}
+	return "failed"
 }
 
 func (c *VipMemberGift) printClaimResult(data *vipMemberGiftCloudClaimSuccessData) {

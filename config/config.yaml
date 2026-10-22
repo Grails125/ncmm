@@ -13,7 +13,7 @@ accounts:
     - "./fan2.json"
 
   # Cookie 文件与移动端 X-antiCheatToken 的一一映射。
-  # 每日推歌和领取会员需要同一移动端会话的 Cookie、UA 与 Token；缺失时自动跳过。
+  # 每日推歌和音乐人 VIP 领取需要同一移动端会话的 Cookie、UA 与 Token；会员礼品卡领取不需要 Token。
   antiCheatTokens:
     "./cookie.json": ""
     # "./fan1.json": ""
@@ -48,7 +48,7 @@ task:
   musician-vip: false
   # 在批量执行中包含每日推歌与抽奖，需要移动端 Token。
   daily-song-share: true
-  # 在批量执行中包含黑胶会员赠送与领取；领取需要移动端 Token。
+  # 在批量执行中包含黑胶会员赠送与领取；领取不需要移动端 Token。
   vip-member-gift: true
   # 在批量执行中包含乐迷团日常打卡。
   fansgroup: true
@@ -289,15 +289,17 @@ fansgroup:
   groupIds:
     - "1872529203038486609"
 
-# 黑胶会员赠送与领取。领取需要对应账号的 antiCheatToken。
+# 黑胶会员赠送与领取。领取不需要 antiCheatToken，仍需有效的登录 Cookie 和协议 UA。
 vipMemberGift:
   # 主账号参与会员赠送与领取。
   enableMain: true
-  # 辅助账号参与会员赠送与领取。
+  # 辅助账号参与领取；赠送还需启用下方 enableGiftSecondaries。
   enableSecondaries: false
   # 将可赠送的会员天数发布到云端互助服务。
   enableGift: true
-  # 从云端互助服务领取会员，需要对应账号的 antiCheatToken。
+  # 允许辅助账号赠送会员，默认关闭；仍受 enableGift 总开关控制。
+  enableGiftSecondaries: false
+  # 从云端互助服务领取会员，不需要 antiCheatToken。
   enableClaim: true
   cloud:
     # 自建云端服务地址，留空使用内置公共服务。

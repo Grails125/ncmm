@@ -451,7 +451,7 @@ ncmm vip-member-gift [--cookie-file <cookie文件路径>]
 
 ### 💡 运行流程与原理
 1. **前置校验**：执行会员任务需要一个已登录的 Cookie；协议按 Cookie 里的 `os` 或 `network.user_agent` 自动识别（Android 需要 `network.user_agent.xeapi`，iPhone/iPad 需要 `network.user_agent.eapi`）。没有 `os` 标记的**网页版 Cookie**（如 `ncmm login qrcode` 扫码登录得到的）会按 UA 自动识别，同样可以领取。
-2. **关于 antiCheatToken**：领取接口不校验该 token，`accounts.antiCheatTokens` 中**留空也能正常领取**；未配置时命令会打印一行提示后继续执行。只有每日推歌（`ncmm daily-song-share`）才必须配置它。
+2. **关于 antiCheatToken**：会员礼品领取不要求或发送该 token，`accounts.antiCheatTokens` 中**留空也能领取礼品**。每日推歌（`ncmm daily-song-share`）和音乐人 VIP 领取仍保留各自的 Token 校验；礼品领取仍需有效登录会话及匹配的 UA。
 3. **领取频次**：每个账号每月限领一次（由云端互助池记录），重复执行会提示“已领过”并跳过。
 4. **账号选择**：命令行传入 `--cookie-file` 时只执行该账号（并按主账号对待，允许赠送）；否则将依次读取并执行 `accounts.main`（当 `vipMemberGift.enableMain` 为 true 时）以及 `accounts.secondary`（当 `vipMemberGift.enableSecondaries` 为 true 时）。
 5. **赠送角色**：主账号按 `vipMemberGift.enableGift` 决定是否赠送；辅助账号还需要额外打开 `vipMemberGift.enableGiftSecondaries`（默认关闭）。被跳过的辅助账号会打印一行说明。

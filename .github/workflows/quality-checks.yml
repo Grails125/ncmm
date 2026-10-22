@@ -32,8 +32,8 @@ jobs:
       - name: Check WebUI JavaScript syntax
         run: node --check internal/webui/static/app.js
 
-      - name: Test music partner configuration and points state
-        run: node --test tests/webui_music_partner_config.test.js tests/webui_music_partner_points.test.js
+      - name: Test account status and music partner state
+        run: node --test tests/webui_cookie_status.test.js tests/webui_music_partner_config.test.js tests/webui_music_partner_points.test.js
 
       - name: Install WebUI browser test runtime
         run: |
@@ -78,6 +78,21 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:39134/api/v1/instance >/dev/null
           node tests/webui_music_partner.js http://127.0.0.1:39134 "$WEBUI_HOME"
+
+      - name: Test verified login status in Chromium
+        run: |
+          WEBUI_HOME="$RUNNER_TEMP/webui-cookie-status"
+          mkdir -p "$WEBUI_HOME"
+          "$RUNNER_TEMP/ncmm" --home "$WEBUI_HOME" web --listen 127.0.0.1:39135 >"$RUNNER_TEMP/webui-cookie-status.log" 2>&1 &
+          WEBUI_PID=$!
+          trap 'kill "$WEBUI_PID" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 50); do
+            if curl --fail --silent http://127.0.0.1:39135/api/v1/instance >/dev/null; then
+              break
+            fi
+            sleep 0.2
+          done
+          node tests/webui_cookie_status.js http://127.0.0.1:39135 "$WEBUI_HOME"
 
       - name: Race test high-risk services
         run: go test -race ./api/... ./config ./internal/webui ./internal/ncmm ./internal/partnerpoints ./pkg/cookie

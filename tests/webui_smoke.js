@@ -112,6 +112,8 @@ async function hasHorizontalScroll(locator, label) {
   assert(rewardText.includes('云贝 +12 / 345') && rewardText.includes('成长值 8 / 99'), `dashboard reward format was incomplete: ${rewardText}`);
   const auxiliaryRewardText = await page.locator('#account-rewards-list .reward-row').filter({ hasText: '测试辅助账号' }).innerText();
   assert(!auxiliaryRewardText.includes('成长值'), `non-VIP account still displayed growth: ${auxiliaryRewardText}`);
+  // 播放统计独立异步加载；等待图表就绪，避免慢机器上把加载状态误判为渲染失败。
+  await page.locator('#dashboard-chart .metric-line-svg').waitFor({ state: 'visible' });
   assert(await page.locator('#dashboard-chart').evaluate(element => element.classList.contains('metric-chart')), 'main-account seven-day chart was not rendered');
   assert(await page.locator('#dashboard-chart .metric-line-svg').count() === 1, 'dashboard metric was not rendered as a line chart');
   const officialPlayValues = await page.locator('#dashboard-chart .metric-line-value').allTextContents();
