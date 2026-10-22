@@ -455,7 +455,8 @@ func mainConfigSchema() configTargetSchema {
 		schemaField("notify.file", "通知配置文件", "相对路径以主配置目录为基准。", "notify", "string", "text"),
 
 		schemaField("updater.check", "检测新版本", "每天最多请求一次版本接口。", "updater", "boolean", "switch"),
-		schemaField("updater.auto_update", "自动替换二进制", "容器环境会忽略此选项。", "updater", "boolean", "switch"),
+		schemaField("updater.auto_update", "自动替换二进制", "独立程序与受启动器管理的容器可用；普通容器需重建镜像。", "updater", "boolean", "switch"),
+		schemaField("updater.auto_restart", "空闲自动重启", "更新安装后，等待运行、排队及随机延迟任务全部结束再重启；手动更新保留 30 秒确认时间。", "updater", "boolean", "switch"),
 		schemaField("updater.proxy_mirrors", "GitHub 代理镜像", "按顺序尝试，每行一个地址。", "updater", "string-list", "textarea-list"),
 
 		schemaField("log.app", "应用标识", "写入每条结构化日志的应用名称。", "log-main", "string", "text"),

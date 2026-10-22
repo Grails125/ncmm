@@ -26,6 +26,9 @@
     settings: null,
     update: null,
     updateChecked: false,
+    updateBusy: false,
+    restartPending: false,
+    restartError: '',
     accountMain: false,
     accountMethod: 'cookie',
     accountEditing: null,
@@ -274,7 +277,10 @@
     const payload = type.includes('application/json') ? await response.json() : await response.text();
     if (!response.ok) {
       if (response.status === 401) clearSession(true);
-      throw new Error(payload?.error || payload || `HTTP ${response.status}`);
+      const error = new Error(payload?.error || payload || `HTTP ${response.status}`);
+      error.status = response.status;
+      error.details = payload;
+      throw error;
     }
     return payload;
   }
@@ -1819,7 +1825,7 @@
         { title: '', paths: ['notify.title_prefix', 'notify.timeout', 'notify.file'] },
       ],
       updater: [
-        { title: '', paths: ['updater.check', 'updater.auto_update'] },
+        { title: '', paths: ['updater.check', 'updater.auto_update', 'updater.auto_restart'] },
         { title: '', paths: ['updater.proxy_mirrors'] },
       ],
       log: [
@@ -2866,27 +2872,102 @@
     }
     updateSecurityDirtyState();
     $('#logout-button').classList.toggle('hidden', state.authSettings?.passwordProtectionEnabled === false);
+    renderUpdateStatus();
+  }
+
+  function renderUpdateStatus() {
     const update = state.update;
     if (!update) return;
     const currentVersion = update.current_version ? `v${String(update.current_version).replace(/^v/i, '')}` : '--';
     const latestVersion = update.latest_version ? `v${String(update.latest_version).replace(/^v/i, '')}` : '--';
     const checked = !!update.last_check_time && !String(update.last_check_time).startsWith('0001-');
     const failed = !!update.last_error;
-    $('#update-panel').classList.toggle('hidden', !state.updateChecked);
-    const statusTitle = failed ? '检查更新失败' : update.available ? '发现可用更新' : checked ? '当前已是最新版本' : '尚未检查更新';
+    const ready = !!update.restartRequired;
+    const busy = state.updateBusy || state.restartPending;
+    $('#update-panel').classList.toggle('hidden', !state.updateChecked && !update.available && !ready && !state.restartError);
+    const statusTitle = ready ? '更新已安装，等待重启' : failed ? '检查更新失败' : update.available ? '发现可用更新' : checked ? '当前已是最新版本' : '尚未检查更新';
     $('#update-current').textContent = currentVersion;
     $('#update-current-detail').textContent = currentVersion;
     $('#update-latest').textContent = latestVersion;
     $('#update-platform').textContent = `${update.os || '--'} / ${update.arch || '--'}`;
     $('#update-status-title').textContent = statusTitle;
-    $('#update-status-badge').textContent = failed ? '失败' : update.available ? '可更新' : checked ? '最新' : '未检查';
-    $('#update-status-badge').className = `badge-pill ${failed || update.available ? 'primary' : checked ? 'success' : 'gray'}`;
-    $('#update-message').textContent = update.last_error || (update.available
+    $('#update-status-badge').textContent = ready ? '待重启' : failed ? '失败' : update.available ? '可更新' : checked ? '最新' : '未检查';
+    $('#update-status-badge').className = `badge-pill ${ready ? 'success' : failed || update.available ? 'primary' : checked ? 'success' : 'gray'}`;
+    const action = $('#update-apply');
+    action.classList.toggle('hidden', !ready && !update.canApply);
+    action.textContent = state.restartPending ? '等待服务恢复…' : state.updateBusy ? '处理中…' : ready ? '立即重启生效' : '立即更新';
+    action.className = `btn btn-sm ${ready ? 'btn-update-ready' : 'btn-update-download'}${!ready && !update.canApply ? ' hidden' : ''}`;
+    action.disabled = busy;
+    $('#update-check').disabled = busy;
+    $('#system-restart').disabled = busy;
+    $('#update-message').textContent = state.restartError || update.last_error || (update.available
       ? update.message || (update.docker ? 'Docker 部署请通过容器编排工具更新镜像。' : '检测到可用的新版本。')
       : checked ? `检查时间：${formatDate(update.last_check_time)}` : '');
     const notes = $('#release-notes');
     notes.textContent = update.release_notes || '';
     notes.classList.toggle('hidden', !update.available || !update.release_notes);
+  }
+
+  async function waitForRestart(previousInstance, timeoutMs = 60000) {
+    if (!previousInstance) throw new Error('未获得重启前的实例标识，请刷新页面后重试');
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), Math.min(3000, deadline - Date.now()));
+      try {
+        const instance = await publicApi('/api/v1/instance', { cache: 'no-store', signal: controller.signal });
+        if (typeof instance?.instanceId === 'string' && instance.instanceId && instance.instanceId !== previousInstance) return instance;
+      } catch {
+        // 服务切换期间连接中断是预期状态；旧实例响应不能证明新服务已就绪。
+      } finally { clearTimeout(timer); }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    throw new Error('等待服务重启超时，请检查服务日志，恢复后手动刷新页面');
+  }
+
+  async function restartService(confirmFirst = true) {
+    if (state.restartPending) return;
+    if (confirmFirst && !confirm('确认重启 NCMM 服务？')) return;
+    state.restartError = '';
+    state.restartPending = true;
+    state.pollGeneration += 1;
+    clearTimeout(state.poller);
+    renderUpdateStatus();
+    try {
+      let response;
+      try { response = await api('/api/v1/system/restart', { method: 'POST', body: { force: false } }); }
+      catch (error) {
+        if (error.status !== 409 || !error.details?.confirmationRequired) throw error;
+        const { running, queued } = error.details;
+        if (!confirm(`当前有 ${running} 个运行任务、${queued} 个排队任务（含随机延迟）。强制重启会停止这些任务，确认继续？`)) return;
+        response = await api('/api/v1/system/restart', { method: 'POST', body: { force: true } });
+      }
+      toast('NCMM 正在重启，服务恢复后将自动刷新');
+      await waitForRestart(response.instanceId);
+      location.reload();
+    } catch (error) {
+      state.restartError = error.message;
+      toast(error.message, true);
+    } finally {
+      state.restartPending = false;
+      renderUpdateStatus();
+      startPolling();
+    }
+  }
+
+  async function applyUpdate() {
+    if (state.updateBusy || state.restartPending) return;
+    state.updateBusy = true;
+    renderUpdateStatus();
+    try {
+      state.update = await api('/api/v1/update/apply', { method: 'POST' });
+      state.updateChecked = true;
+      renderUpdateStatus();
+      if (state.update.restartRequired) {
+        if (confirm('更新已安装，是否立即重启生效？开启自动重启时，30 秒后将在任务全部结束时自动重启。')) await restartService(false);
+      } else { toast(state.update.message || '当前已是最新版本'); }
+    } catch (error) { toast(error.message, true); }
+    finally { state.updateBusy = false; renderUpdateStatus(); }
   }
 
   function securityFormSettings() {
@@ -2942,7 +3023,7 @@
   }
 
   async function refreshOperationalState() {
-    if (!state.authenticated || state.pollInFlight) return;
+    if (!state.authenticated || state.pollInFlight || state.restartPending) return;
     state.pollInFlight = true;
     const generation = ++state.pollGeneration;
     try {
@@ -2955,6 +3036,12 @@
 	  await refreshPlayStatsAfterRun(runs);
 	  if (!state.authenticated || generation !== state.pollGeneration) return;
       renderRuns(); renderStatus(); renderSchedules(); renderDashboard();
+      if (state.currentPage === 'system' && !state.updateBusy) {
+        try {
+          const update = await api('/api/v1/update');
+          if (state.authenticated && generation === state.pollGeneration && !state.updateBusy) { state.update = update; renderUpdateStatus(); }
+        } catch { /* 保留上次更新状态，下次轮询重试。 */ }
+      }
       if ($('#log-dialog').open && $('#log-dialog').dataset.runId) await refreshOpenLog();
       state.consecutivePollFailures = 0;
       setServiceStatus('online');
@@ -2971,7 +3058,7 @@
 
   function scheduleNextPoll() {
     clearTimeout(state.poller);
-    if (!state.authenticated) return;
+    if (!state.authenticated || state.restartPending) return;
     state.poller = setTimeout(refreshOperationalState, document.hidden ? 30000 : 5000);
   }
 
@@ -3855,6 +3942,9 @@
       } catch (error) { toast(error.message, true); }
     });
     $('#update-check').addEventListener('click', async () => {
+      if (state.updateBusy || state.restartPending) return;
+      state.updateBusy = true;
+      renderUpdateStatus();
       const button = $('#update-check'); button.disabled = true;
       state.updateChecked = true;
       $('#update-panel').classList.remove('hidden');
@@ -3868,28 +3958,22 @@
         renderSystem();
         toast(state.update.available ? '发现可用更新' : '当前已是最新版本');
       } catch (error) {
+        state.update = { ...(state.update || {}), last_error: error.message };
         $('#update-status-title').textContent = '检查更新失败';
         $('#update-status-badge').textContent = '失败';
         $('#update-status-badge').className = 'badge-pill primary';
         $('#update-message').textContent = error.message;
         toast(error.message, true);
       }
-      finally { button.disabled = false; $('#update-check-label').textContent = '检查更新'; }
+      finally { state.updateBusy = false; button.disabled = false; $('#update-check-label').textContent = '检查更新'; renderUpdateStatus(); }
     });
+    $('#update-apply').addEventListener('click', () => state.update?.restartRequired ? restartService() : applyUpdate());
     $('#copy-web-url').addEventListener('click', async () => {
       const value = $('#system-web-url').textContent;
       try { await navigator.clipboard.writeText(value); toast('WebUI 地址已复制'); }
       catch { toast('复制失败，请手动复制地址', true); }
     });
-    $('#system-restart').addEventListener('click', async () => {
-      if (!confirm('确认重启 NCMM 服务？运行中的任务会被停止。')) return;
-      const button = $('#system-restart'); button.disabled = true;
-      try {
-        await api('/api/v1/system/restart', { method: 'POST' });
-        toast('NCMM 正在重启');
-        setTimeout(() => location.reload(), 1800);
-      } catch (error) { button.disabled = false; toast(error.message, true); }
-    });
+    $('#system-restart').addEventListener('click', () => restartService());
     window.addEventListener('popstate', () => navigate(routePages[location.pathname] || 'dashboard', { history: false }));
     if ('ResizeObserver' in window) {
       dashboardChartObserver = new ResizeObserver(entries => {

@@ -29,3 +29,28 @@ func TestUpdateViewApplyNoOpDoesNotRequestRestart(t *testing.T) {
 		t.Fatalf("no-op update requires restart: %+v", view)
 	}
 }
+
+func TestDockerUpdateViewRequiresManagedRuntime(t *testing.T) {
+	t.Setenv("NCMM_DOCKER_OFFICIAL", "1")
+	t.Setenv("NCMM_RUNTIME_MANAGED", "1")
+	root := t.TempDir()
+	t.Setenv("NCMM_RUNTIME_DIR", root)
+	executable := filepath.Join(root, "versions", "v1-build", "ncmm")
+	if err := os.MkdirAll(filepath.Dir(executable), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(executable, []byte("current fixture"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{opts: Options{Executable: executable, Version: "1.2.2-grails.1"}}
+	state := updateState{LatestVersion: "1.2.2-grails.2"}
+	if s.makeUpdateView(state).CanApply {
+		t.Fatal("environment alone allowed container update")
+	}
+	if err := os.WriteFile(filepath.Join(root, "manager.json"), []byte(`{"format":1}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !s.makeUpdateView(state).CanApply {
+		t.Fatal("managed runtime cannot apply update")
+	}
+}

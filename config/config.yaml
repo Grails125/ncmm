@@ -329,6 +329,8 @@ updater:
   check: true
   # 检测到新版本后自动替换二进制；容器环境会忽略此项。
   auto_update: true
+  # 新版本安装后，仅在没有运行、排队或延迟任务时自动重启 WebUI；手动更新保留 30 秒确认时间
+  auto_restart: true
   # GitHub 直连失败后按顺序尝试的代理镜像。
   proxy_mirrors:
     - "https://gh-proxy.com/"

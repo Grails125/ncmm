@@ -43,6 +43,7 @@ type Server struct {
 	instance          instanceMetadata
 	startedAt         time.Time
 	updateMu          sync.Mutex
+	autoRestartAfter  time.Time // 由 updateMu 保护，给手动更新结果留出确认时间。
 	http              *http.Server
 	restartCh         chan struct{}
 	readPartnerPoints partnerPointsReader
@@ -108,6 +109,8 @@ func New(ctx context.Context, opts Options) (*Server, error) {
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	defer s.qrcode.close()
 	defer s.processes.Close(10 * time.Second)
 	instanceLock, err := acquireWebInstanceLock(s.opts.Home)
@@ -139,6 +142,7 @@ func (s *Server) Run(ctx context.Context) error {
 	defer s.scheduler.close()
 	s.opts.Output("[webui] listening on http://%s (instance %s)\n", listen, metadata.InstanceID)
 	go s.cleanupLoop(ctx)
+	go s.autoRestartLoop(ctx)
 	errCh := make(chan error, 1)
 	go func() {
 		serveErr := s.http.Serve(listener)
@@ -813,17 +817,6 @@ func (s *Server) handleLogsAdvancedCleanup(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
-}
-
-func (s *Server) handleSystemRestart(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusAccepted, map[string]bool{"restarting": true})
-	go func() {
-		time.Sleep(150 * time.Millisecond)
-		select {
-		case s.restartCh <- struct{}{}:
-		default:
-		}
-	}()
 }
 
 func (s *Server) handleCookieImport(w http.ResponseWriter, r *http.Request) {

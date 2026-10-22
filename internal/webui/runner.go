@@ -59,6 +59,7 @@ type runManager struct {
 	jobRuns     map[string]map[string]struct{}
 	resources   map[string]string
 	maxParallel int
+	restarting  bool
 	supervisor  *processSupervisor
 	command     runCommandFactory
 	randomDelay func(int) int
@@ -142,6 +143,9 @@ func (m *runManager) startWithDelay(ctx context.Context, job Schedule, delaySeco
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.restarting {
+		return RunRecord{}, fmt.Errorf("服务正在重启，请稍后重试")
+	}
 	runID := newID("run")
 	stamp := time.Now().Format("20060102-150405")
 	base := stamp + "_" + sanitizeFilePart(job.ID) + "_" + runID
@@ -417,6 +421,9 @@ func (m *runManager) canLaunchLocked(resources []string) bool {
 }
 
 func (m *runManager) drainQueueLocked() {
+	if m.restarting {
+		return
+	}
 	for len(m.running) < m.maxParallel {
 		launched := false
 		for index := 0; index < len(m.queue); index++ {
