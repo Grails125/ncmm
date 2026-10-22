@@ -180,21 +180,34 @@ fs.mkdirSync(output, { recursive: true });
     for (const width of [320, 390, 768]) {
       await page.setViewportSize({ width, height: 1000 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `mobile viewport overflow at ${width}`);
-      const bounds = await daemon.boundingBox();
-      if (!bounds || bounds.x < 0 || bounds.x + bounds.width > width + 1) await page.screenshot({ path: path.join(output, `plugin-clipped-${width}.png`), fullPage: true });
-      assert(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width + 1, `plugin card clipped at ${width}: ${JSON.stringify(bounds)}`);
-      for (const button of await page.locator('#plugin-check-updates:visible, #plugin-cards-grid button:visible').all()) {
-        const action = await button.boundingBox();
-        assert(action && action.x >= 0 && action.x + action.width <= width + 1, `plugin action clipped at ${width}: ${await button.textContent()}`);
+      // 后台轮询会替换卡片节点，在同一次浏览器求值中读取元素和布局，避免跨请求读到已脱离的旧节点。
+      const installedLayout = await page.locator('.plugin-card[data-name="qqbot"], #plugin-check-updates:visible, #plugin-cards-grid button:visible').evaluateAll(elements => elements.map(element => {
+        const { x, width, height } = element.getBoundingClientRect();
+        return { card: element.classList.contains('plugin-card'), action: element.dataset.pluginAction, label: element.textContent.trim(), x, width, height };
+      }));
+      const bounds = installedLayout.find(element => element.card);
+      const fitsViewport = element => element && element.width > 0 && element.height > 0 && element.x >= 0 && element.x + element.width <= width + 1;
+      if (!fitsViewport(bounds)) await page.screenshot({ path: path.join(output, `plugin-clipped-${width}.png`), fullPage: true });
+      assert(fitsViewport(bounds), `plugin card clipped at ${width}: ${JSON.stringify(bounds)}`);
+      const pluginActions = installedLayout.filter(element => !element.card);
+      for (const action of ['start', 'restart', 'logs', 'settings', 'upgrade', 'delete', 'schedule', 'run']) {
+        assert(pluginActions.some(element => element.action === action), `plugin action missing at ${width}: ${action}`);
+      }
+      for (const action of pluginActions) {
+        assert(fitsViewport(action), `plugin action clipped at ${width}: ${action.label} ${JSON.stringify(action)}`);
       }
       await daemon.locator('[data-plugin-action="upgrade"]').click();
       const dialog = await page.locator('#plugin-upgrade-dialog').boundingBox();
       assert(dialog && dialog.x >= 0 && dialog.x + dialog.width <= width + 1, `upgrade dialog clipped at ${width}`);
       await page.locator('[data-close-dialog="plugin-upgrade-dialog"]').click();
       await page.locator('#plugin-tab-market').click();
-      for (const button of await page.locator('#plugin-market-grid button:visible').all()) {
-        const action = await button.boundingBox();
-        assert(action && action.x >= 0 && action.x + action.width <= width + 1, `market action clipped at ${width}: ${await button.textContent()}`);
+      const marketActions = await page.locator('#plugin-market-grid button:visible').evaluateAll(elements => elements.map(element => {
+        const { x, width, height } = element.getBoundingClientRect();
+        return { label: element.textContent.trim(), x, width, height };
+      }));
+      assert(marketActions.length > 0, `market actions missing at ${width}`);
+      for (const action of marketActions) {
+        assert(fitsViewport(action), `market action clipped at ${width}: ${action.label} ${JSON.stringify(action)}`);
       }
       if (width === 390) await page.screenshot({ path: path.join(output, 'plugin-market-mobile.png'), fullPage: true, animations: 'disabled' });
       await page.locator('#plugin-tab-installed').click();
