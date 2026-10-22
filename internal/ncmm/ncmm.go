@@ -157,6 +157,7 @@ func New() *Root {
 	c.Add(NewDailySongShare(c, c.l).Command())
 	c.Add(NewVipMemberGift(c, c.l).Command())
 	c.Add(NewFansGroup(c, c.l).Command())
+	c.Add(NewMusicPartner(c, c.l).Command())
 	c.Add(NewTask(c, c.l).Command())
 	c.Add(NewPlugin(c, c.l).Command())
 	c.Add(newWebCommand(c))
@@ -197,6 +198,11 @@ func (c *Root) Add(command ...*cobra.Command) {
 
 func (c *Root) Execute() {
 	if err := c.cmd.Execute(); err != nil {
+		// Cobra 的 RunE 失败时不会执行 PostRun，失败结果仍需按既有通知配置汇总。
+		c.FlushNotify("")
+		if c.l != nil {
+			_ = c.l.Close()
+		}
 		c.cmd.PrintErrln(err)
 		os.Exit(1)
 	}

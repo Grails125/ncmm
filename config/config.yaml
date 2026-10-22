@@ -1,7 +1,7 @@
 # NCMM 核心配置。建议优先使用 WebUI；手动修改后需重启服务。
 # 字符串、路径和持续时间建议保留引号；布尔值仅使用 true / false。
 # 配置文件版本，由程序用于识别配置结构，请勿手动降级。
-version: 1.2.2
+version: 1.2.2-grails.1
 
 # 账号与移动端凭据
 accounts:
@@ -54,6 +54,8 @@ task:
   fansgroup: true
   # 在批量执行中包含公共图文笔记发布任务。
   note: false
+  # 音乐合伙人自动评分；启用前先配置下方 musicPartner 并确认账号已具备资格。
+  music-partner: false
 
   # by-task-group：所有账号先执行快任务，再执行慢任务。
   # by-account：每个账号依次执行全部任务。
@@ -80,6 +82,24 @@ task:
     - PlayDailyRecommend # 日推播放，约 31～45 分钟
     - playids            # 指定歌曲播放，耗时取决于目标与间隔
     - musician-vip       # 音乐人 VIP 进阶，可能包含长时播放
+    - music-partner      # 音乐合伙人评分，逐首等待并提交
+
+# 音乐合伙人：复用已有账号 Cookie、任务调度、日志与通知。
+musicPartner:
+  enableMain: true
+  enableSecondaries: false
+  # 名称/作者含英文字母时使用较高分：1=1/2分，2=2/3分，3=3/4分，4=固定4分。
+  # 这是规则评分，不是听音或 AI 音质评估。
+  score: 3
+  extraTasks: true
+  # false=补到每日累计 extraLimit；true=处理本次接口返回的全部待评额外作品。
+  fullExtraTasks: false
+  extraLimit: 7
+  # 每首提交前的随机等待时间（秒），范围 1～300。
+  waitMin: 15
+  waitMax: 20
+  # 是否将评分同步到云圈，默认关闭。
+  syncYunCircle: false
 
 # 签到、云贝与会员成长值任务
 sign:

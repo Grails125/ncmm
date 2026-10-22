@@ -16,7 +16,7 @@ var allowedCommands = map[string]bool{
 	"task": true, "sign": true, "playids": true,
 	"musician": true, "musician-sign": true, "musician-vip": true,
 	"note": true, "daily-song-share": true, "vip-member-gift": true,
-	"fansgroup": true, "plugin": true,
+	"fansgroup": true, "music-partner": true, "plugin": true,
 }
 
 type scheduler struct {
@@ -102,11 +102,40 @@ func validateSchedule(job Schedule, parser cron.Parser) error {
 	if !allowedCommands[job.Command] {
 		return fmt.Errorf("unsupported command %q", job.Command)
 	}
+	if job.Command == "music-partner" {
+		if err := validateMusicPartnerArgs(job.Args); err != nil {
+			return err
+		}
+	}
 	if _, err := parser.Parse(job.Cron); err != nil {
 		return fmt.Errorf("invalid cron expression: %w", err)
 	}
 	if job.OverlapPolicy != "skip" && job.OverlapPolicy != "allow" {
 		return fmt.Errorf("overlapPolicy must be skip or allow")
+	}
+	return nil
+}
+
+func validateMusicPartnerArgs(args []string) error {
+	seenCookie := false
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		var value string
+		switch {
+		case arg == "--cookie-file":
+			index++
+			if index < len(args) {
+				value = args[index]
+			}
+		case strings.HasPrefix(arg, "--cookie-file="):
+			value = strings.TrimPrefix(arg, "--cookie-file=")
+		default:
+			return fmt.Errorf("音乐合伙人任务仅支持 --cookie-file 参数")
+		}
+		if seenCookie || strings.TrimSpace(value) == "" || strings.HasPrefix(value, "-") {
+			return fmt.Errorf("请填写唯一有效的 Cookie 文件路径")
+		}
+		seenCookie = true
 	}
 	return nil
 }

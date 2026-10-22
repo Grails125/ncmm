@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,9 +139,23 @@ type TaskConf struct {
 	FansGroup      bool     `json:"fansgroup" yaml:"fansgroup"`
 	DailySongShare bool     `json:"daily-song-share" yaml:"daily-song-share"`
 	VipMemberGift  bool     `json:"vip-member-gift" yaml:"vip-member-gift"`
+	MusicPartner   bool     `json:"music-partner" yaml:"music-partner"`
 	Mode           string   `json:"mode" yaml:"mode"`
 	FastTasks      []string `json:"fast_tasks" yaml:"fast_tasks"`
 	SlowTasks      []string `json:"slow_tasks" yaml:"slow_tasks"`
+}
+
+// MusicPartnerConf 音乐合伙人评分配置，评分采用作品名称规则，不分析音频。
+type MusicPartnerConf struct {
+	EnableMain        bool `json:"enableMain" yaml:"enableMain"`
+	EnableSecondaries bool `json:"enableSecondaries" yaml:"enableSecondaries"`
+	Score             int  `json:"score" yaml:"score"`
+	ExtraTasks        bool `json:"extraTasks" yaml:"extraTasks"`
+	FullExtraTasks    bool `json:"fullExtraTasks" yaml:"fullExtraTasks"`
+	ExtraLimit        int  `json:"extraLimit" yaml:"extraLimit"`
+	WaitMin           int  `json:"waitMin" yaml:"waitMin"`
+	WaitMax           int  `json:"waitMax" yaml:"waitMax"`
+	SyncYunCircle     bool `json:"syncYunCircle" yaml:"syncYunCircle"`
 }
 
 // FansGroupConf 乐迷团任务配置
@@ -227,6 +242,7 @@ type Config struct {
 	FansGroup      *FansGroupConf      `json:"fansgroup" yaml:"fansgroup"`
 	DailySongShare *DailySongShareConf `json:"dailySongShare" yaml:"dailySongShare"`
 	VipMemberGift  *VipMemberGiftConf  `json:"vipMemberGift" yaml:"vipMemberGift"`
+	MusicPartner   *MusicPartnerConf   `json:"musicPartner" yaml:"musicPartner"`
 	Task           *TaskConf           `json:"task" yaml:"task"`
 	Updater        *UpdaterConf        `json:"updater" yaml:"updater"`
 	Notify         *NotifyConf         `json:"notify" yaml:"notify"`
@@ -322,6 +338,34 @@ type MusicianPlayConf struct {
 }
 
 func (c *Config) Validate() error {
+	if err := validateSourceVersion(c.Version); err != nil {
+		return err
+	}
+	if c.MusicPartner == nil {
+		c.MusicPartner = &MusicPartnerConf{EnableMain: true, ExtraTasks: true}
+	}
+	p := c.MusicPartner
+	if p.Score == 0 {
+		p.Score = 3
+	}
+	if p.ExtraLimit == 0 {
+		p.ExtraLimit = 7
+	}
+	if p.WaitMin == 0 {
+		p.WaitMin = 15
+	}
+	if p.WaitMax == 0 {
+		p.WaitMax = 20
+	}
+	if p.Score < 1 || p.Score > 4 {
+		return fmt.Errorf("音乐合伙人评分策略必须为 1 至 4")
+	}
+	if p.ExtraLimit < 1 || p.ExtraLimit > 500 {
+		return fmt.Errorf("音乐合伙人额外任务上限必须为 1 至 500")
+	}
+	if p.WaitMin < 1 || p.WaitMax < p.WaitMin || p.WaitMax > 300 {
+		return fmt.Errorf("音乐合伙人等待时间必须为 1 至 300 秒，且上限不得小于下限")
+	}
 	if c.Updater == nil {
 		c.Updater = &UpdaterConf{}
 	}
@@ -454,7 +498,7 @@ func (c *Config) Validate() error {
 		}
 		if len(c.Task.SlowTasks) == 0 {
 			c.Task.SlowTasks = []string{
-				"ListenIndie", "PlayDailyRecommend", "playids", "musician-vip",
+				"ListenIndie", "PlayDailyRecommend", "playids", "musician-vip", "music-partner",
 			}
 		}
 	}
@@ -630,7 +674,12 @@ func AutoUpgradeConfigIfNeeded(cfgPath string) error {
 		return err
 	}
 	var v verStruct
-	_ = yaml.Unmarshal(data, &v)
+	if err := yaml.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	if err := validateSourceVersion(v.Version); err != nil {
+		return err
+	}
 
 	if v.Version != defaultConfig.Version {
 		if _, err := BackupConfigFile(cfgPath, 2); err != nil {
@@ -660,6 +709,13 @@ func AutoUpgradeConfig(cfgPath string) error {
 	if err != nil {
 		return err
 	}
+	var version verStruct
+	if err := yaml.Unmarshal(userData, &version); err != nil {
+		return err
+	}
+	if err := validateSourceVersion(version.Version); err != nil {
+		return err
+	}
 
 	var userRoot yaml.Node
 	if err := yaml.Unmarshal(userData, &userRoot); err != nil {
@@ -681,6 +737,36 @@ func AutoUpgradeConfig(cfgPath string) error {
 	}
 
 	return atomicfile.Write(cfgPath, output, 0644)
+}
+
+// 本分支恢复自 1.2.2，拒绝将未公开源码版本的配置降级写回。
+func validateSourceVersion(version string) error {
+	core := strings.SplitN(strings.TrimPrefix(strings.TrimSpace(version), "v"), "-", 2)[0]
+	if core == "" {
+		return nil
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) > 3 {
+		return fmt.Errorf("无法识别配置版本，请为本分支使用独立数据目录")
+	}
+	baseline := []int{1, 2, 2}
+	for i := 0; i < 3; i++ {
+		n := 0
+		if i < len(parts) {
+			var err error
+			n, err = strconv.Atoi(parts[i])
+			if err != nil || n < 0 {
+				return fmt.Errorf("无法识别配置版本，请为本分支使用独立数据目录")
+			}
+		}
+		if n > baseline[i] {
+			return fmt.Errorf("当前源码基于 1.2.2，不能降级读取较新版本配置，请使用独立数据目录")
+		}
+		if n < baseline[i] {
+			return nil
+		}
+	}
+	return nil
 }
 
 func mergeYAMLNodes(dest, src *yaml.Node) {

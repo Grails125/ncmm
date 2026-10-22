@@ -5,6 +5,7 @@ package ncmm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"strings"
@@ -24,16 +25,18 @@ type TaskOpts struct {
 	FansGroup      bool
 	DailySongShare bool
 	VipMemberGift  bool
+	MusicPartner   bool
 	OnlyFast       bool
 	OnlySlow       bool
 }
 
 type Task struct {
-	root *Root
-	cmd  *cobra.Command
-	l    *log.Logger
-	opts TaskOpts
-	rng  *rand.Rand
+	root            *Root
+	cmd             *cobra.Command
+	l               *log.Logger
+	opts            TaskOpts
+	rng             *rand.Rand
+	musicPartnerErr error
 }
 
 type Account struct {
@@ -64,6 +67,7 @@ func (c *Task) Command() *cobra.Command {
 }
 
 func (c *Task) addFlags() {
+	c.cmd.Flags().BoolVar(&c.opts.MusicPartner, "music-partner", false, "执行音乐合伙人自动评分")
 	c.cmd.Flags().BoolVar(&c.opts.DailySongShare, "daily-song-share", false, "execute daily song share task")
 	c.cmd.Flags().BoolVar(&c.opts.VipMemberGift, "vip-member-gift", false, "execute VIP member gift task")
 	c.cmd.Flags().BoolVar(&c.opts.Sign, "sign", false, "执行日常签到任务")
@@ -96,7 +100,7 @@ func (c *Task) standardizeActionKey(action string) string {
 	keys := []string{
 		"VipTask", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
 		"LikeSong", "CollectSong", "PublishNote", "ListenIndie", "PlayDailyRecommend",
-		"musician-sign", "note", "daily-song-share", "vip-member-gift", "fansgroup", "playids", "musician-vip",
+		"musician-sign", "note", "daily-song-share", "vip-member-gift", "fansgroup", "playids", "musician-vip", "music-partner",
 	}
 	for _, k := range keys {
 		if strings.EqualFold(k, action) {
@@ -125,6 +129,12 @@ func (c *Task) isActionEnabledForAccount(stdAction string, isMain bool) bool {
 
 	if actionLower == "note" {
 		return isMain
+	}
+	if actionLower == "music-partner" {
+		if isMain {
+			return cfg.MusicPartner != nil && cfg.MusicPartner.EnableMain
+		}
+		return cfg.MusicPartner != nil && cfg.MusicPartner.EnableSecondaries
 	}
 
 	isSignSubtask := false
@@ -221,6 +231,9 @@ func isSessionInvalidError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, errMusicPartnerAccountBlocked) {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	patterns := []string{
 		"cookie 已失效",
@@ -250,6 +263,25 @@ func (c *Task) executeAction(
 	earningsReports map[string]*accountEarningsReport,
 	finalizeSignEarnings bool,
 ) (executed bool, sessionInvalid bool) {
+	if ctx.Err() != nil {
+		return false, false
+	}
+	if stdAction == "music-partner" {
+		c.cmd.Printf("[task] >>> 账号 (%s) 开始执行 [音乐合伙人评分] <<<\n", account.Filepath)
+		p := NewMusicPartner(c.root, c.l)
+		p.Command().SetOut(c.cmd.OutOrStdout())
+		p.Command().SetErr(c.cmd.ErrOrStderr())
+		if err := p.ExecuteForCookie(ctx, c.root.musicPartnerCookiePath(account.Filepath)); err != nil {
+			c.cmd.Printf("[task] ❌ 账号 (%s) [音乐合伙人评分] 失败: %s\n", account.Filepath, err)
+			c.root.ReportFailure(account.Filepath, "music-partner", err)
+			if c.musicPartnerErr == nil {
+				c.musicPartnerErr = fmt.Errorf("音乐合伙人评分未全部完成: %w", err)
+			}
+			sessionInvalid = isSessionInvalidError(err)
+		}
+		c.sleepBetweenTasks(ctx)
+		return true, sessionInvalid
+	}
 	isSignSubtask := false
 	signSubtasks := []string{
 		"VipTask", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
@@ -457,13 +489,20 @@ func (c *Task) runQueue(
 	var queueExecuted bool
 
 	for i, account := range accounts {
+		if ctx.Err() != nil {
+			break
+		}
 		if invalidSessions[account.Filepath] {
-			c.cmd.Printf("[task] ⚠️ 账号 (%s) Cookie/会话已失效，跳过本队列全部任务\n", account.Filepath)
+			c.markMusicPartnerBlocked(account, queue, activeTasks)
+			c.cmd.Printf("[task] ⚠️ 账号 (%s) 鉴权失效或被限流，跳过本队列全部任务\n", account.Filepath)
 			continue
 		}
 
 		var hasExecuted bool
 		for _, action := range queue {
+			if ctx.Err() != nil {
+				break
+			}
 			if invalidSessions[account.Filepath] {
 				break
 			}
@@ -488,7 +527,8 @@ func (c *Task) runQueue(
 			}
 			if sessionInvalid {
 				invalidSessions[account.Filepath] = true
-				c.cmd.Printf("[task] ⚠️ 账号 (%s) Cookie/会话已失效，跳过该账号后续任务\n", account.Filepath)
+				c.markMusicPartnerBlocked(account, queue, activeTasks)
+				c.cmd.Printf("[task] ⚠️ 账号 (%s) 鉴权失效或被限流，跳过该账号后续任务\n", account.Filepath)
 				break
 			}
 		}
@@ -499,7 +539,19 @@ func (c *Task) runQueue(
 	return queueExecuted
 }
 
+func (c *Task) markMusicPartnerBlocked(account Account, queue []string, activeTasks map[string]bool) {
+	if c.musicPartnerErr != nil || !activeTasks["music-partner"] || !hasMusicPartnerAction(queue) || !c.isActionEnabledForAccount("music-partner", account.IsMain) {
+		return
+	}
+	c.musicPartnerErr = fmt.Errorf("账号鉴权失效或被限流，音乐合伙人评分未执行")
+	c.root.ReportSkip(account.Filepath, "music-partner", c.musicPartnerErr.Error())
+}
+
 func (c *Task) execute(ctx context.Context) error {
+	c.musicPartnerErr = nil
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	hasFlags := c.cmd.Flags().Changed("sign") ||
 		c.cmd.Flags().Changed("playids") ||
 		c.cmd.Flags().Changed("musician-sign") ||
@@ -507,9 +559,10 @@ func (c *Task) execute(ctx context.Context) error {
 		c.cmd.Flags().Changed("note") ||
 		c.cmd.Flags().Changed("fansgroup") ||
 		c.cmd.Flags().Changed("daily-song-share") ||
-		c.cmd.Flags().Changed("vip-member-gift")
+		c.cmd.Flags().Changed("vip-member-gift") ||
+		c.cmd.Flags().Changed("music-partner")
 
-	var runSign, runPlayIds, runMusicianSign, runMusicianVip, runNote, runFansGroup, runDailySongShare, runVipMemberGift bool
+	var runSign, runPlayIds, runMusicianSign, runMusicianVip, runNote, runFansGroup, runDailySongShare, runVipMemberGift, runMusicPartner bool
 	cfg := c.root.Cfg
 
 	if hasFlags {
@@ -521,6 +574,7 @@ func (c *Task) execute(ctx context.Context) error {
 		runFansGroup = c.opts.FansGroup
 		runDailySongShare = c.opts.DailySongShare
 		runVipMemberGift = c.opts.VipMemberGift
+		runMusicPartner = c.opts.MusicPartner
 	} else {
 		if cfg.Task != nil {
 			runSign = cfg.Task.Sign
@@ -531,18 +585,20 @@ func (c *Task) execute(ctx context.Context) error {
 			runFansGroup = cfg.Task.FansGroup
 			runDailySongShare = cfg.Task.DailySongShare
 			runVipMemberGift = cfg.Task.VipMemberGift
+			runMusicPartner = cfg.Task.MusicPartner
 		} else {
 			c.cmd.Println("[task] 提示: 配置文件中未定义 task 节点且未传递 any 命令行标志，默认不执行任何任务")
 			return nil
 		}
 	}
 
-	if !runSign && !runPlayIds && !runMusicianSign && !runMusicianVip && !runNote && !runFansGroup && !runDailySongShare && !runVipMemberGift {
+	if !runSign && !runPlayIds && !runMusicianSign && !runMusicianVip && !runNote && !runFansGroup && !runDailySongShare && !runVipMemberGift && !runMusicPartner {
 		c.cmd.Println("[task] 没有需要执行的任务")
 		return nil
 	}
 
 	activeTasks := make(map[string]bool)
+	activeTasks["music-partner"] = runMusicPartner
 	if runSign {
 		activeTasks["sign"] = true
 	}
@@ -570,6 +626,9 @@ func (c *Task) execute(ctx context.Context) error {
 
 	accounts := c.getAccounts()
 	if len(accounts) == 0 {
+		if runMusicPartner {
+			return fmt.Errorf("音乐合伙人评分未配置任何账号，请先添加账号")
+		}
 		c.cmd.Println("[task] 未配置任何账号，请检查 config.yaml")
 		return nil
 	}
@@ -582,8 +641,28 @@ func (c *Task) execute(ctx context.Context) error {
 		mode = cfg.Task.Mode
 	}
 
-	fastQueue := cfg.Task.FastTasks
-	slowQueue := cfg.Task.SlowTasks
+	var fastQueue, slowQueue []string
+	if cfg.Task != nil {
+		fastQueue = cfg.Task.FastTasks
+		slowQueue = cfg.Task.SlowTasks
+	}
+	// 旧配置保留自定义顺序时也可启用新任务，不要求用户手动编辑队列。
+	if runMusicPartner && !hasMusicPartnerAction(fastQueue) && !hasMusicPartnerAction(slowQueue) {
+		slowQueue = append(append([]string(nil), slowQueue...), "music-partner")
+	}
+	if runMusicPartner && ((runFast && hasMusicPartnerAction(fastQueue)) || (runSlow && hasMusicPartnerAction(slowQueue))) {
+		selected := false
+		for _, account := range accounts {
+			if c.isActionEnabledForAccount("music-partner", account.IsMain) {
+				selected = true
+				break
+			}
+		}
+		if !selected {
+			c.musicPartnerErr = fmt.Errorf("音乐合伙人未选择可执行账号，请启用已配置的主账号或辅助账号")
+			c.root.ReportSkip("-", "music-partner", c.musicPartnerErr.Error())
+		}
+	}
 	// 整次 task 进程共享：同一账号 Cookie 失效后，快/慢任务组均不再继续执行该账号
 	invalidSessions := make(map[string]bool)
 	// 快慢任务组共享账号收益，避免同一账号重复查询，并等待最后一个签到任务组再汇总云贝。
@@ -604,6 +683,9 @@ func (c *Task) execute(ctx context.Context) error {
 		}
 	} else if mode == "by-account" {
 		for i, account := range accounts {
+			if ctx.Err() != nil {
+				break
+			}
 			c.cmd.Printf("[task] >>>>>> 开始执行账号 (%s) <<<<<<\n", account.Filepath)
 			var hasExecuted bool
 			if runFast {
@@ -627,6 +709,21 @@ func (c *Task) execute(ctx context.Context) error {
 		return fmt.Errorf("未知的任务执行模式: %s，仅支持 by-task-group 和 by-account", mode)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.musicPartnerErr != nil {
+		return c.musicPartnerErr
+	}
 	c.cmd.Println("[task] 所有任务批量执行完毕！")
 	return nil
+}
+
+func hasMusicPartnerAction(queue []string) bool {
+	for _, action := range queue {
+		if strings.EqualFold(action, "music-partner") {
+			return true
+		}
+	}
+	return false
 }

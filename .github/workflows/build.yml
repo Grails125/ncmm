@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（例如：1.1.2，输入 auto 则读取 VERSION 文件）'
+        description: '版本号（例如：1.2.2-grails.1，输入 auto 则读取 VERSION 文件）'
         required: false
         type: string
         default: 'auto'
@@ -38,22 +38,25 @@ jobs:
           ref: ${{ github.event.inputs.commit_sha || github.sha }}
           fetch-depth: 0
 
-      - name: Restore configuration files for historical commits
-        if: "${{ github.event.inputs.commit_sha != '' && github.event.inputs.commit_sha != 'master' && github.event.inputs.commit_sha != 'main' }}"
+      - name: Verify native integration sources
         run: |
-          # 历史提交中没有 .goreleaser.yaml，从工作流触发的分支拉取最新配置与 LICENSE
-          git checkout ${{ github.sha }} -- .goreleaser.yaml LICENSE
+          test -f internal/ncmm/music_partner.go
+          test -f THIRD_PARTY_NOTICES.md
+          test -f licenses/ncmp-MIT.txt
+          test -f .goreleaser.yaml
 
       - name: Resolve Version
         id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_RELEASE_TYPE: ${{ inputs.release_type }}
         run: |
           # 确定版本号和发布类型
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            INPUT_VERSION="${{ github.event.inputs.version }}"
-            RELEASE_TYPE="${{ github.event.inputs.release_type }}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            RELEASE_TYPE="$INPUT_RELEASE_TYPE"
           else
-            if echo "${{ github.ref }}" | grep -q "^refs/tags/"; then
-              INPUT_VERSION=$(echo "${{ github.ref }}" | sed 's/refs\/tags\///')
+            if echo "$GITHUB_REF" | grep -q "^refs/tags/"; then
+              INPUT_VERSION=${GITHUB_REF#refs/tags/}
             else
               INPUT_VERSION="auto"
             fi
@@ -70,12 +73,17 @@ jobs:
               VERSION=$(cat VERSION | tr -d '[:space:]')
               SOURCE="VERSION file"
             else
-              VERSION=$(grep -oP 'Version\s*=\s*"\K[^"]+' main.go || echo "1.1.2")
-              SOURCE="main.go"
+              echo "Missing VERSION file" >&2
+              exit 1
             fi
           else
             VERSION=$(echo "$INPUT_VERSION" | sed 's/^v//' | tr -d '[:space:]')
             SOURCE="workflow input"
+          fi
+
+          if ! printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+$'; then
+            echo "Native releases require a version such as 1.2.2-grails.1" >&2
+            exit 1
           fi
 
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -106,8 +114,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         run: |
           # 确保在本地打上对应的 tag 供 GoReleaser 识别版本
-          git tag -d "v${{ env.VERSION }}" 2>/dev/null || true
-          git tag "v${{ env.VERSION }}"
+          git tag -d "v$VERSION" 2>/dev/null || true
+          git tag "v$VERSION"
 
       - name: Generate Custom Changelog
         id: changelog

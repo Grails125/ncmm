@@ -84,12 +84,12 @@ func (c *Root) initDefaultUpdateState() UpdateState {
 	}
 	osPart, archPart, ext := getPlatformInfo()
 	targetName := fmt.Sprintf("ncmm_%s_%s%s", osPart, archPart, ext)
-	downloadURL := fmt.Sprintf("https://github.com/3899/ncmm/releases/download/v%s/%s", strings.TrimPrefix(currentVer, "v"), targetName)
+	downloadURL := fmt.Sprintf("https://github.com/Grails125/ncmm/releases/download/v%s/%s", strings.TrimPrefix(currentVer, "v"), targetName)
 
 	return UpdateState{
 		LastCheckTime:  time.Unix(0, 0), // 初始设为 Epoch 时间，确保首次允许触发网络检测
 		CurrentVersion: currentVer,
-		LatestVersion:  currentVer,
+		LatestVersion:  "v" + strings.TrimPrefix(currentVer, "v"),
 		UpdateStatus:   "idle",
 		OS:             osPart,
 		Arch:           archPart,
@@ -173,6 +173,11 @@ func (c *Root) CheckForUpdatesPreRun() {
 	}
 
 	isDockerOfficial := os.Getenv("NCMM_DOCKER_OFFICIAL") == "1"
+	// 旧安装的更新缓存不能用于覆盖本分支，重新向本仓库检查。
+	if !isNativeUpdate(state.LatestVersion, state.AssetFilename, state.DownloadURL) {
+		state = c.initDefaultUpdateState()
+		c.saveUpdateState(statePath, &state)
+	}
 	needAutoUpdate := autoUpdateEnabled && !isDockerOfficial
 
 	// 1. 命中已有的状态记录：如果记录的最新版本大于当前版本
@@ -198,12 +203,15 @@ func (c *Root) checkNewVersionSync(statePath string, currentVer string, autoUpda
 	if data, err := os.ReadFile(statePath); err == nil {
 		_ = json.Unmarshal(data, &state)
 	}
+	if !isNativeUpdate(state.LatestVersion, state.AssetFilename, state.DownloadURL) {
+		state = c.initDefaultUpdateState()
+	}
 	proxyMirrors := []string{"https://gh-proxy.com/", "https://ghproxy.net/", "https://githubproxy.cc/"}
 	if c.Cfg != nil && c.Cfg.Updater != nil && len(c.Cfg.Updater.ProxyMirrors) > 0 {
 		proxyMirrors = c.Cfg.Updater.ProxyMirrors
 	}
 
-	apiURL := "https://api.github.com/repos/3899/ncmm/releases/latest"
+	apiURL := "https://api.github.com/repos/Grails125/ncmm/releases/latest"
 	urlsToTry := []string{apiURL}
 	for _, proxy := range proxyMirrors {
 		if proxy != "" {
@@ -271,7 +279,10 @@ func (c *Root) checkNewVersionSync(statePath string, currentVer string, autoUpda
 		}
 	}
 	if downloadURL == "" {
-		downloadURL = fmt.Sprintf("https://github.com/3899/ncmm/releases/download/%s/%s", tag, targetName)
+		downloadURL = fmt.Sprintf("https://github.com/Grails125/ncmm/releases/download/%s/%s", tag, targetName)
+	}
+	if !isNativeUpdate(tag, targetName, downloadURL) {
+		return state, fmt.Errorf("此发布不属于 Grails125 原生集成版本，请从本分支源码构建")
 	}
 
 	state.LastCheckTime = time.Now()
@@ -364,7 +375,10 @@ func (c *Root) performSelfUpdateWithInfo(tag string, assetName string, rawDownlo
 		assetName = fmt.Sprintf("ncmm_%s_%s%s", osPart, archPart, ext)
 	}
 	if rawDownloadURL == "" {
-		rawDownloadURL = fmt.Sprintf("https://github.com/3899/ncmm/releases/download/%s/%s", tag, assetName)
+		rawDownloadURL = fmt.Sprintf("https://github.com/Grails125/ncmm/releases/download/%s/%s", tag, assetName)
+	}
+	if !isNativeUpdate(tag, assetName, rawDownloadURL) {
+		return fmt.Errorf("拒绝安装其他来源的更新，请检查 Grails125/ncmm 原生集成版本")
 	}
 
 	proxyMirrors := []string{"https://gh-proxy.com/", "https://ghproxy.net/", "https://githubproxy.cc/"}
@@ -518,6 +532,13 @@ func (c *Root) ShowUpdateNotificationPostRun() {
 }
 
 // CompareVersions 比对版本号。v1 > v2 返回 1，v1 < v2 返回 -1，相等返回 0
+func isNativeUpdate(tag, assetName, downloadURL string) bool {
+	if !strings.Contains(tag, "-grails.") || strings.ContainsAny(tag, "/\\?#") || assetName == "" || strings.ContainsAny(assetName, "/\\?#") {
+		return false
+	}
+	return downloadURL == "https://github.com/Grails125/ncmm/releases/download/"+tag+"/"+assetName
+}
+
 func CompareVersions(v1, v2 string) int {
 	p1 := parseVersion(v1)
 	p2 := parseVersion(v2)

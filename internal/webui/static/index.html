@@ -450,7 +450,7 @@
                 <use href="#i-log" />
               </svg>
               <span>规则配置</span>
-              <span class="sim-tab-badge" id="badge-count-config">15</span>
+              <span class="sim-tab-badge" id="badge-count-config">16</span>
             </button>
             <button class="sim-tab-item" data-target="notify">
               <svg>
@@ -473,6 +473,8 @@
                   高防风控安全</button>
                 <button type="button" class="preset-chip-btn" data-preset="sign_only" title="仅秒级打卡（签到、乐迷团、领云豆），3秒快速结束">⚡
                   极速纯签到</button>
+                <button type="button" class="preset-chip-btn" data-preset="music_partner" title="主账号签到与合伙人规则评分，需具备合伙人资格">🎵
+                  合伙人日常</button>
               </div>
             </div>
             <div class="presets-bar-right" id="config-preset-actions">
@@ -978,6 +980,7 @@
             <option value="musician">musician</option>
             <option value="musician-sign">musician-sign</option>
             <option value="musician-vip">musician-vip</option>
+            <option value="music-partner">music-partner（音乐合伙人评分）</option>
             <option value="note">note</option>
             <option value="daily-song-share">daily-song-share</option>
             <option value="vip-member-gift">vip-member-gift</option>
@@ -1001,6 +1004,7 @@
         <div id="schedule-plugin-dynamic-fields" class="plugin-dynamic-fields"></div>
       </div>
       <label>命令参数<input id="schedule-args" placeholder="如 --only-fast 或 run withdraw --target 15"></label>
+      <p id="schedule-music-partner-help" class="field-note hidden">音乐合伙人使用“策略配置”中的账号与评分规则；可留空，或填写 --cookie-file 指定一个账号的 Cookie 文件。</p>
       <div class="dialog-actions"><button type="button" class="button subtle dialog-close">取消</button><button
           id="schedule-submit" type="submit" class="button primary"><svg>
             <use href="#i-save" />

@@ -537,6 +537,8 @@ func (a *Api) PartnerDailyTask(ctx context.Context, req *PartnerTaskReq) (*Partn
 		reply PartnerTaskResp
 		opts  = api.NewOptions()
 	)
+	opts.Sensitive = true
+	opts.SetHeader("Referer", "https://mp.music.163.com/")
 	if req.CSRFToken == "" {
 		csrf, _ := a.client.GetCSRF(url)
 		req.CSRFToken = csrf
@@ -772,6 +774,8 @@ func (a *Api) PartnerEvaluate(ctx context.Context, req *PartnerEvaluateReq) (*Pa
 		reply PartnerEvaluateResp
 		opts  = api.NewOptions()
 	)
+	opts.Sensitive = true
+	opts.SetHeader("Referer", "https://mp.music.163.com/")
 	if req.CSRFToken == "" {
 		csrf, _ := a.client.GetCSRF(url)
 		req.CSRFToken = csrf
@@ -816,6 +820,10 @@ func (a *Api) PartnerExtraTask(ctx context.Context, req *PartnerExtraTaskReq) (*
 		reply PartnerExtraTaskResp
 		opts  = api.NewOptions()
 	)
+	opts.Sensitive = true
+	opts.Method = "GET"
+	opts.CryptoMode = api.CryptoModeAPI
+	opts.SetHeader("Referer", "https://mp.music.163.com/")
 	if req.CSRFToken == "" {
 		csrf, _ := a.client.GetCSRF(url)
 		req.CSRFToken = csrf
@@ -854,6 +862,8 @@ func (a *Api) PartnerExtraReport(ctx context.Context, req *PartnerExtraReportReq
 		reply PartnerExtraReportResp
 		opts  = api.NewOptions()
 	)
+	opts.Sensitive = true
+	opts.SetHeader("Referer", "https://mp.music.163.com/")
 	if req.CSRFToken == "" {
 		csrf, _ := a.client.GetCSRF(url)
 		req.CSRFToken = csrf

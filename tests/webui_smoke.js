@@ -282,9 +282,9 @@ async function hasHorizontalScroll(locator, label) {
   const firstConfigSection = page.locator('#config-sections [data-section]').first();
   assert(await firstConfigSection.getAttribute('data-section') === 'task' && (await firstConfigSection.innerText()).includes('批量任务'), 'batch tasks were not the first simplified navigation item');
   assert((await page.locator('#config-current-title').innerText()).includes('规则配置面板'), 'continuous flow title was not rendered');
-  assert(await page.locator('.card-flow-section').count() === 15, 'configuration did not render all 15 modules');
-  assert(await page.locator('.config-card-box').count() === 29, 'configuration card flow did not match the prototype');
-  assert(await page.locator('#config-block-task .task-card').count() === 8, 'task matrix did not render eight task cards');
+  assert(await page.locator('.card-flow-section').count() === 16, 'configuration did not render all 16 modules');
+  assert(await page.locator('.config-card-box').count() === 31, 'configuration card flow did not match the prototype');
+  assert(await page.locator('#config-block-task .task-card').count() === 9, 'task matrix did not render nine task cards');
   assert(await page.locator('#config-block-task .schema-segmented').count() === 1, 'task mode segmented control was missing');
   assert(await page.locator('.schema-fallback').count() === 0, 'registered task fields fell back to generic controls');
   const flowSize = await page.locator('#config-visual').evaluate(element => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight }));
@@ -293,7 +293,7 @@ async function hasHorizontalScroll(locator, label) {
   assert(await page.locator('.card-flow-section:not(.search-hidden)').count() === 1, 'full-flow search did not narrow the matching module');
   assert(await page.locator('#config-block-task .task-card:not(.search-hidden)').count() === 0, 'full-flow search left unrelated task cards visible');
   await page.locator('#config-search').fill('');
-  for (const [section, control] of [['accounts', '.config-token-control'], ['musician', '.schema-stepper'], ['mixPlay', '.single-range-input'], ['note', '.schema-textarea'], ['dailySongShare', '.schema-json'], ['network', '.quick-pill'], ['playids', '.schema-tags']]) {
+  for (const [section, control] of [['accounts', '.config-token-control'], ['musician', '.schema-stepper'], ['musicPartner', '.schema-segmented'], ['mixPlay', '.single-range-input'], ['note', '.schema-textarea'], ['dailySongShare', '.schema-json'], ['network', '.quick-pill'], ['playids', '.schema-tags']]) {
     await page.locator(`#config-sections [data-section="${section}"]`).click();
     await page.waitForFunction(key => document.querySelector(`#config-sections [data-section="${key}"]`)?.classList.contains('active'), section);
     assert(await page.locator(`#config-block-${section} ${control}`).count() > 0, `${section} prototype control ${control} was missing`);
@@ -403,8 +403,8 @@ async function hasHorizontalScroll(locator, label) {
   await mobilePage.locator('.nav-item[data-page="config"]').click();
   await mobilePage.locator('.card-flow-section').first().waitFor({ state: 'visible' });
   await mobilePage.waitForTimeout(350);
-  assert(await mobilePage.locator('.card-flow-section').count() === 15, 'mobile configuration flow did not render all modules');
-  assert(await mobilePage.locator('#config-block-task .task-card').count() === 8, 'mobile task matrix was incomplete');
+  assert(await mobilePage.locator('.card-flow-section').count() === 16, 'mobile configuration flow did not render all modules');
+  assert(await mobilePage.locator('#config-block-task .task-card').count() === 9, 'mobile task matrix was incomplete');
   await noPageOverflow(mobilePage, 'mobile configuration');
   await mobilePage.screenshot({ path: path.join(outputDir, 'mobile-config.png'), fullPage: true });
   await mobilePage.locator('#menu-button').click();

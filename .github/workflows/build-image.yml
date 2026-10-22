@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号（例如：1.1.7，输入 auto 则读取 VERSION 文件）'
+        description: '版本号（例如：1.2.2-grails.1，输入 auto 则读取 VERSION 文件）'
         required: false
         type: string
         default: 'auto'
@@ -34,14 +34,20 @@ jobs:
           ref: ${{ github.event.inputs.commit_sha || github.sha }}
           fetch-depth: 0
 
+      - name: Verify native integration sources
+        run: |
+          test -f internal/ncmm/music_partner.go
+          test -f THIRD_PARTY_NOTICES.md
+          test -f licenses/ncmp-MIT.txt
+
       - name: Resolve Version
         id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            INPUT_VERSION="${{ github.event.inputs.version }}"
-          else
-            if echo "${{ github.ref }}" | grep -q "^refs/tags/"; then
-              INPUT_VERSION=$(echo "${{ github.ref }}" | sed 's/refs\/tags\///')
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+            if echo "$GITHUB_REF" | grep -q "^refs/tags/"; then
+              INPUT_VERSION=${GITHUB_REF#refs/tags/}
             else
               INPUT_VERSION="auto"
             fi
@@ -54,13 +60,21 @@ jobs:
             elif [ -f VERSION ]; then
               VERSION=$(cat VERSION | tr -d '[:space:]')
             else
-              VERSION="1.1.7"
+              echo "Missing VERSION file" >&2
+              exit 1
             fi
           else
             VERSION=$(echo "$INPUT_VERSION" | sed 's/^v//' | tr -d '[:space:]')
           fi
 
+          if ! printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+$'; then
+            echo "Native releases require a version such as 1.2.2-grails.1" >&2
+            exit 1
+          fi
+
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "commit=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
           echo "Resolved version: $VERSION"
 
       - name: Set up QEMU (for multi-platform builds)
@@ -96,6 +110,8 @@ jobs:
           provenance: false
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
+            VCS_REF=${{ steps.version.outputs.commit }}
+            BUILD_DATE=${{ steps.version.outputs.build_date }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

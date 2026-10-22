@@ -59,16 +59,17 @@
   const sectionLabels = {
     version: '配置版本', accounts: '账号与凭据', task: '批量任务', network: '网络与代理', playids: '指定播放',
     sign: '日常签到', mixPlay: '日推混听', note: '动态笔记', dailySongShare: '每日推歌',
-    vipMemberGift: '会员礼品卡', musician: '音乐人与 VIP', fansgroup: '乐迷团打卡', database: '本地数据库',
+    vipMemberGift: '会员礼品卡', musician: '音乐人与 VIP', musicPartner: '音乐合伙人评分', fansgroup: '乐迷团打卡', database: '本地数据库',
     log: '日志与轮转', updater: '自动更新', notify: '失败通知策略',
     webhook: 'Webhook', bark: 'Bark', serverchan: 'Server 酱', telegram: 'Telegram', dingtalk: '钉钉',
     coolpush: 'CoolPush', pushplus: 'PushPlus', wecom_key: '企业微信群', wecom_app: '企业微信应用',
   };
-  const sectionIcons = { accounts: '', task: '', musician: '', playids: '', sign: '', mixPlay: '', note: '', dailySongShare: '', vipMemberGift: '', fansgroup: '', network: '', log: '', database: '', notify: '', updater: '', version: '' };
+  const sectionIcons = { accounts: '', task: '', musician: '', musicPartner: '', playids: '', sign: '', mixPlay: '', note: '', dailySongShare: '', vipMemberGift: '', fansgroup: '', network: '', log: '', database: '', notify: '', updater: '', version: '' };
   const fieldLabels = {
     main: '主账号', primary: '旧版主账号', secondary: '辅助账号', antiCheatTokens: '反作弊令牌',
     enabled: '启用', enableMain: '启用主账号', enableSecondaries: '启用辅助账号', automatic: '自动执行',
     enableVipTask: '黑胶 VIP 任务', mode: '执行模式', fast_tasks: '快速任务', slow_tasks: '慢速任务',
+    score: '评分策略', extraTasks: '执行额外评分', fullExtraTasks: '完成当前全部额外任务', extraLimit: '每日额外评分目标', waitMin: '评分等待下限', waitMax: '评分等待上限', syncYunCircle: '同步评分到云圈',
     timeout: '超时时间', retry: '重试次数', debug: '调试模式', user_agent: 'User-Agent',
     daily_min: '每日最小数量', daily_max: '每日最大数量', run_min: '单次最小数量', run_max: '单次最大数量',
     gap_min: '最小间隔（秒）', gap_max: '最大间隔（秒）', ids: '歌曲 ID', idsFile: '歌曲 ID 文件',
@@ -89,7 +90,7 @@
     to_user: '接收用户', agent_id: '应用 ID', media_id: '媒体 ID',
   };
   const configSectionOrder = [
-    'task', 'accounts', 'network', 'sign', 'playids', 'mixPlay', 'musician',
+    'task', 'accounts', 'network', 'sign', 'playids', 'mixPlay', 'musician', 'musicPartner',
     'note', 'dailySongShare', 'fansgroup', 'vipMemberGift', 'notify',
     'updater', 'log', 'database'
   ];
@@ -101,6 +102,7 @@
     playids: { nav: '播放歌曲', title: '播放指定歌曲有效播放量', description: '批量冲刺指定歌曲或歌单有效播放量目标' },
     mixPlay: { nav: '日推混听', title: '日推混听防风控策略', description: '按比例穿插播放官方日推歌曲，模拟真人听歌' },
     musician: { nav: '音乐人任务', title: '音乐人专属任务与 VIP 进阶', description: '日常签到领云豆、VIP 月度进阶与专属播放覆盖' },
+    musicPartner: { nav: '合伙人评分', title: '音乐合伙人自动评分', description: '复用账号登录，按规则提交基础与额外评分；不分析音频质量' },
     note: { nav: '图文动态', title: '图文动态与笔记素材池', description: '通用随机标题、正文与配图素材池（供推歌与音乐人复用）' },
     dailySongShare: { nav: '每日推歌', title: '每日推歌与抽奖', description: '推歌抽奖、话题标签、封面模式与秒删保护（需 antiCheatToken）' },
     fansgroup: { nav: '乐迷团', title: '乐迷团日常打卡', description: '音乐合伙人与关注歌手乐迷团日常应援打卡' },
@@ -115,6 +117,7 @@
     playids: { badge: '核心冲量', tone: 'cyan' },
     'musician-sign': { badge: '音乐人专属', tone: 'amber' },
     'musician-vip': { badge: '每月进阶', tone: 'primary' },
+    'music-partner': { badge: '合伙人专属', tone: 'cyan' },
     'daily-song-share': { badge: '需 Token', tone: 'cyan' },
     'vip-member-gift': { badge: '需 Token', tone: 'success' },
     fansgroup: { badge: '日常打卡', tone: 'amber' },
@@ -127,7 +130,7 @@
       name: '小白省心 (推荐)',
       hint: '全自动日常打卡 + 30%防风控刷歌 + 自动领会员',
       config: {
-        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': false, note: false, 'daily-song-share': false, 'vip-member-gift': true, fansgroup: true, mode: 'by-task-group' },
+        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': false, 'music-partner': false, note: false, 'daily-song-share': false, 'vip-member-gift': true, fansgroup: true, mode: 'by-task-group' },
         sign: { automatic: true, enableMain: true, enableSecondaries: true, enableVipTask: true },
         playids: { enableMain: true, enableSecondaries: true, daily_min: 40, daily_max: 100, run_min: 10, run_max: 30, gap_min: 15, gap_max: 35 },
         mixPlay: { enabled: true, dailyRecommendRatio: 0.3, countTarget: true },
@@ -142,7 +145,7 @@
       name: '音乐人冲刺',
       hint: '开启全量刷歌与 VIP 进阶长耗时任务，全面提升音乐人身份数据',
       config: {
-        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': true, note: true, 'daily-song-share': true, 'vip-member-gift': true, fansgroup: true, mode: 'by-task-group' },
+        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': true, 'music-partner': false, note: true, 'daily-song-share': true, 'vip-member-gift': true, fansgroup: true, mode: 'by-task-group' },
         musician: { enableMain: true, enableSecondaries: true, identityCacheDays: 0, enableVipNote: true, enableVipPlay: true },
         playids: { enableMain: true, enableSecondaries: true, daily_min: 100, daily_max: 300, run_min: 30, run_max: 60, gap_min: 20, gap_max: 40 },
         mixPlay: { enabled: true, dailyRecommendRatio: 0.25, countTarget: true },
@@ -154,7 +157,7 @@
       name: '高防风控安全',
       hint: '拉大播放间隔、45%高防风控混听、轻量低频刷歌，全方位规避账号风控',
       config: {
-        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': false, note: false, 'daily-song-share': false, 'vip-member-gift': false, fansgroup: true, mode: 'by-task-group' },
+        task: { sign: true, playids: true, 'musician-sign': true, 'musician-vip': false, 'music-partner': false, note: false, 'daily-song-share': false, 'vip-member-gift': false, fansgroup: true, mode: 'by-task-group' },
         playids: { enableMain: true, enableSecondaries: true, daily_min: 30, daily_max: 60, run_min: 5, run_max: 15, gap_min: 35, gap_max: 75 },
         mixPlay: { enabled: true, dailyRecommendRatio: 0.45, countTarget: true },
         network: { timeout: '90s', retry: 2, debug: false }
@@ -164,9 +167,18 @@
       name: '极速纯签到',
       hint: '仅秒级打卡（签到、乐迷团、领云豆），不刷歌不发动态，3秒极速结束',
       config: {
-        task: { sign: true, playids: false, 'musician-sign': true, 'musician-vip': false, note: false, 'daily-song-share': false, 'vip-member-gift': false, fansgroup: true, mode: 'by-task-group' },
+        task: { sign: true, playids: false, 'musician-sign': true, 'musician-vip': false, 'music-partner': false, note: false, 'daily-song-share': false, 'vip-member-gift': false, fansgroup: true, mode: 'by-task-group' },
         mixPlay: { enabled: false },
         sign: { automatic: true, enableMain: true, enableSecondaries: true, enableVipTask: true }
+      }
+    },
+    music_partner: {
+      name: '合伙人日常',
+      hint: '主账号日常签到 + 合伙人基础评分与每日 7 首额外评分，需具备合伙人资格',
+      config: {
+        task: { sign: true, playids: false, 'musician-sign': false, 'musician-vip': false, 'music-partner': true, note: false, 'daily-song-share': false, 'vip-member-gift': false, fansgroup: false, mode: 'by-task-group' },
+        sign: { automatic: true, enableMain: true, enableSecondaries: false, enableVipTask: true },
+        musicPartner: { enableMain: true, enableSecondaries: false, score: 3, extraTasks: true, fullExtraTasks: false, extraLimit: 7, waitMin: 15, waitMax: 20, syncYunCircle: false }
       }
     }
   };
@@ -1013,7 +1025,7 @@
     const saveActions = $('#config-save-actions');
     const saveActionsHost = state.configTarget === 'notify' ? $('.config-view-actions') : $('#config-preset-actions');
     if (saveActions && saveActionsHost && saveActions.parentElement !== saveActionsHost) saveActionsHost.appendChild(saveActions);
-    if ($('#badge-count-config')) $('#badge-count-config').textContent = '15';
+    if ($('#badge-count-config')) $('#badge-count-config').textContent = String(configSectionOrder.length);
     if ($('#badge-count-notify')) $('#badge-count-notify').textContent = '9';
     $$('#preset-chips-list button').forEach(button => button.classList.toggle('active', button.dataset.preset === (state.currentPreset || 'novice')));
 
@@ -1387,6 +1399,7 @@
     { id: 'PlayDailyRecommend', name: '日推听歌完成任务', duration: '约 30~45 分钟', badge: 'purple' },
     { id: 'playids', name: '播放指定歌曲有效量', duration: '长耗时 (按目标)', badge: 'cyan' },
     { id: 'musician-vip', name: '音乐人 VIP 进阶', duration: '长耗时 (月度进阶)', badge: 'primary' },
+    { id: 'music-partner', name: '音乐合伙人评分', duration: '按任务数量与等待间隔', badge: 'cyan' },
   ];
 
   const DEFAULT_FAST_TASKS = [
@@ -1396,7 +1409,7 @@
   ];
 
   const DEFAULT_SLOW_TASKS = [
-    'ListenIndie', 'PlayDailyRecommend', 'playids', 'musician-vip'
+    'ListenIndie', 'PlayDailyRecommend', 'playids', 'musician-vip', 'music-partner'
   ];
 
   let draggedTaskId = null;
@@ -1508,7 +1521,7 @@
   }
 
   function renderFlowTask() {
-    const taskFields = ['task.sign', 'task.playids', 'task.musician-sign', 'task.musician-vip', 'task.daily-song-share', 'task.vip-member-gift', 'task.fansgroup', 'task.note'];
+    const taskFields = ['task.sign', 'task.playids', 'task.musician-sign', 'task.musician-vip', 'task.music-partner', 'task.daily-song-share', 'task.vip-member-gift', 'task.fansgroup', 'task.note'];
     const cards = taskFields.map(path => {
       const info = flowFieldInfo(path);
       if (!info) return '';
@@ -1588,6 +1601,10 @@
 
   function renderFlowGeneric(key) {
     const layouts = {
+      musicPartner: [
+        { title: '账号与评分策略', paths: ['musicPartner.enableMain', 'musicPartner.enableSecondaries', 'musicPartner.score', 'musicPartner.syncYunCircle'] },
+        { title: '额外评分与等待', paths: ['musicPartner.extraTasks', 'musicPartner.fullExtraTasks', 'musicPartner.extraLimit', 'musicPartner.waitMin', 'musicPartner.waitMax'] },
+      ],
       fansgroup: [
         { title: '', paths: ['fansgroup.enableMain', 'fansgroup.enableSecondaries', 'fansgroup.autoDeleteNote'] },
         { title: '', paths: ['fansgroup.groupIds'] },
@@ -2254,6 +2271,7 @@
   }
 
   function updateSchedulePluginPanel(selectedPluginName = null, initialArgs = []) {
+    $('#schedule-music-partner-help')?.classList.toggle('hidden', $('#schedule-command')?.value !== 'music-partner');
     const panel = $('#schedule-plugin-fields');
     if (!$('#schedule-command') || $('#schedule-command').value !== 'plugin') {
       panel?.classList.add('hidden');

@@ -438,12 +438,18 @@ func (m *runManager) concurrencyKeys(ctx context.Context, job Schedule) []string
 			keys = append(keys, "home:"+m.canonicalResourcePath(m.home))
 		} else {
 			if explicitCookie == "" && cfg.Accounts != nil {
-				if cfg.Accounts.Main != "" {
+				enableMain, enableSecondaries := true, true
+				if job.Command == "music-partner" && cfg.MusicPartner != nil {
+					enableMain, enableSecondaries = cfg.MusicPartner.EnableMain, cfg.MusicPartner.EnableSecondaries
+				}
+				if enableMain && cfg.Accounts.Main != "" {
 					keys = append(keys, "account:"+m.canonicalResourcePath(cfg.Accounts.Main))
 				}
-				for _, account := range cfg.Accounts.Secondary {
-					if strings.TrimSpace(account) != "" {
-						keys = append(keys, "account:"+m.canonicalResourcePath(account))
+				if enableSecondaries {
+					for _, account := range cfg.Accounts.Secondary {
+						if strings.TrimSpace(account) != "" {
+							keys = append(keys, "account:"+m.canonicalResourcePath(account))
+						}
 					}
 				}
 			}

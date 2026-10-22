@@ -146,6 +146,9 @@ func mainConfigSchema() configTargetSchema {
 		schemaCategory("musician", "音乐人与 VIP", "", "音乐人签到、VIP 进阶任务和专属播放覆盖参数。",
 			schemaGroup("musician-main", "音乐人主控参数", "身份任务", "cyan"),
 			schemaGroup("musician-play", "进阶专属播放参数", "可继承", "gray")),
+		schemaCategory("musicPartner", "音乐合伙人评分", "", "使用已登录且具备合伙人资格的账号，按配置规则提交基础和额外评分。",
+			schemaGroup("partner-main", "账号与评分策略", "合伙人专属", "cyan"),
+			schemaGroup("partner-extra", "额外评分与等待", "每日", "gray")),
 		schemaCategory("note", "动态笔记", "", "公共笔记标题、正文、图片池和发布方式。",
 			schemaGroup("note-mode", "发布方式", "通用", "primary"),
 			schemaGroup("note-content", "随机素材库", "内容", "cyan")),
@@ -203,6 +206,7 @@ func mainConfigSchema() configTargetSchema {
 		schemaField("task.daily-song-share", "每日推歌与抽奖", "需要匹配的移动端 Cookie、UA 和 Token。", "tasks", "boolean", "switch"),
 		schemaField("task.vip-member-gift", "黑胶会员赠送与领取", "领取任务需要对应账号的 antiCheatToken。", "tasks", "boolean", "switch"),
 		schemaField("task.fansgroup", "乐迷团日常任务", "执行配置的乐迷团打卡。", "tasks", "boolean", "switch"),
+		schemaField("task.music-partner", "音乐合伙人评分", "完成基础评分及已开启的额外评分，需要账号具备合伙人资格。", "tasks", "boolean", "switch"),
 		func() configSchemaField {
 			f := schemaField("task.mode", "任务执行模式", "跨账号分组串行（全部账号先快后慢）或单账号完整串行（单账号依次跑完全部任务）。", "queue", "string", "segmented")
 			f.Options = []configSchemaOption{schemaOption("by-task-group", "跨账号分组串行"), schemaOption("by-account", "单账号完整串行")}
@@ -374,6 +378,33 @@ func mainConfigSchema() configTargetSchema {
 		schemaField("dailySongShare.lottery.activityId", "抽奖活动 ID", "留空使用程序内置活动。", "share-community", "string", "text"),
 		schemaField("dailySongShare.lottery.autoRegister", "自动报名活动", "需要时自动完成活动报名。", "share-community", "boolean", "switch"),
 		schemaField("dailySongShare.topics", "社区话题", "对象数组包含名称、ID、类型和子类型。", "share-community", "object-list", "json"),
+
+		schemaField("musicPartner.enableMain", "主账号自动评分", "复用主账号 Cookie；账号需要具备音乐合伙人资格。", "partner-main", "boolean", "switch"),
+		schemaField("musicPartner.enableSecondaries", "辅助账号自动评分", "为已具备合伙人资格的辅助账号执行评分。", "partner-main", "boolean", "switch"),
+		func() configSchemaField {
+			f := schemaField("musicPartner.score", "评分策略", "策略 1–3 在歌曲名或作者名含 ASCII 英文字母时取较高分，否则取较低分；这是规则评分，不分析音频质量。", "partner-main", "integer", "segmented")
+			f.Options = []configSchemaOption{schemaOption(1, "1：1–2 分"), schemaOption(2, "2：2–3 分"), schemaOption(3, "3：3–4 分"), schemaOption(4, "4：固定 4 分")}
+			f.Min, f.Max, f.Step = number(1), number(4), number(1)
+			return f
+		}(),
+		schemaField("musicPartner.syncYunCircle", "同步评分到云圈", "开启后评分请求允许同步到云圈，默认关闭。", "partner-main", "boolean", "switch"),
+		schemaField("musicPartner.extraTasks", "执行额外评分", "基础任务完成后继续处理额外评分任务。", "partner-extra", "boolean", "switch"),
+		schemaField("musicPartner.fullExtraTasks", "完成当前全部额外任务", "开启后以本次返回的额外任务列表为准；关闭时使用每日额外评分目标。", "partner-extra", "boolean", "switch"),
+		func() configSchemaField {
+			f := schemaField("musicPartner.extraLimit", "每日额外评分目标", "已完成数量计入目标；仅在开启额外评分且未选择全部任务时使用。", "partner-extra", "integer", "number")
+			f.Unit, f.Min, f.Max, f.Step = "首", number(1), number(500), number(1)
+			return f
+		}(),
+		func() configSchemaField {
+			f := schemaField("musicPartner.waitMin", "评分等待下限", "每次评分请求前的随机等待下限。", "partner-extra", "integer", "number")
+			f.Unit, f.Min, f.Max, f.Step = "秒", number(1), number(300), number(1)
+			return f
+		}(),
+		func() configSchemaField {
+			f := schemaField("musicPartner.waitMax", "评分等待上限", "不得小于评分等待下限。", "partner-extra", "integer", "number")
+			f.Unit, f.Min, f.Max, f.Step = "秒", number(1), number(300), number(1)
+			return f
+		}(),
 
 		schemaField("fansgroup.enableMain", "主账号执行乐迷团", "主账号执行配置的乐迷团打卡。", "fans", "boolean", "switch"),
 		schemaField("fansgroup.enableSecondaries", "辅助账号执行乐迷团", "辅助账号依次执行乐迷团打卡。", "fans", "boolean", "switch"),

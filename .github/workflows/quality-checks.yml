@@ -5,10 +5,16 @@ on:
     branches:
       - main
       - master
+      - 'codex/**'
   pull_request:
 
 permissions:
   contents: read
+
+env:
+  NCMM_TEST_LIVE: ''
+  NCMM_UPDATER_CHECK: 'false'
+  NCMM_UPDATER_AUTO_UPDATE: 'false'
 
 jobs:
   test:
@@ -39,7 +45,7 @@ jobs:
 
       - name: Test WebUI in Chromium
         run: |
-          go build -ldflags "-X main.Version=1.2.0" -o "$RUNNER_TEMP/ncmm" .
+          go build -ldflags "-X main.Version=$(cat VERSION)" -o "$RUNNER_TEMP/ncmm" .
           WEBUI_HOME="$RUNNER_TEMP/webui-smoke"
           mkdir -p "$WEBUI_HOME"
           "$RUNNER_TEMP/ncmm" --home "$WEBUI_HOME" web --listen 127.0.0.1:39133 >"$RUNNER_TEMP/webui.log" 2>&1 &
@@ -54,5 +60,52 @@ jobs:
           curl --fail --silent http://127.0.0.1:39133/api/v1/instance >/dev/null
           npm run test:webui -- http://127.0.0.1:39133 "$WEBUI_HOME"
 
+      - name: Test native scoring UI in Chromium
+        run: |
+          WEBUI_HOME="$RUNNER_TEMP/webui-music-partner"
+          mkdir -p "$WEBUI_HOME"
+          "$RUNNER_TEMP/ncmm" --home "$WEBUI_HOME" web --listen 127.0.0.1:39134 >"$RUNNER_TEMP/webui-music-partner.log" 2>&1 &
+          WEBUI_PID=$!
+          trap 'kill "$WEBUI_PID" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 50); do
+            if curl --fail --silent http://127.0.0.1:39134/api/v1/instance >/dev/null; then
+              break
+            fi
+            sleep 0.2
+          done
+          curl --fail --silent http://127.0.0.1:39134/api/v1/instance >/dev/null
+          node tests/webui_music_partner.js http://127.0.0.1:39134 "$WEBUI_HOME"
+
       - name: Race test high-risk services
-        run: go test -race ./internal/webui ./internal/ncmm
+        run: go test -race ./api/... ./config ./internal/webui ./internal/ncmm
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Compose configuration
+        run: docker compose config --quiet
+
+      - name: Build the native image without publishing
+        run: docker build --build-arg VCS_REF="$GITHUB_SHA" -t ncmm-native:validation .
+
+      - name: Verify built-in scoring command
+        run: |
+          docker run --rm --network none ncmm-native:validation music-partner --help
+          docker run --rm --network none ncmm-native:validation task --help | grep -- '--music-partner'
+
+      - name: Verify WebUI starts without account credentials
+        run: |
+          docker run -d --name ncmm-smoke --network none \
+            -e NCMM_UPDATER_CHECK=false ncmm-native:validation
+          trap 'docker logs ncmm-smoke; docker rm -f ncmm-smoke >/dev/null' EXIT
+          for attempt in $(seq 1 50); do
+            if docker exec ncmm-smoke wget -qO- http://127.0.0.1:3899/api/v1/instance >/dev/null; then
+              break
+            fi
+            sleep 0.2
+          done
+          docker exec ncmm-smoke wget -qO- http://127.0.0.1:3899/api/v1/instance | grep -F "$(cat VERSION)"
+          docker exec ncmm-smoke test -s /usr/share/licenses/ncmm/licenses/ncmp-MIT.txt

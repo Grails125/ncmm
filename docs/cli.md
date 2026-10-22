@@ -1,5 +1,7 @@
 # 📖 命令行使用说明
 
+本分支基于 v1.2.2，新增原生命令 `ncmm --home ./run music-partner` 和批量选项 `ncmm --home ./run task --music-partner`。评分参数、主副账号选择及错误恢复见 [音乐合伙人评分](music-partner.md)。保留的上游文档涉及较新版本时，以 [源码基线](source-baseline.md) 和当前 `--help` 输出为准。
+
 `ncmm` 是一个基于命令行界面的工具，提供了一系列子命令来控制各个任务。
 
 ---

@@ -10,7 +10,7 @@ dist: ./dist
 
 before:
   hooks:
-    - go mod tidy
+    - go mod download
 
 # 编译配置
 builds:
@@ -59,6 +59,8 @@ archives:
       {{- if .Arm }}v{{ .Arm }}{{ end }}
     files:
       - LICENSE
+      - THIRD_PARTY_NOTICES.md
+      - licenses/**
       - README.md
       - src: config/config.yaml
         dst: config.yaml
@@ -82,6 +84,8 @@ archives:
       {{- if .Arm }}v{{ .Arm }}{{ end }}
     files:
       - LICENSE
+      - THIRD_PARTY_NOTICES.md
+      - licenses/**
       - README.md
       - src: config/config.yaml
         dst: config.yaml
@@ -102,5 +106,5 @@ changelog:
 # 远程发布配置
 release:
   github:
-    owner: 3899
+    owner: Grails125
     name: ncmm

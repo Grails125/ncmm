@@ -303,7 +303,12 @@ func (c *Client) GetCSRF(url string) (string, bool) {
 		log.Warn("GetCSRF parse(%v) err: %s", url, err)
 		return "", false
 	}
-	for _, c := range c.cookie.Cookies(uri) {
+	cookies := c.cookie.Cookies(uri)
+	if strings.HasSuffix(strings.ToLower(uri.Hostname()), ".music.163.com") {
+		root, _ := neturl.Parse("https://music.163.com")
+		cookies = append(cookies, c.cookie.Cookies(root)...)
+	}
+	for _, c := range cookies {
 		if c.Name == "__csrf_token" && c.Value != "" {
 			return c.Value, true
 		}
@@ -356,6 +361,9 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 	// SetHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/25.1 Chrome/121.0.0.0 Mobile Safari/537.36")
 
 	// append
+	if opts.Sensitive {
+		request.SetDebug(false)
+	}
 	if len(opts.Headers) > 0 {
 		request.SetHeaders(opts.Headers)
 	}
@@ -364,7 +372,7 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 	}
 
 	// 针对 163.com 的子域名请求 (如 interface3.music.163.com)，手动将 music.163.com 下的 cookies (如 HostOnly 的 MUSIC_U) 附加到 Request
-	if strings.HasSuffix(uri.Host, ".163.com") && uri.Host != "music.163.com" {
+	if strings.HasSuffix(strings.ToLower(uri.Hostname()), ".music.163.com") {
 		mURL, _ := neturl.Parse("https://music.163.com")
 		if mURL != nil {
 			request.SetCookies(c.GetCookies(mURL))
@@ -472,7 +480,9 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 	default:
 		return nil, fmt.Errorf("%s crypto mode unknown", opts.CryptoMode)
 	}
-	log.Debug("[request]: %+v encrypt: %+v", req, encryptData)
+	if !opts.Sensitive {
+		log.Debug("[request]: %+v encrypt: %+v", req, encryptData)
+	}
 
 	switch opts.Method {
 	case http.MethodPost:
@@ -483,9 +493,20 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 		return nil, fmt.Errorf("%s not surpport http method", opts.Method)
 	}
 	if err != nil {
+		if opts.Sensitive {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, errors.New("音乐接口请求失败或超时，请稍后查询任务状态")
+		}
 		return nil, fmt.Errorf("do request: %w", err)
 	}
-	log.Debug("[response.raw]: %s", string(response.Body()))
+	if !opts.Sensitive {
+		log.Debug("[response.raw]: %s", string(response.Body()))
+	}
+	if opts.Sensitive && response.StatusCode() != http.StatusOK {
+		return nil, &HTTPStatusError{StatusCode: response.StatusCode()}
+	}
 
 	var decryptData []byte
 	switch opts.CryptoMode {
@@ -519,7 +540,9 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 				log.Warn("%s decrypt failed: %s", opts.CryptoMode, err)
 			}
 		}
-		log.Debug("[response.decrypt]: %s", string(decryptData))
+		if !opts.Sensitive {
+			log.Debug("[response.decrypt]: %s", string(decryptData))
+		}
 	case CryptoModeWEAPI:
 		// tips: weapi接口返回数据是明文
 		decryptData = response.Body()
@@ -528,7 +551,9 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 		if err != nil {
 			return nil, fmt.Errorf("LinuxApiDecrypt: %w", err)
 		}
-		log.Debug("[response.decrypt]: %s", string(decryptData))
+		if !opts.Sensitive {
+			log.Debug("[response.decrypt]: %s", string(decryptData))
+		}
 	default:
 		return nil, fmt.Errorf("%s crypto mode unknown", opts.CryptoMode)
 	}
@@ -536,6 +561,9 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 	decode := json.NewDecoder(bytes.NewReader(decryptData))
 	// decode.DisallowUnknownFields()
 	if err := decode.Decode(&resp); err != nil {
+		if opts.Sensitive {
+			return nil, errors.New("音乐接口返回了无效数据")
+		}
 		return nil, fmt.Errorf("json.NewDecoder: %w", err)
 	}
 	if response.StatusCode() != http.StatusOK {

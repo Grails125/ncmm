@@ -5,7 +5,8 @@ RUN apk add --no-cache git ca-certificates tzdata
 
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN GOPROXY=https://goproxy.cn,direct go mod download
+ARG GOPROXY=https://proxy.golang.org,direct
+RUN go mod download
 
 COPY main.go VERSION ./
 COPY api ./api
@@ -13,9 +14,11 @@ COPY config ./config
 COPY internal ./internal
 COPY pkg ./pkg
 ARG VERSION
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
 RUN BUILD_VERSION="${VERSION:-$(cat VERSION)}" && \
     CGO_ENABLED=0 go build \
-    -ldflags="-s -w -X main.Version=${BUILD_VERSION} -X main.Commit=$(git rev-parse --short HEAD 2>/dev/null || echo none) -X main.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    -trimpath -ldflags="-s -w -X main.Version=${BUILD_VERSION} -X main.Commit=${VCS_REF} -X main.BuildTime=${BUILD_DATE}" \
     -o /ncmm main.go
 
 
@@ -26,8 +29,12 @@ RUN apk add --no-cache ca-certificates tzdata
 ENV NCMM_DOCKER_OFFICIAL=1 \
     NCMM_WEB_PRESERVE_LEGACY_SCHEDULES=true \
     NCMM_UPDATER_AUTO_UPDATE=false
+LABEL org.opencontainers.image.source="https://github.com/Grails125/ncmm" \
+    org.opencontainers.image.description="ncmm 原生音乐合伙人评分集成（基于 v1.2.2）"
 
 COPY --from=builder /ncmm /usr/local/bin/ncmm
+COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/licenses/ncmm/
+COPY licenses /usr/share/licenses/ncmm/licenses
 
 # 复制默认配置模板作为系统备份
 COPY config/config.yaml /etc/ncmm/config.yaml

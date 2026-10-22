@@ -6,6 +6,10 @@
 !main.go
 !VERSION
 !entrypoint.sh
+!LICENSE
+!THIRD_PARTY_NOTICES.md
+!licenses/
+!licenses/**
 
 !api/
 !api/**

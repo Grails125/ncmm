@@ -3,7 +3,17 @@
 
 package api
 
-import "net/http"
+import (
+	"fmt"
+	"net/http"
+)
+
+// HTTPStatusError 保留明确拒绝的状态码，避免重试非幂等写入或泄露响应体。
+type HTTPStatusError struct{ StatusCode int }
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("音乐接口 HTTP 状态码：%d", e.StatusCode)
+}
 
 type CryptoMode string
 
@@ -20,6 +30,8 @@ type Options struct {
 	CryptoMode CryptoMode
 	Headers    map[string]string
 	Cookies    []*http.Cookie
+	// Sensitive 禁止输出包含登录凭据的请求、响应与底层 URL 错误。
+	Sensitive bool
 }
 
 func (o *Options) SetCookies(c ...*http.Cookie) {
