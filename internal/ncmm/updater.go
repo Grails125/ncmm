@@ -134,6 +134,11 @@ func (c *Root) loadUpdateState(statePath, execPath string) UpdateState {
 	}
 	if selfupdate.RuntimeManaged(execPath) {
 		if runtimeState, err := managedruntime.Read(managedruntime.Directory()); err == nil && state.InstalledSHA256 != "" && runtimeState.RejectedSHA256 == state.InstalledSHA256 {
+			if CompareVersions(c.AppVersion, state.LatestVersion) >= 0 {
+				state.UpdateStatus, state.UpdatedVersion, state.InstalledSHA256, state.LastError = "idle", "", "", ""
+				state.CurrentVersion = c.AppVersion
+				return state
+			}
 			state.UpdateStatus = "failed"
 			state.UpdatedVersion = ""
 			state.LastError = "候选程序未通过健康检查，已保留原运行版本。" + runtimeState.LastError

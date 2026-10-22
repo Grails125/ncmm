@@ -123,4 +123,17 @@ func TestManagedUpdateStagesAndRetainsRollbackReceipt(t *testing.T) {
 	if !strings.Contains(state.DownloadURL, "Grails125/ncmm/") {
 		t.Fatal("wrong origin")
 	}
+	good, err := managedruntime.Stage(runtimeRoot, "1.2.2-grails.2", []byte("rebuilt healthy image"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := managedruntime.Confirm(runtimeRoot, good); err != nil {
+		t.Fatal(err)
+	}
+	root.AppVersion = good.Version
+	currentPath, _ := managedruntime.CurrentExecutable(runtimeRoot)
+	if recovered := root.loadUpdateState(root.getUpdateStatePath(), currentPath); recovered.UpdateStatus == "failed" || recovered.LastError != "" {
+		t.Fatalf("old rejection survived healthy replacement: %+v", recovered)
+	}
+
 }
