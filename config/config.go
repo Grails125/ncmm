@@ -237,10 +237,26 @@ func validateMusicPartnerRangePresence(rawValue func(string) (string, bool)) err
 
 // FansGroupConf 乐迷团任务配置
 type FansGroupConf struct {
-	EnableMain        bool          `json:"enableMain" yaml:"enableMain"`
-	EnableSecondaries bool          `json:"enableSecondaries" yaml:"enableSecondaries"`
-	GroupIDs          StringOrSlice `json:"groupIds" yaml:"groupIds"`
-	AutoDeleteNote    *bool         `json:"autoDeleteNote" yaml:"autoDeleteNote"`
+	WebSession         bool              `json:"webSession" yaml:"webSession"`
+	CommentCheckTokens map[string]string `json:"commentCheckTokens" yaml:"commentCheckTokens"`
+	EnableMain         bool              `json:"enableMain" yaml:"enableMain"`
+	EnableSecondaries  bool              `json:"enableSecondaries" yaml:"enableSecondaries"`
+	GroupIDs           StringOrSlice     `json:"groupIds" yaml:"groupIds"`
+	AutoDeleteNote     *bool             `json:"autoDeleteNote" yaml:"autoDeleteNote"`
+}
+
+// CommentCheckTokenFor 只读取独立的网页评论令牌，不复用移动端 antiCheatTokens。
+func (f *FansGroupConf) CommentCheckTokenFor(cookiePath string) string {
+	if f == nil {
+		return ""
+	}
+	if token := lookupAntiCheatToken(f.CommentCheckTokens, cookiePath); token != "" {
+		return token
+	}
+	if absolute, err := filepath.Abs(cookiePath); err == nil {
+		return lookupAntiCheatToken(f.CommentCheckTokens, absolute)
+	}
+	return ""
 }
 
 type MixPlayConf struct {
@@ -919,7 +935,7 @@ func mergeYAMLNodes(dest, src *yaml.Node) {
 				if destKey == "version" {
 					continue
 				}
-				if destKey == "antiCheatTokens" || destKey == "comments" {
+				if destKey == "antiCheatTokens" || destKey == "commentCheckTokens" || destKey == "comments" {
 					destVal.Kind = srcVal.Kind
 					destVal.Tag = srcVal.Tag
 					destVal.Style = srcVal.Style

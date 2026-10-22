@@ -1808,8 +1808,9 @@
   function renderFlowGeneric(key) {
     const layouts = {
       fansgroup: [
-        { title: '', paths: ['fansgroup.enableMain', 'fansgroup.enableSecondaries', 'fansgroup.autoDeleteNote'] },
+        { title: '', paths: ['fansgroup.enableMain', 'fansgroup.enableSecondaries', 'fansgroup.autoDeleteNote', 'fansgroup.webSession'] },
         { title: '', paths: ['fansgroup.groupIds'] },
+        { title: '', paths: ['fansgroup.commentCheckTokens'] },
       ],
       vipMemberGift: [
         { title: '', paths: ['vipMemberGift.enableMain', 'vipMemberGift.enableSecondaries', 'vipMemberGift.enableGift', 'vipMemberGift.enableGiftSecondaries', 'vipMemberGift.enableClaim'] },
