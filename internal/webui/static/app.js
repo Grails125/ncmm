@@ -392,7 +392,8 @@
     $('#forgot-password-wrap').classList.remove('visible', 'open');
     clearAuthError();
     renderPasswordStrength();
-    if (status.version) $('#auth-version').textContent = `v${String(status.version).split('\n')[0].replace(/^v/i, '')}`;
+    const version = String(status.version || '').split('\n')[0].trim().replace(/^v/i, '');
+    $('#auth-version').textContent = version ? `v${version}` : 'NCMM';
   }
 
   function showLoginView(status = state.auth || {}) {
@@ -2427,7 +2428,7 @@
     try {
       const res = await api('/api/v1/plugins/install', {
         method: 'POST',
-        body: { repoOrURL: repoOrURL.trim(), tag: tag.trim(), token: token.trim() }
+        body: { target: repoOrURL.trim(), tag: tag.trim(), token: token.trim() }
       });
       toast(res.message || '插件安装成功');
       $('#plugin-install-dialog')?.close();
@@ -2556,6 +2557,7 @@
     if (Array.isArray(initialArgs)) {
       for (let i = 0; i < initialArgs.length; i++) {
         const item = String(initialArgs[i] || '');
+        if (item === '--') continue;
         if (item.startsWith('--')) {
           const eqIdx = item.indexOf('=');
           if (eqIdx !== -1) {
@@ -2710,7 +2712,7 @@
     if (!select || !select.value) return;
     const pluginName = select.value;
 
-    const parts = ['run', pluginName];
+    const parts = ['run', pluginName, '--'];
     const inputs = $$('#schedule-plugin-dynamic-fields .plugin-param-input');
     inputs.forEach(input => {
       const pName = input.dataset.param;
@@ -3909,6 +3911,7 @@
     bindEvents();
     try {
       const auth = await publicApi('/api/v1/auth/status');
+      state.auth = auth;
       if (auth.setupRequired) {
         showSetupView(auth);
         return;

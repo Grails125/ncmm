@@ -3,6 +3,8 @@ package webui
 import (
 	"context"
 	"time"
+
+	"github.com/3899/ncmm/internal/plugininstall"
 )
 
 const (
@@ -63,8 +65,7 @@ type PluginInfo struct {
 
 type PluginManager interface {
 	DiscoverPlugins() []PluginInfo
-	InstallFromURL(ctx context.Context, targetURL, token, destDir string, logFn func(string, ...any)) (string, error)
-	InstallFromGitHub(ctx context.Context, repo, token, destDir string, logFn func(string, ...any)) (string, error)
+	InstallPlugin(ctx context.Context, options plugininstall.Options, logFn func(string, ...any)) (string, error)
 	InstallFromArchive(data []byte, filename, destDir string) (string, error)
 	UninstallPlugin(name string) error
 	DefaultPluginDir() string
