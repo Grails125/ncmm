@@ -23,6 +23,7 @@ type scheduler struct {
 	mu     sync.RWMutex
 	active bool
 	ctx    context.Context
+	cancel context.CancelFunc
 	store  *webConfigStore
 	runner *runManager
 	cron   *cron.Cron
@@ -31,8 +32,10 @@ type scheduler struct {
 }
 
 func newScheduler(ctx context.Context, store *webConfigStore, runner *runManager) (*scheduler, error) {
+	ctx, cancel := context.WithCancel(ctx)
 	s := &scheduler{
 		ctx:    ctx,
+		cancel: cancel,
 		store:  store,
 		runner: runner,
 		parser: cron.NewParser(
@@ -41,6 +44,7 @@ func newScheduler(ctx context.Context, store *webConfigStore, runner *runManager
 		jobs: make(map[string]Schedule),
 	}
 	if err := s.reload(); err != nil {
+		cancel()
 		return nil, err
 	}
 	return s, nil
@@ -72,7 +76,7 @@ func (s *scheduler) reload() error {
 		s.jobs[job.ID] = job
 		if job.Enabled {
 			jobCopy := job
-			if _, err := s.cron.AddFunc(job.Cron, func() { _, _ = s.runner.start(s.ctx, jobCopy) }); err != nil {
+			if _, err := s.cron.AddFunc(job.Cron, func() { _, _ = s.runner.startScheduled(s.ctx, jobCopy) }); err != nil {
 				return err
 			}
 		}
@@ -96,6 +100,9 @@ func (s *scheduler) start() {
 }
 
 func validateSchedule(job Schedule, parser cron.Parser) error {
+	if err := validateRandomDelay(job.RandomDelaySeconds); err != nil {
+		return err
+	}
 	if strings.TrimSpace(job.Name) == "" {
 		return fmt.Errorf("name is required")
 	}
@@ -255,6 +262,7 @@ func (s *scheduler) close() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.active = false
+	s.cancel()
 	if s.cron != nil {
 		s.cron.Stop()
 	}

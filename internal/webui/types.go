@@ -86,16 +86,17 @@ type ConcurrencyPolicy struct {
 }
 
 type Schedule struct {
-	ID            string   `json:"id" yaml:"id"`
-	Name          string   `json:"name" yaml:"name"`
-	Enabled       bool     `json:"enabled" yaml:"enabled"`
-	Cron          string   `json:"cron" yaml:"cron"`
-	Command       string   `json:"command" yaml:"command"`
-	Args          []string `json:"args" yaml:"args,omitempty"`
-	OverlapPolicy string   `json:"overlapPolicy" yaml:"overlapPolicy,omitempty"`
-	Source        string   `json:"source" yaml:"-"`
-	ReadOnly      bool     `json:"readOnly" yaml:"-"`
-	Pinned        bool     `json:"pinned,omitempty" yaml:"pinned,omitempty"`
+	ID                 string   `json:"id" yaml:"id"`
+	Name               string   `json:"name" yaml:"name"`
+	Enabled            bool     `json:"enabled" yaml:"enabled"`
+	Cron               string   `json:"cron" yaml:"cron"`
+	Command            string   `json:"command" yaml:"command"`
+	Args               []string `json:"args" yaml:"args,omitempty"`
+	OverlapPolicy      string   `json:"overlapPolicy" yaml:"overlapPolicy,omitempty"`
+	RandomDelaySeconds int      `json:"randomDelaySeconds" yaml:"randomDelaySeconds,omitempty"`
+	Source             string   `json:"source" yaml:"-"`
+	ReadOnly           bool     `json:"readOnly" yaml:"-"`
+	Pinned             bool     `json:"pinned,omitempty" yaml:"pinned,omitempty"`
 }
 
 type WebConfig struct {
@@ -114,22 +115,24 @@ type ScheduleView struct {
 }
 
 type RunRecord struct {
-	ID          string      `json:"id"`
-	JobID       string      `json:"jobId"`
-	JobName     string      `json:"jobName"`
-	Command     string      `json:"command"`
-	Args        []string    `json:"args,omitempty"`
-	Status      string      `json:"status"`
-	Source      string      `json:"source"`
-	TriggeredAt time.Time   `json:"triggeredAt"`
-	StartedAt   time.Time   `json:"startedAt"`
-	FinishedAt  *time.Time  `json:"finishedAt,omitempty"`
-	ExitCode    *int        `json:"exitCode,omitempty"`
-	Error       string      `json:"error,omitempty"`
-	Resources   []string    `json:"resources,omitempty"`
-	Rewards     []RunReward `json:"rewards,omitempty"`
-	LogFile     string      `json:"-"`
-	MetaFile    string      `json:"-"`
+	ID           string      `json:"id"`
+	JobID        string      `json:"jobId"`
+	JobName      string      `json:"jobName"`
+	Command      string      `json:"command"`
+	Args         []string    `json:"args,omitempty"`
+	Status       string      `json:"status"`
+	Source       string      `json:"source"`
+	TriggeredAt  time.Time   `json:"triggeredAt"`
+	DelaySeconds int         `json:"delaySeconds,omitempty"`
+	NotBefore    *time.Time  `json:"notBefore,omitempty"`
+	StartedAt    time.Time   `json:"startedAt"`
+	FinishedAt   *time.Time  `json:"finishedAt,omitempty"`
+	ExitCode     *int        `json:"exitCode,omitempty"`
+	Error        string      `json:"error,omitempty"`
+	Resources    []string    `json:"resources,omitempty"`
+	Rewards      []RunReward `json:"rewards,omitempty"`
+	LogFile      string      `json:"-"`
+	MetaFile     string      `json:"-"`
 }
 
 type RunReward struct {
