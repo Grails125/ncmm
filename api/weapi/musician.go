@@ -221,6 +221,7 @@ func (a *Api) MusicianVipInfo(ctx context.Context, req *MusicianVipInfoReq) (*Mu
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeWEAPI
+	opts.Sensitive = true
 	opts.SetHeader("Referer", "https://y.music.163.com/")
 	opts.SetHeader("Origin", "https://y.music.163.com")
 
@@ -258,6 +259,7 @@ func (a *Api) MusicianVipGet(ctx context.Context, req *MusicianVipGetReq, antiCh
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeWEAPI
+	opts.Sensitive = true
 	opts.SetHeader("Referer", "https://y.music.163.com/")
 	opts.SetHeader("Origin", "https://y.music.163.com")
 	if antiCheatToken != "" {
