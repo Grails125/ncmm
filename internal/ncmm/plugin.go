@@ -140,7 +140,7 @@ type PluginNotify struct {
 }
 
 func NewPlugin(root *Root, l *log.Logger) *Plugin {
-	p := &Plugin{root: root, l: l, client: &http.Client{Timeout: 2 * time.Minute}}
+	p := &Plugin{root: root, l: l, client: &http.Client{Timeout: 2 * time.Minute, CheckRedirect: pluginDownloadRedirect}}
 	p.cmd = &cobra.Command{
 		Use:     "plugin",
 		Short:   "Manage and execute external ncmm plugins",
@@ -743,9 +743,27 @@ func (p *Plugin) installGitHubRelease(ctx context.Context, repo, tag, token, des
 }
 
 func setPluginGitHubToken(req *http.Request, token string) {
-	if token != "" && req.URL.Scheme == "https" && (strings.EqualFold(req.URL.Hostname(), "github.com") || strings.EqualFold(req.URL.Hostname(), "api.github.com")) {
+	if token != "" && req.URL.Scheme == "https" && req.URL.User == nil && (req.URL.Port() == "" || req.URL.Port() == "443") && (strings.EqualFold(req.URL.Hostname(), "github.com") || strings.EqualFold(req.URL.Hostname(), "api.github.com")) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
+}
+
+// 每一跳重新限定认证范围，避免默认重定向向降级 HTTP、子域名或 CDN 传播令牌。
+func pluginDownloadRedirect(req *http.Request, via []*http.Request) error {
+	req.Header.Del("Authorization")
+	if len(via) >= 10 {
+		return fmt.Errorf("插件下载重定向次数超过限制")
+	}
+	if req.URL.User != nil {
+		return fmt.Errorf("插件下载重定向不能包含认证信息")
+	}
+	if len(via) > 0 {
+		auth := via[0].Header.Get("Authorization")
+		if strings.HasPrefix(auth, "Bearer ") {
+			setPluginGitHubToken(req, strings.TrimPrefix(auth, "Bearer "))
+		}
+	}
+	return nil
 }
 
 func (p *Plugin) InstallFromArchive(data []byte, filename, destDir string) (string, error) {

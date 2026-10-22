@@ -122,3 +122,55 @@ func TestPluginInstallDoesNotSendGitHubTokenToOtherHosts(t *testing.T) {
 		}
 	}
 }
+
+func TestPluginDownloadRedirectScopesPrivateToken(t *testing.T) {
+	for _, tc := range []struct {
+		name, target string
+		wantToken    bool
+	}{
+		{"downgrade", "http://api.github.com/assets/1", false},
+		{"subdomain", "https://other.github.com/assets/1", false},
+		{"cdn", "https://release-assets.githubusercontent.com/assets/1", false},
+		{"custom-port", "https://github.com:8443/assets/1", false},
+		{"github", "https://github.com/owner/demo/releases/download/v2/demo.zip", true},
+		{"api", "https://api.github.com/assets/1", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin := NewPlugin(&Root{Opts: RootOpts{Home: t.TempDir()}}, nil)
+			calls := 0
+			plugin.client.Transport = pluginInstallTransport(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if calls == 1 {
+					return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {tc.target}}, Body: io.NopCloser(strings.NewReader(""))}, nil
+				}
+				if got := r.Header.Get("Authorization") != ""; got != tc.wantToken {
+					t.Errorf("redirect token present=%v, want=%v", got, tc.wantToken)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("ok"))}, nil
+			})
+			req, _ := http.NewRequest(http.MethodGet, "https://github.com/start", nil)
+			setPluginGitHubToken(req, "private-test")
+			res, err := plugin.client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			res.Body.Close()
+			if calls != 2 {
+				t.Fatalf("calls=%d", calls)
+			}
+		})
+	}
+}
+
+func TestPluginDownloadRedirectLimit(t *testing.T) {
+	plugin := NewPlugin(&Root{Opts: RootOpts{Home: t.TempDir()}}, nil)
+	calls := 0
+	plugin.client.Transport = pluginInstallTransport(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {fmt.Sprintf("https://api.github.com/redirect/%d", calls)}}, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	_, err := plugin.client.Get("https://api.github.com/start")
+	if err == nil || calls != 10 {
+		t.Fatalf("calls=%d err=%v", calls, err)
+	}
+}
