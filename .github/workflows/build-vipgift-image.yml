@@ -20,7 +20,7 @@ permissions:
 jobs:
   resolve:
     name: Resolve immutable helper source
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     outputs:
@@ -28,7 +28,7 @@ jobs:
       version: ${{ steps.commit.outputs.version }}
     steps:
       - name: Checkout requested source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
           persist-credentials: false
@@ -60,13 +60,13 @@ jobs:
   docker-cloud:
     name: Build & Push Cloud Server Image
     needs: [resolve, quality]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
     steps:
       - name: Checkout validated source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.resolve.outputs.commit_sha }}
           persist-credentials: false
