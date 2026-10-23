@@ -39,6 +39,8 @@
     musicPartnerPoints: { account: '', data: null, loading: false, error: '', stale: false },
     musicPartnerPointsRequestID: 0,
     musicPartnerFinishedRuns: new Set(),
+    accountBalances: new Map(),
+    accountBalanceFinishedRuns: new Set(),
     currentPage: 'dashboard',
     scheduleSearch: '',
     runFilter: 'all',
@@ -64,6 +66,8 @@
   let dashboardChartObserver = null;
   let dashboardChartResizeTimer = 0;
   let musicPartnerPointsController = null;
+  let accountBalanceActive = 0;
+  let accountBalanceQueue = [];
   let pluginCheckTimer = null;
 
   const pageTitles = { dashboard: '仪表盘', accounts: '账号中心', schedules: '定时任务', plugins: '插件中心', config: '策略配置', runs: '运行日志', system: '系统设置' };
@@ -438,6 +442,8 @@
     state.pollGeneration += 1;
     state.pollInFlight = false;
     resetMusicPartnerPoints();
+    cancelAccountBalanceRequests(true);
+    state.accountBalanceFinishedRuns = new Set();
     state.qrcodePoller = null;
     clearQRCodeImage();
     $('#app-shell').classList.add('hidden');
@@ -460,6 +466,7 @@
     state.schedules = schedules;
     state.runs = runs;
     state.musicPartnerFinishedRuns = new Set(musicPartnerFinishedRunKeys(runs));
+    state.accountBalanceFinishedRuns = new Set(musicPartnerFinishedRunKeys(runs));
     state.settings = settings;
     state.auth = auth;
     applyUpgradePolicy(auth.upgradePolicy);
@@ -1433,8 +1440,106 @@
     $('#yaml-cursor').textContent = `Ln ${lines.length}, Col ${lines.at(-1).length + 1}`;
   }
 
+  function accountBalanceVersion(account) {
+    const configured = Object.entries(state.config?.accountProfiles || {}).find(([path]) => normalizeCookieAccountPath(path) === normalizeCookieAccountPath(account.path))?.[1];
+    const profile = account.profile;
+    return JSON.stringify([account.path, state.config?.revision || '', state.config?.modifiedAt || '', configured?.cookieVerifiedAt || '', profile?.uid || '', !!profile?.cookieKnown, !!profile?.cookieValid]);
+  }
+
+  function cancelAccountBalanceRequests(clear = false) {
+    for (const [path, entry] of state.accountBalances) {
+      if (!clear && !entry.loading) continue;
+      entry.controller.abort();
+      entry.resolve?.();
+      state.accountBalances.delete(path);
+    }
+    accountBalanceQueue = [];
+  }
+
+  function syncAccountBalances(accounts) {
+    const versions = new Map(accounts.map(account => [account.path, accountBalanceVersion(account)]));
+    for (const [path, entry] of state.accountBalances) {
+      if (versions.get(path) === entry.version) continue;
+      entry.controller.abort();
+      entry.resolve?.();
+      state.accountBalances.delete(path);
+    }
+  }
+
+  function accountBalanceRequestCurrent(account, entry) {
+    if (!state.authenticated || state.currentPage !== 'accounts' || entry.controller.signal.aborted || state.accountBalances.get(account.path) !== entry) return false;
+    const current = configuredAccounts().find(candidate => candidate.path === account.path);
+    return !!current && accountBalanceVersion(current) === entry.version;
+  }
+
+  function pumpAccountBalances() {
+    while (state.authenticated && state.currentPage === 'accounts' && accountBalanceActive < 2 && accountBalanceQueue.length) {
+      const { account, entry } = accountBalanceQueue.shift();
+      if (!accountBalanceRequestCurrent(account, entry)) {
+        entry.resolve();
+        continue;
+      }
+      accountBalanceActive++;
+      void (async () => {
+        try {
+          const data = await api(`/api/v1/accounts/data?account=${encodeURIComponent(account.path)}`, { signal: entry.controller.signal, cache: 'no-store' });
+          if (!accountBalanceRequestCurrent(account, entry)) return;
+          if (!data || data.account !== account.path) throw new Error('返回的数据账号不匹配');
+          entry.balance = !data.errors?.yunbei && typeof data.yunbeiBalance === 'number' && Number.isFinite(data.yunbeiBalance) ? data.yunbeiBalance : null;
+        } catch {
+          if (accountBalanceRequestCurrent(account, entry)) entry.balance = null;
+        } finally {
+          if (accountBalanceRequestCurrent(account, entry)) {
+            entry.loading = false;
+            entry.updatedAt = Date.now();
+            renderAccounts();
+          }
+          entry.resolve();
+          accountBalanceActive--;
+          pumpAccountBalances();
+        }
+      })();
+    }
+  }
+
+  // 账号表只缓存当前凭据的只读查询，历史任务余额不能用于填补实时余额。
+  async function refreshAccountBalances(force = false) {
+    if (!state.authenticated || state.currentPage !== 'accounts') return;
+    const accounts = configuredAccounts();
+    syncAccountBalances(accounts);
+    if (force) cancelAccountBalanceRequests(true);
+    const pending = [];
+    let queued = false;
+    for (const account of accounts) {
+      let entry = state.accountBalances.get(account.path);
+      if (entry?.loading) {
+        pending.push(entry.promise);
+        continue;
+      }
+      if (entry && Date.now() - entry.updatedAt < 60000) continue;
+      entry = { version: accountBalanceVersion(account), balance: null, loading: true, updatedAt: 0, controller: new AbortController() };
+      entry.promise = new Promise(resolve => { entry.resolve = resolve; });
+      state.accountBalances.set(account.path, entry);
+      accountBalanceQueue.push({ account, entry });
+      pending.push(entry.promise);
+      queued = true;
+    }
+    pumpAccountBalances();
+    if (queued) renderAccounts();
+    await Promise.all(pending);
+  }
+
+  function refreshAccountBalancesAfterRun(runs) {
+    const keys = musicPartnerFinishedRunKeys(runs);
+    const completed = keys.some(key => !state.accountBalanceFinishedRuns.has(key));
+    state.accountBalanceFinishedRuns = new Set(keys);
+    if (completed) cancelAccountBalanceRequests(true);
+    if (state.currentPage === 'accounts') void refreshAccountBalances();
+  }
+
   function renderAccounts() {
     const accounts = configuredAccounts();
+    syncAccountBalances(accounts);
     const dailyRewards = todayAccountRewards();
     const mainCount = accounts.filter(account => account.main).length;
     const secondaryCount = accounts.length - mainCount;
@@ -1454,9 +1559,8 @@
       const cookieStatus = profile?.cookieKnown
         ? `<span class="badge-pill ${profile.cookieValid ? 'success' : 'primary'}">${profile.cookieValid ? '有效' : '失效'}</span>`
         : '<span class="badge-pill gray">未知</span>';
-      const yunbei = reward?.yunbeiKnown || reward?.yunbeiBalanceKnown
-        ? `${reward?.yunbeiKnown ? `+${reward.yunbei}` : '--'} / ${reward?.yunbeiBalanceKnown ? reward.yunbeiBalance : '--'}`
-        : '-- / --';
+      const balance = state.accountBalances.get(account.path);
+      const yunbei = `${reward?.yunbeiKnown ? `+${reward.yunbei}` : '--'} / ${balance?.loading ? '查询中' : musicPartnerPointNumber(balance?.balance)}`;
       const growth = reward?.growthKnown ? `${reward.growthToday} / ${reward.growthTotal}` : '-- / --';
       const signStatus = reward?.signKnown
         ? `<span class="badge-pill ${reward.signed ? 'success' : 'primary'}">${reward.signed ? '已打卡' : '失败'}</span>`
@@ -1477,6 +1581,7 @@
       </tr>`;
     }).join('');
     $$('.account-avatar img', tbody).forEach(image => image.addEventListener('error', () => image.remove(), { once: true }));
+    void refreshAccountBalances();
   }
 
   function openAccountPanel(account = null) {
@@ -3335,9 +3440,10 @@
       state.runs = runs; state.status = status; state.schedules = schedules;
       applyUpgradePolicy(auth.upgradePolicy);
 	  refreshMusicPartnerPointsAfterRun(runs);
+	  refreshAccountBalancesAfterRun(runs);
 	  await refreshPlayStatsAfterRun(runs);
 	  if (!state.authenticated || generation !== state.pollGeneration) return;
-      renderRuns(); renderStatus(); renderSchedules(); renderDashboard();
+      renderRuns(); renderStatus(); renderSchedules(); renderDashboard(); renderAccounts();
       if (state.currentPage === 'system' && !state.updateBusy) {
         const updateRevision = state.updateRevision;
         try {
@@ -3375,6 +3481,7 @@
   function navigate(page, options = {}) {
     if (!pageRoutes[page]) page = 'dashboard';
     state.currentPage = page;
+    if (page !== 'accounts') cancelAccountBalanceRequests();
     $$('.nav-item').forEach(x => x.classList.toggle('active', x.dataset.page === page));
     $$('.page').forEach(x => x.classList.toggle('active', x.id === `page-${page}`));
     updatePageTitle();
@@ -3385,6 +3492,7 @@
     }
     if (page === 'config') requestAnimationFrame(updateConfigFlowActiveSection);
     if (page === 'dashboard') void refreshMusicPartnerPoints();
+    if (page === 'accounts') renderAccounts();
     if (page === 'plugins') { void loadPluginMarket(); void checkPluginUpdates(false); }
   }
 
@@ -3607,7 +3715,7 @@
     $('#refresh-button').addEventListener('click', async () => {
       const button = $('#refresh-button');
       button.disabled = true;
-      try { await refreshOperationalState(); await refreshMusicPartnerPoints(); toast('状态已刷新'); }
+      try { await refreshOperationalState(); await refreshMusicPartnerPoints(); await refreshAccountBalances(true); toast('状态已刷新'); }
       finally { button.disabled = false; }
     });
     $('#menu-button').addEventListener('click', () => {

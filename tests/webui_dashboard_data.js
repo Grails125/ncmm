@@ -16,6 +16,38 @@ const snapshot = account => ({
   updatedAt: new Date().toISOString(), errors: {},
 });
 
+async function assertAccountDataLayout(page, desktop) {
+  const items = await page.locator('.music-partner-points-values > div').evaluateAll(elements => elements.map(element => {
+    const bounds = element.getBoundingClientRect();
+    return { id: element.querySelector('dd')?.id, top: bounds.top, left: bounds.left, right: bounds.right };
+  }));
+  assert.deepEqual(items.map(item => item.id), ['account-data-yunbei-balance', 'account-data-vip-level', 'account-data-growth-total', 'music-partner-points-integral', 'music-partner-points-weekly'], 'account metrics must follow the requested order');
+  if (desktop) {
+    assert(items.every(item => Math.abs(item.top - items[0].top) < 2), 'desktop account metrics must share one row');
+    assert(items.every((item, index) => index === 0 || item.left >= items[index - 1].right), 'desktop account metrics must remain in visual order');
+  } else {
+    assert(items.some(item => item.top > items[0].top + 2), 'narrow account metrics must wrap into multiple rows');
+  }
+}
+
+async function assertTelemetryAligned(page) {
+  const pills = await page.locator('.telemetry-pill').evaluateAll(elements => elements.map(element => {
+    const [label, value] = element.querySelectorAll('span');
+    const first = label.getBoundingClientRect(), second = value.getBoundingClientRect();
+    const labelStyle = getComputedStyle(label), valueStyle = getComputedStyle(value);
+    return { label: label.textContent, value: value.textContent, labelCenter: first.top + first.height / 2, valueCenter: second.top + second.height / 2, labelRight: first.right, valueLeft: second.left, valueHeight: second.height, labelFont: labelStyle.fontFamily, valueFont: valueStyle.fontFamily, labelLineHeight: labelStyle.lineHeight, valueLineHeight: valueStyle.lineHeight, lineHeight: Number.parseFloat(valueStyle.lineHeight) };
+  }));
+  assert.equal(pills.length, 2, 'runtime and next-task telemetry must both be present');
+  for (const pill of pills) {
+    assert(Math.abs(pill.labelCenter - pill.valueCenter) <= 2, `telemetry label/value are not vertically aligned: ${JSON.stringify(pill)}`);
+    assert(pill.valueLeft >= pill.labelRight, `telemetry label/value must stay on the same row: ${JSON.stringify(pill)}`);
+    assert.equal(pill.labelFont, pill.valueFont, 'telemetry label/value must use the same font family');
+    assert.equal(pill.labelLineHeight, pill.valueLineHeight, 'telemetry label/value must share an explicit line height');
+    assert(Number.isFinite(pill.lineHeight) && pill.lineHeight > 0, 'telemetry line height must be explicit');
+    assert(pill.valueHeight <= pill.lineHeight + 1, `telemetry value wrapped: ${JSON.stringify(pill)}`);
+  }
+}
+
 (async () => {
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   try {
@@ -24,6 +56,10 @@ const snapshot = account => ({
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/api/v1/schedules/*/run', route => { writes.push(route.request().url()); return route.abort(); });
     await page.route('**/api/v1/play-stats', route => route.fulfill({ json: [] }));
+    await page.route('**/api/v1/schedules', route => {
+      assert.equal(route.request().method(), 'GET', 'dashboard must not create scheduled tasks');
+      return route.fulfill({ json: [{ id: 'display-only', name: '展示下次运行时间', command: 'music-partner', args: [], cron: '0 0 1 1 *', enabled: true, nextRuns: [new Date(Date.now() + 3600000).toISOString()] }] });
+    });
     await page.route('**/api/v1/config', async route => {
       assert.equal(route.request().method(), 'GET', 'dashboard must not write configuration');
       const response = await route.fetch();
@@ -65,6 +101,9 @@ const snapshot = account => ({
     for (const [selector, expected] of [['#music-partner-points-integral', '127'], ['#music-partner-points-weekly', '70'], ['#account-data-growth-total', '8209'], ['#account-data-vip-level', 'Lv.6'], ['#account-data-yunbei-balance', '9876']]) {
       assert.equal(await page.locator(selector).innerText(), expected);
     }
+    await assertAccountDataLayout(page, true);
+    await assertTelemetryAligned(page);
+    assert.notEqual(await page.locator('#dashboard-next-run').innerText(), '暂无计划');
     const daily = await page.locator('#account-rewards-list').innerText();
     assert.match(daily, /云贝 \+50/);
     assert.match(daily, /成长值 \+6/);
@@ -103,12 +142,14 @@ const snapshot = account => ({
       assert(cardDimensions.scroll <= cardDimensions.width, `account card overflow at ${width}: ${JSON.stringify(cardDimensions)}`);
       const chartDimensions = await page.locator('.dashboard-chart-panel').evaluate(element => ({ right: element.getBoundingClientRect().right, scroll: element.scrollWidth, width: element.clientWidth }));
       assert(chartDimensions.right <= width && chartDimensions.scroll <= chartDimensions.width, `chart card overflow at ${width}: ${JSON.stringify(chartDimensions)}`);
+      await assertAccountDataLayout(page, false);
+      await assertTelemetryAligned(page);
       await page.locator('.music-partner-points-panel').screenshot({ path: path.join(outputDir, `dashboard-data-${width}.png`) });
       await page.locator('.dashboard-chart-panel').screenshot({ path: path.join(outputDir, `dashboard-chart-${width}.png`) });
     }
     assert.deepEqual(errors, [], 'browser errors');
     assert.deepEqual(writes, [], 'dashboard must not run tasks');
-    console.log('Dashboard account data, partial errors, account switching, rewards, 7-day metric and 320/375px layouts passed');
+    console.log('Dashboard metric order, desktop five-column/narrow wrapping, telemetry alignment, partial errors, account switching, rewards and 7-day metric passed');
   } finally {
     await browser.close();
   }

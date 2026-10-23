@@ -629,14 +629,22 @@
 
     .telemetry-pill {
       display: inline-flex;
-      align-items: center;
+      align-items: baseline;
       gap: 6px;
       color: var(--text-muted);
+      line-height: 1.5;
+      white-space: nowrap;
+    }
+
+    .telemetry-uptime {
+      border-left: 1px solid var(--border);
+      padding-left: 16px;
     }
 
     .telemetry-val {
-      font-family: var(--font-mono);
+      font-family: inherit;
       font-weight: 700;
+      font-variant-numeric: tabular-nums;
       color: var(--text);
     }
 
@@ -2982,19 +2990,20 @@
     }
 
     .music-partner-points-body {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 20px 48px;
+      display: grid;
+      gap: 18px;
     }
 
     .music-partner-points-values {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-      flex: 1 1 520px;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       min-width: 0;
       gap: 16px 24px;
       margin: 0;
+    }
+
+    .music-partner-points-values>div {
+      min-width: 0;
     }
 
     .music-partner-points-values dt,
@@ -3013,6 +3022,14 @@
 
     .music-partner-points-details p {
       margin: 0;
+    }
+
+    .music-partner-points-details {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 20px;
+      border-top: 1px solid var(--border);
+      padding-top: 14px;
     }
 
     .music-partner-points-message {
@@ -4921,6 +4938,10 @@
 
     @media (max-width: 980px) {
 
+      .music-partner-points-values {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
       .dashboard-secondary-grid,
       .security-policy-grid {
         grid-template-columns: 1fr;
@@ -4932,6 +4953,10 @@
     }
 
     @media (max-width: 620px) {
+      .music-partner-points-values {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
       .storage-location-grid {
         grid-template-columns: 1fr;
       }

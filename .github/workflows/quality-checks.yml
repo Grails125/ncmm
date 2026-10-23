@@ -80,6 +80,9 @@ jobs:
       - name: Test account data and daily rewards in Chromium
         run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_dashboard_data.js "$RUNNER_TEMP/webui-dashboard-data"
 
+      - name: Test live account balances in Chromium
+        run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_account_balances.js "$RUNNER_TEMP/webui-account-balances"
+
       - name: Test native scoring UI in Chromium
         run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_music_partner.js "$RUNNER_TEMP/webui-music-partner"
 

@@ -200,3 +200,49 @@ func TestAccountDataYunbeiUsesUserPointBalance(t *testing.T) {
 		})
 	}
 }
+
+func TestAccountDataYunbeiRefreshDoesNotRetainStaleBalance(t *testing.T) {
+	s := pointsTestServer(t)
+	stale, zero := int64(81454), int64(0)
+	results := []accountDataResult{
+		{YunbeiBalance: &stale},
+		{YunbeiBalance: &stale, YunbeiError: errors.New("账号会话已失效")},
+		{},
+		{YunbeiBalance: &zero},
+	}
+	calls := 0
+	s.readAccountData = func(_ context.Context, _ *api.Config, path string) accountDataResult {
+		if path != filepath.Join(s.opts.Home, "fan.json") {
+			t.Fatal("账号余额请求使用了错误的账号")
+		}
+		result := results[calls]
+		calls++
+		return result
+	}
+	configBefore, err := os.ReadFile(s.config.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, expected := range []*int64{&stale, nil, nil, &zero} {
+		w := httptest.NewRecorder()
+		s.handleAccountDataGet(w, httptest.NewRequest(http.MethodGet, "/api/v1/accounts/data?account=fan.json", nil))
+		var body accountDataResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "no-store" || body.Account != "fan.json" || body.UpdatedAt.IsZero() {
+			t.Fatalf("第 %d 次余额刷新响应无效：%s", i+1, w.Body)
+		}
+		if expected == nil {
+			if body.YunbeiBalance != nil || body.Errors.Yunbei == "" || !strings.Contains(w.Body.String(), `"yunbeiBalance":null`) {
+				t.Fatalf("失效或缺失的余额不能保留旧值或变成零：%s", w.Body)
+			}
+		} else if body.YunbeiBalance == nil || *body.YunbeiBalance != *expected || body.Errors.Yunbei != "" {
+			t.Fatalf("真实余额（包括零）应保持已知：%s", w.Body)
+		}
+	}
+	configAfter, err := os.ReadFile(s.config.path)
+	if err != nil || string(configBefore) != string(configAfter) || calls != len(results) {
+		t.Fatal("余额刷新必须每次查询且不能改写账号配置")
+	}
+}
