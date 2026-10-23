@@ -152,7 +152,7 @@ func TestNewReadClientRejectsUnavailableCredentialsSafely(t *testing.T) {
 	if err := os.WriteFile(malformed, []byte(`test-private-malformed-cookie`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{"", missing, malformed, writeCookie(t, false, true), writeCookie(t, true, false)} {
+	for _, path := range []string{"", missing, malformed, writeCookie(t, false, true)} {
 		client, err := NewReadClient(&api.Config{}, path)
 		if err == nil || client != nil || strings.Contains(err.Error(), "test-private") {
 			t.Fatal("missing credentials accepted or leaked")

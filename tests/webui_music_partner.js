@@ -1,6 +1,7 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+const assert = require('node:assert/strict');
 
 const [baseURL, testRoot] = process.argv.slice(2);
 if (!baseURL || !testRoot || !['127.0.0.1', 'localhost'].includes(new URL(baseURL).hostname)) {
@@ -8,9 +9,10 @@ if (!baseURL || !testRoot || !['127.0.0.1', 'localhost'].includes(new URL(baseUR
 }
 const outputDir = path.join(testRoot, 'screenshots');
 fs.mkdirSync(outputDir, { recursive: true });
-const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const field = (page, name) => page.locator(`input[data-path='["musicPartner","${name}"]']`);
 const commentField = (page, score) => page.locator(`textarea[data-path='["musicPartner","comments","${score}"]']`);
+const recommendationTemplate = (page, name) => page.locator(`textarea[data-path='["musicPartner","${name}"]']`);
+const recommendationOrder = (page, label) => page.locator('#config-block-musicPartner .schema-segment').filter({ hasText: label });
 const taskSwitch = page => page.locator('[data-task-card="task.music-partner"] input');
 
 async function saveConfig(page, expectedStatus = 200) {
@@ -51,6 +53,9 @@ async function noOverflow(page) {
     await page.locator('#setup-confirm-password').fill('PartnerTest#2026');
     await page.locator('#setup-submit').click();
     await page.locator('#app-shell').waitFor({ state: 'visible' });
+    for (const href of await page.locator('a[href*="github.com/"]').evaluateAll(links => links.map(link => link.href))) {
+      assert(href.startsWith('https://github.com/Grails125/ncmm'), `unexpected repository link: ${href}`);
+    }
     await page.locator('.nav-item[data-page="config"]').click();
     await page.locator('#config-block-musicPartner').waitFor({ state: 'visible' });
     await page.locator('[data-task-card="task.music-partner"]').waitFor({ state: 'visible' });
@@ -61,18 +66,32 @@ async function noOverflow(page) {
     assert(await field(page, 'enableMain').isChecked() && !await field(page, 'enableSecondaries').isChecked(), 'default account selection changed');
     assert(await field(page, 'extraTasks').isChecked() && !await field(page, 'fullExtraTasks').isChecked(), 'extra task defaults changed');
     assert(!await field(page, 'syncYunCircle').isChecked(), 'YunCircle publication must default off');
-    const defaultRanges = [['scoreMin', '3', '5'], ['scoreMax', '4', '5'], ['extraLimitMin', '7', '500'], ['extraLimitMax', '7', '500'], ['waitMin', '15', '300'], ['waitMax', '20', '300']];
+    const defaultRanges = [['scoreMin', '3', '5'], ['scoreMax', '4', '5'], ['extraLimitMin', '5', '15'], ['extraLimitMax', '15', '15'], ['waitMin', '15', '300'], ['waitMax', '20', '300']];
     for (const [name, value, max] of defaultRanges) {
       assert(await field(page, name).inputValue() === value, `${name} default changed`);
-      assert(await field(page, name).getAttribute('min') === '1' && await field(page, name).getAttribute('max') === max && await field(page, name).getAttribute('step') === '1', `${name} range limits missing`);
+      assert(await field(page, name).getAttribute('min') === (name.startsWith('extraLimit') ? '0' : '1') && await field(page, name).getAttribute('max') === max && await field(page, name).getAttribute('step') === '1', `${name} range limits missing`);
     }
-    assert(await page.locator('#config-block-musicPartner .range-inputs-row').count() === 3, 'paired scoring, quantity and wait ranges missing');
-    assert(await page.locator('#config-block-musicPartner .schema-segment').count() === 0 && await field(page, 'score').count() === 0 && await field(page, 'extraLimit').count() === 0, 'legacy scoring controls remain visible');
+    assert(await page.locator('#config-block-musicPartner .range-inputs-row').count() === 5, 'scoring and recommendation ranges missing');
+    assert(await page.locator('#config-block-musicPartner .schema-segment').count() === 2, 'recommendation order choices missing');
+    assert(await field(page, 'score').count() === 0 && await field(page, 'extraLimit').count() === 0 && await field(page, 'recommendCount').count() === 0, 'legacy fixed controls remain visible');
+    for (const name of ['recommendCountMin', 'recommendCountMax']) {
+      assert.equal(await field(page, name).inputValue(), '0', 'recommendation must default off');
+      assert.equal(await field(page, name).getAttribute('min'), '0');
+      assert.equal(await field(page, name).getAttribute('max'), null, 'recommendation count must not have a three-song cap');
+    }
+    for (const [name, value] of [['recommendWaitMin', '16'], ['recommendWaitMax', '20']]) {
+      assert.equal(await field(page, name).inputValue(), value);
+      assert.equal(await field(page, name).getAttribute('min'), '16');
+      assert.equal(await field(page, name).getAttribute('max'), '300');
+    }
+    assert.match(await recommendationOrder(page, '按列表顺序').getAttribute('class'), /active/);
+    for (const name of ['recommendNotes', 'recommendComments']) assert.equal(await recommendationTemplate(page, name).inputValue(), '');
     for (const score of [1, 2, 3, 4, 5]) {
       assert(await commentField(page, score).inputValue() === '', `score ${score} comment pool must default empty`);
       assert(await commentField(page, score).getAttribute('data-kind') === 'array', `score ${score} comment pool must be an array`);
     }
-    assert((await page.locator('#config-block-musicPartner').innerText()).includes('不分析音频质量'), 'rule-based scoring explanation missing');
+    assert((await page.locator('#config-block-musicPartner').innerText()).includes('随机取整数分'), 'rule-based scoring explanation missing');
+    assert((await page.locator('#config-block-musicPartner').innerText()).includes('奖励按平台结算'), 'recommendation reward explanation missing');
 
     await page.locator('[data-preset="music_partner"]').click();
     assert(await taskSwitch(page).isChecked(), 'partner preset did not enable native task');
@@ -85,29 +104,45 @@ async function noOverflow(page) {
     const comments = { '1': ['节奏还可以继续打磨', '期待更多变化'], '2': [], '3': ['旋律自然流畅', '<层次 & "细节">'], '4': ['很喜欢这首作品'], '5': ['出色的听感', '值得反复聆听'] };
     await commentField(page, '2').fill('待清除');
     for (const [score, lines] of Object.entries(comments)) await commentField(page, score).fill(lines.join('\n'));
+    const configuredRecommendation = [['recommendCountMin', '5'], ['recommendCountMax', '10']];
+    const recommendationTemplates = { recommendNotes: ['分享《{name}》—{artist}', '<笔记 & "模板">'], recommendComments: ['喜欢 {artist} 的《{name}》'] };
+    for (const [name, value] of configuredRecommendation) await field(page, name).fill(value);
+    for (const [name, lines] of Object.entries(recommendationTemplates)) await recommendationTemplate(page, name).fill(lines.join('\n'));
+    await recommendationOrder(page, '随机抽取').click();
     const saved = await saveConfig(page);
     assert(JSON.stringify(saved.musicPartner.comments) === JSON.stringify(comments), 'comment lines were not submitted as per-score arrays');
+    assert.equal(saved.musicPartner.recommendOrder, 'random');
+    for (const [name, lines] of Object.entries(recommendationTemplates)) assert.deepEqual(saved.musicPartner[name], lines);
     await page.reload({ waitUntil: 'networkidle' });
     await page.locator('#config-block-musicPartner').waitFor({ state: 'visible' });
     assert(await taskSwitch(page).isChecked(), 'native task switch was not persisted');
     for (const [name, value] of configuredRanges) assert(await field(page, name).inputValue() === value, `${name} did not survive reload`);
     for (const [score, lines] of Object.entries(comments)) assert(await commentField(page, score).inputValue() === lines.join('\n'), `score ${score} comment pool did not survive reload`);
+    for (const [name, value] of configuredRecommendation) assert.equal(await field(page, name).inputValue(), value);
+    for (const [name, lines] of Object.entries(recommendationTemplates)) assert.equal(await recommendationTemplate(page, name).inputValue(), lines.join('\n'));
+    assert.match(await recommendationOrder(page, '随机抽取').getAttribute('class'), /active/);
     await page.locator('#config-sections [data-section="musicPartner"]').click();
-    for (const [name, invalid, valid] of [['scoreMax', '1', '5'], ['scoreMax', '6', '5'], ['extraLimitMax', '7', '11'], ['extraLimitMax', '501', '11'], ['waitMax', '20', '23']]) {
+    for (const [name, invalid, valid] of [['scoreMax', '1', '5'], ['scoreMax', '6', '5'], ['extraLimitMax', '7', '11'], ['extraLimitMax', '16', '11'], ['waitMax', '20', '23']]) {
       await field(page, name).fill(invalid);
       await saveConfig(page, 400);
       await field(page, name).fill(valid);
     }
+    await field(page, 'extraLimitMin').fill('0');
+    await field(page, 'extraLimitMax').fill('0');
     await commentField(page, '4').fill('');
     await saveConfig(page);
     await page.reload({ waitUntil: 'networkidle' });
     await page.locator('#config-block-musicPartner').waitFor({ state: 'visible' });
     assert(await commentField(page, '4').inputValue() === '', 'cleared comment pool did not stay empty');
+    assert(await field(page, 'extraLimitMin').inputValue() === '0' && await field(page, 'extraLimitMax').inputValue() === '0', 'explicit zero range did not survive save and reload');
     assert(await commentField(page, '3').inputValue() === comments['3'].join('\n'), 'clearing one score changed another comment pool');
     await page.locator('[data-preset="music_partner"]').click();
     assert(await commentField(page, '3').inputValue() === comments['3'].join('\n'), 'preset erased custom comment pools');
     for (const [name, value] of defaultRanges) assert(await field(page, name).inputValue() === value, `preset did not restore ${name}`);
     assert(!await field(page, 'syncYunCircle').isChecked(), 'preset enabled YunCircle publication');
+    for (const [name, value] of configuredRecommendation) assert.equal(await field(page, name).inputValue(), value, 'preset changed recommendation range');
+    for (const [name, lines] of Object.entries(recommendationTemplates)) assert.equal(await recommendationTemplate(page, name).inputValue(), lines.join('\n'), 'preset erased recommendation templates');
+    assert.match(await recommendationOrder(page, '随机抽取').getAttribute('class'), /active/);
     await saveConfig(page);
     await page.locator('#config-sections [data-section="musicPartner"]').click();
     await page.waitForFunction(() => Math.abs(document.querySelector('#config-block-musicPartner').getBoundingClientRect().top - document.querySelector('#config-visual').getBoundingClientRect().top - 12) < 4);
@@ -121,7 +156,8 @@ async function noOverflow(page) {
     assert(!await page.locator('#schedule-enabled').isChecked(), 'test schedule must stay disabled');
     await page.locator('#schedule-command').selectOption('music-partner');
     assert(await page.locator('#schedule-plugin-fields').isHidden(), 'native task opened plugin controls');
-    assert(await page.locator('#schedule-music-partner-help').isVisible(), 'native account argument help missing');
+    assert(await page.locator('#schedule-args-help').isVisible(), 'native account argument help missing');
+    assert.match(await page.locator('#schedule-args-help').innerText(), /评分规则/);
     await page.locator('#schedule-args').fill('--config other.yaml');
     const invalidSchedule = page.waitForResponse(result => result.url().endsWith('/api/v1/schedules') && result.request().method() === 'POST');
     await page.locator('#schedule-submit').click();
@@ -139,6 +175,9 @@ async function noOverflow(page) {
 
     await page.locator('.nav-item[data-page="runs"]').click();
     assert((await page.locator('#runs-table').innerText()).includes('失败'), 'failed native command did not display failed');
+    for (const href of await page.locator('a[href*="github.com/"]').evaluateAll(links => links.map(link => link.href))) {
+      assert(href.startsWith('https://github.com/Grails125/ncmm'), `unexpected repository link: ${href}`);
+    }
     await page.locator('.nav-item[data-page="config"]').click();
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator('#config-sections [data-section="musicPartner"]').click();
@@ -154,7 +193,7 @@ async function noOverflow(page) {
     await page.screenshot({ path: path.join(outputDir, 'music-partner-mobile.png'), fullPage: true });
     assert(errors.length === 0, `browser errors: ${errors.join('; ')}`);
     assert(blockedRuns.length === 0, 'test attempted to run a real task');
-    console.log(JSON.stringify({ passed: true, checks: ['native batch toggle', 'config defaults', 'three paired ranges', 'five comment pools', 'preset preserves comments', 'save/reload and clear', 'invalid ranges', 'schedule argument validation', 'disabled native schedule', 'failure display', 'desktop/mobile layout'], screenshots: outputDir }));
+    console.log(JSON.stringify({ passed: true, checks: ['native batch toggle', 'config defaults', 'five paired ranges', 'five score pools and independent recommendation templates', 'uncapped recommendation count and random order', 'preset preserves comments and recommendation', 'save/reload and clear', 'invalid ranges', 'schedule argument validation', 'disabled native schedule', 'failure display', 'desktop/mobile layout'], screenshots: outputDir }));
   } finally {
     await browser.close();
   }

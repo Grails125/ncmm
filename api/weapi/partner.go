@@ -511,26 +511,11 @@ type PartnerTaskRespData struct {
 		TaskSource           int64    `json:"taskSource"`
 	} `json:"works"`
 	// 推荐歌曲列表该列表为新得音乐合伙人3.0功能中增加,通常也是5首
-	RecResources []struct {
-		Work           PartnerWork `json:"work"`
-		SpecialTag     []string    `json:"specialTag"`
-		SongCommonTags interface{} `json:"songCommonTags"`
-		ReceivedScore  int64       `json:"receivedScore"`
-		QualityScore   int64       `json:"qualityScore"`
-		RedHeartSong   bool        `json:"redHeartSong"`
-		Listened       bool        `json:"listened"`
-		CanInteract    bool        `json:"canInteract"`
-		PublishComment bool        `json:"publishComment"`
-		PublishEvent   bool        `json:"publishEvent"`
-		CollectList    bool        `json:"collectList"`
-		TotalTaskNum   int64       `json:"totalTaskNum"`
-		FinishTaskNum  int64       `json:"finishTaskNum"`
-		TaskSource     int64       `json:"taskSource"`
-	} `json:"recResources"`
-	PageTaskType int64 `json:"pageTaskType"`
-	CurRcmdScore int64 `json:"curRcmdScore"`
-	CanInteract  bool  `json:"canInteract"`
-	Completed    bool  `json:"completed"`
+	RecResources []PartnerRecommendResource `json:"recResources"`
+	PageTaskType int64                      `json:"pageTaskType"`
+	CurRcmdScore int64                      `json:"curRcmdScore"`
+	CanInteract  bool                       `json:"canInteract"`
+	Completed    bool                       `json:"completed"`
 }
 
 // PartnerDailyTask 查询当日任务情况
@@ -902,7 +887,7 @@ type PartnerExtraReportReq struct {
 	WorkId        string `json:"workId"`        //
 	ResourceId    string `json:"resourceId"`    //
 	BizResourceId string `json:"bizResourceId"` //
-	InteractType  string `json:"interactType"`  // PLAY_END(目前只知道这一个)
+	InteractType  string `json:"interactType"`  // PLAY_END：聆听结束；PUBLISH_EVENT：发布笔记；PUBLISH_COMMENT：发布乐评。
 }
 
 // MarshalJSON 对齐播放上报的数字作品与资源 ID，保留空 bizResourceId。
@@ -942,7 +927,7 @@ func (r *PartnerExtraReportResp) UnmarshalJSON(data []byte) error {
 }
 
 type PartnerExtraReportRespData struct {
-	FailedReason   interface{} `json:"failedReason"` // 如果不为空,则应改表示失败
+	FailedReason   interface{} `json:"failedReason"` // 同时承载成功提示；以 code 和 interactResult 判断成功，不能仅判断此字段非空。
 	InteractResult bool        `json:"interactResult"`
 }
 

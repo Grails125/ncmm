@@ -23,7 +23,7 @@ func writeCompatibilityConfig(t *testing.T, text string) string {
 
 func TestOfficial129ConfigReadAndPreview(t *testing.T) {
 	text := strings.Replace(string(DefaultYAML()), "version: "+GetDefault().Version, "version: 1.2.9", 1)
-	if !strings.Contains(text, "\nplay:\n") {
+	if !strings.Contains(strings.ReplaceAll(text, "\r\n", "\n"), "\nplay:\n") {
 		text += "\nplay:\n  webSession: true\n"
 	}
 	path := writeCompatibilityConfig(t, text)

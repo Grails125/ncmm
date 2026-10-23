@@ -30,7 +30,7 @@ type ArtistHotRespData struct {
 type ArtistHotRespArtist struct {
 	Id       int64  `json:"id"`
 	Name     string `json:"name"`
-	Followed bool   `json:"followed"`
+	Followed *bool  `json:"followed"`
 }
 
 // ArtistHot 获取热门歌手列表

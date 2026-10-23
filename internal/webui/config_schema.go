@@ -146,9 +146,10 @@ func mainConfigSchema() configTargetSchema {
 		schemaCategory("musician", "音乐人与 VIP", "", "音乐人签到、VIP 进阶任务和专属播放覆盖参数。",
 			schemaGroup("musician-main", "音乐人主控参数", "身份任务", "cyan"),
 			schemaGroup("musician-play", "进阶专属播放参数", "可继承", "gray")),
-		schemaCategory("musicPartner", "音乐合伙人评分", "", "使用已登录且具备合伙人资格的账号，按配置规则提交基础和额外评分。",
+		schemaCategory("musicPartner", "音乐合伙人评分", "", "使用已登录且具备合伙人资格的账号，提交基础和额外评分；今日推荐歌曲任务需单独启用。",
 			schemaGroup("partner-main", "账号与评分策略", "合伙人专属", "cyan"),
 			schemaGroup("partner-extra", "额外评分与等待", "每日", "gray"),
+			schemaGroup("partner-recommend", "今日歌曲推荐", "公开发布", "amber"),
 			schemaGroup("partner-comments", "各分值乐评", "选填", "gray")),
 		schemaCategory("note", "动态笔记", "", "公共笔记标题、正文、图片池和发布方式。",
 			schemaGroup("note-mode", "发布方式", "通用", "primary"),
@@ -233,15 +234,15 @@ func mainConfigSchema() configTargetSchema {
 		schemaField("sign.enableMain", "主账号签到", "主账号执行云贝和 VIP 签到。", "sign-main", "boolean", "switch"),
 		schemaField("sign.enableSecondaries", "辅助账号签到", "全部辅助账号依次执行签到。", "sign-main", "boolean", "switch"),
 		schemaField("sign.enableVipTask", "黑胶 VIP 专属任务", "执行会员成长值相关任务。", "sign-main", "boolean", "switch"),
-		schemaField("sign.yunbeiTask.enableViewVipCenter", "浏览会员中心", "云贝中心浏览任务。", "yunbei", "boolean", "switch"),
+		schemaField("sign.yunbeiTask.enableViewVipCenter", "浏览会员中心", "等待 15 至 25 秒后提交浏览请求，完成状态以云贝列表为准。", "yunbei", "boolean", "switch"),
 		schemaField("sign.yunbeiTask.enableLikeComment", "点赞评论和动态", "完成互动类云贝任务。", "yunbei", "boolean", "switch"),
 		schemaField("sign.yunbeiTask.enableListenIndie", "探索小众歌曲", "听歌类慢任务，预计耗时较长。", "yunbei", "boolean", "switch"),
 		schemaField("sign.yunbeiTask.enableReserve", "预约领云贝", "完成预约类云贝任务。", "yunbei", "boolean", "switch"),
-		schemaField("sign.yunbeiTask.enableFollowArtist", "关注歌手", "完成关注类云贝任务。", "yunbei", "boolean", "switch"),
+		schemaField("sign.yunbeiTask.enableFollowArtist", "关注歌手", "仅选择明确未关注的歌手，随后清理本次新增关注。", "yunbei", "boolean", "switch"),
 		schemaField("sign.yunbeiTask.enableLikeSong", "红心歌曲", "完成收藏喜爱歌曲任务。", "yunbei", "boolean", "switch"),
 		schemaField("sign.yunbeiTask.enableCollectSong", "收藏歌曲", "完成歌曲收藏任务。", "yunbei", "boolean", "switch"),
 		schemaField("sign.yunbeiTask.enablePublishNote", "发布图文动态", "使用笔记配置完成发布任务。", "yunbei", "boolean", "switch"),
-		schemaField("sign.yunbeiTask.enableShareSong", "分享歌曲", "完成歌曲分享任务。", "yunbei", "boolean", "switch"),
+		schemaField("sign.yunbeiTask.enableShareSong", "分享歌曲", "提交歌曲分享请求，完成状态及奖励以云贝列表为准。", "yunbei", "boolean", "switch"),
 		schemaField("sign.yunbeiTask.enablePlayDailyRecommend", "播放日推歌曲", "听歌类慢任务，约 31 至 45 分钟。", "yunbei", "boolean", "switch"),
 
 		schemaField("playids.enableMain", "主账号参与播放", "允许主账号执行指定歌曲播放。", "play-target", "boolean", "switch"),
@@ -402,13 +403,13 @@ func mainConfigSchema() configTargetSchema {
 		schemaField("musicPartner.extraTasks", "执行额外评分", "基础任务完成后继续处理额外评分任务。", "partner-extra", "boolean", "switch"),
 		schemaField("musicPartner.fullExtraTasks", "完成当前全部额外任务", "开启后以本次返回的额外任务列表为准；关闭时使用每日额外评分目标。", "partner-extra", "boolean", "switch"),
 		func() configSchemaField {
-			f := schemaField("musicPartner.extraLimitMin", "每日额外评分目标下限", "从区间内随机选取目标，已完成数量计入目标；仅在开启额外评分且未选择全部任务时使用。", "partner-extra", "integer", "number")
-			f.Unit, f.Min, f.Max, f.Step = "首", number(1), number(500), number(1)
+			f := schemaField("musicPartner.extraLimitMin", "每日额外评分目标下限", "从 0～15 首区间内选取当日目标；目标为 0 时跳过额外评分，已完成数量计入目标。", "partner-extra", "integer", "number")
+			f.Unit, f.Min, f.Max, f.Step = "首", number(0), number(15), number(1)
 			return f
 		}(),
 		func() configSchemaField {
 			f := schemaField("musicPartner.extraLimitMax", "每日额外评分目标上限", "不得小于额外评分目标下限；上下限相同则使用固定数量。", "partner-extra", "integer", "number")
-			f.Unit, f.Min, f.Max, f.Step = "首", number(1), number(500), number(1)
+			f.Unit, f.Min, f.Max, f.Step = "首", number(0), number(15), number(1)
 			return f
 		}(),
 		func() configSchemaField {
@@ -426,6 +427,33 @@ func mainConfigSchema() configTargetSchema {
 		schemaField("musicPartner.comments.3", "3 分乐评", "每行一条，评分为 3 分时随机选取；留空不填写乐评。", "partner-comments", "string-list", "textarea-list"),
 		schemaField("musicPartner.comments.4", "4 分乐评", "每行一条，评分为 4 分时随机选取；留空不填写乐评。", "partner-comments", "string-list", "textarea-list"),
 		schemaField("musicPartner.comments.5", "5 分乐评", "每行一条，评分为 5 分时随机选取；留空不填写乐评。", "partner-comments", "string-list", "textarea-list"),
+		func() configSchemaField {
+			f := schemaField("musicPartner.recommendCountMin", "每日推荐目标下限", "每天从配置范围内选取目标，日内保持不变；上下限均为 0 时关闭。按平台可用歌曲执行，奖励按平台结算。", "partner-recommend", "integer", "number")
+			f.Unit, f.Min, f.Step = "首", number(0), number(1)
+			return f
+		}(),
+		func() configSchemaField {
+			f := schemaField("musicPartner.recommendCountMax", "每日推荐目标上限", "不得小于下限；上下限相同则使用固定数量。上限大于 0 时需填写独立笔记和乐评模板。", "partner-recommend", "integer", "number")
+			f.Unit, f.Min, f.Step = "首", number(0), number(1)
+			return f
+		}(),
+		func() configSchemaField {
+			f := schemaField("musicPartner.recommendOrder", "推荐歌曲抽取顺序", "按列表顺序选择，或随机抽取推荐歌曲；已完成歌曲计入当日目标。", "partner-recommend", "string", "segmented")
+			f.Options = []configSchemaOption{schemaOption("sequential", "按列表顺序"), schemaOption("random", "随机抽取")}
+			return f
+		}(),
+		func() configSchemaField {
+			f := schemaField("musicPartner.recommendWaitMin", "推荐等待下限", "每首推荐前的随机等待下限，至少 16 秒；等待不代替服务器对试听和任务状态的确认。", "partner-recommend", "integer", "number")
+			f.Unit, f.Min, f.Max, f.Step = "秒", number(16), number(300), number(1)
+			return f
+		}(),
+		func() configSchemaField {
+			f := schemaField("musicPartner.recommendWaitMax", "推荐等待上限", "必须与下限完整填写，不得小于下限，最多 300 秒。", "partner-recommend", "integer", "number")
+			f.Unit, f.Min, f.Max, f.Step = "秒", number(16), number(300), number(1)
+			return f
+		}(),
+		schemaField("musicPartner.recommendNotes", "推荐笔记模板", "每行一条，独立于评分乐评。最多 50 条，每条 1～500 个字符；支持 {name} 歌曲名、{artist} 作者名，替换后仍校验长度。推荐数量上限大于 0 时必填；使用歌曲封面发布公开图文笔记，满 7 天后在下次任务中自动删除。", "partner-recommend", "string-list", "textarea-list"),
+		schemaField("musicPartner.recommendComments", "推荐乐评模板", "每行一条，独立于推荐笔记和评分乐评。最多 50 条，每条 1～500 个字符；支持 {name} 歌曲名、{artist} 作者名，替换后仍校验长度。推荐数量上限大于 0 时必填；将公开发布且满 7 天后在下次任务中自动删除。", "partner-recommend", "string-list", "textarea-list"),
 
 		schemaField("fansgroup.webSession", "乐迷团网页播放会话", "默认关闭，仅影响乐迷团播放。开启后使用独立网页会话，可能触发平台风控；其他播放任务保留原会话。", "fans", "boolean", "switch"),
 		func() configSchemaField {

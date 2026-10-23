@@ -22,7 +22,7 @@ fs.mkdirSync(output, { recursive: true });
       { name: 'demo', title: '定时演示', type: 'task', version: '1.0', description: '<img src=x onerror=alert(1)>仅展示文字' },
     ];
     page.on('pageerror', error => errors.push(error.message));
-    await page.route('**/api/v1/music-partner/points**', route => route.fulfill({ status: 503, json: { error: '隔离测试无账号' } }));
+    await page.route('**/api/v1/accounts/data**', route => route.fulfill({ status: 503, json: { error: '隔离测试无账号' } }));
     await page.route('**/api/v1/play-stats', route => route.fulfill({ json: [] }));
     await page.route('**/api/v1/plugins', route => route.fulfill({ json: plugins() }));
     await page.route('**/api/v1/plugins/market', route => route.fulfill({ json: [{ name: 'qqbot', title: 'QQ 机器人', type: 'daemon', repository: 'crossgg/ncmm-qqbot', author: 'crossgg', features: ['扫码登录', '<script>'], update: { repository: 'crossgg/ncmm-qqbot', latestTag: 'v1.0.2', checkedAt }, description: '隔离测试的公开市场入口', homepage: 'https://github.com/crossgg/ncmm-qqbot' }] }));

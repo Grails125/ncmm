@@ -26,7 +26,7 @@ fs.mkdirSync(output, { recursive: true });
       const auth = await response.json();
       await route.fulfill({ response, json: { ...auth, version: '1.2.9-grails.1', upgradePolicy: policy } });
     });
-    await page.route('**/api/v1/music-partner/points**', route => route.fulfill({ status: 503, json: { error: '隔离测试无账号' } }));
+    await page.route('**/api/v1/accounts/data**', route => route.fulfill({ status: 503, json: { error: '隔离测试无账号' } }));
     await page.route('**/api/v1/play-stats', route => route.fulfill({ json: [] }));
     const update = { current_version: '1.2.9-grails.1', latest_version: '1.2.9-grails.2', available: true, canApply: true };
     await page.route('**/api/v1/update', route => route.fulfill({ json: update }));

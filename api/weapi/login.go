@@ -37,6 +37,8 @@ func (a *Api) QrcodeCreateKey(ctx context.Context, req *QrcodeCreateKeyReq) (*Qr
 		reply QrcodeCreateKeyResp
 		opts  = api.NewOptions()
 	)
+	opts.Sensitive = true
+	opts.NoRetry = true
 
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
@@ -117,6 +119,8 @@ func (a *Api) QrcodeCheck(ctx context.Context, req *QrcodeCheckReq) (*QrcodeChec
 		reply QrcodeCheckResp
 		opts  = api.NewOptions()
 	)
+	opts.Sensitive = true
+	opts.NoRetry = true
 
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
@@ -225,6 +229,7 @@ func (a *Api) GetUserInfo(ctx context.Context, req *GetUserInfoReq) (*GetUserInf
 		reply GetUserInfoResp
 		opts  = api.NewOptions()
 	)
+	opts.Sensitive = true
 
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {

@@ -72,6 +72,26 @@ func (a *Api) YunbeiClickTask(ctx context.Context, req *YunbeiClickTaskReq) (*Yu
 	return &reply, nil
 }
 
+type YunbeiVipBrowseFinishResp struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+// YunbeiVipBrowseFinish 对齐会员中心官方页面的停留结束请求，任务是否完成仍以任务列表为准。
+// https://music.163.com/st/vip-portal/m-portal.ab718.js
+func (a *Api) YunbeiVipBrowseFinish(ctx context.Context) (*YunbeiVipBrowseFinishResp, error) {
+	var reply YunbeiVipBrowseFinishResp
+	opts := api.NewOptions()
+	opts.CryptoMode = api.CryptoModeEAPI
+	_, err := a.client.Request(ctx, "https://interface3.music.163.com/eapi/vipnewcenter/app/level/task/external", struct {
+		Type int `json:"type"`
+	}{Type: 1}, &reply, opts)
+	if err != nil {
+		return nil, fmt.Errorf("Request: %w", err)
+	}
+	return &reply, nil
+}
+
 type YunbeiDistributionRecommendSongReq struct {
 	Offset int `json:"offset"`
 	Limit  int `json:"limit"`

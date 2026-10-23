@@ -100,6 +100,10 @@ func isVipAppListenTask(task eapi.VipTaskListData) bool {
 	return task.MissionCode == "MRGSSVIPGQ" || strings.Contains(task.MainTitle, "听3首VIP") || strings.Contains(task.MainTitle, "听3首会员")
 }
 
+func isVipAppStartupTask(task eapi.VipTaskListData) bool {
+	return task.MissionCode == "SZKJQDT" || task.MainTitle == "设置开机启动图"
+}
+
 func getVipSignState(ctx context.Context, request *eapi.Api, deviceId string) (vipSignState, error) {
 	reply, err := request.VipSignInfo(ctx, newVipSignInfoReq(deviceId))
 	if err != nil {
@@ -267,6 +271,10 @@ func (c *SignIn) executeVipSign(ctx context.Context, request *eapi.Api, deviceId
 }
 
 func (c *SignIn) executeSingleVipTask(ctx context.Context, cli *api.Client, request *weapi.Api, eapiRequest *eapi.Api, v eapi.VipTaskListData, deviceId string, userLevel int64, likedSongIds *[]string) {
+	if isVipAppStartupTask(v) {
+		c.cmd.Println("  ℹ️ [设置开机启动图] 请在网易云音乐 App 内完成启动图设置，已跳过自动执行。")
+		return
+	}
 	if isVipAppListenTask(v) {
 		c.cmd.Println("  ℹ️ [每日听3首VIP歌曲] 请在网易云音乐 App 内完成，已跳过自动播放。")
 		return
@@ -416,6 +424,13 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 				continue
 			}
 			if v.Status != 100 {
+				// 启动图由 App 原生能力保存，服务端不能用浏览上报代替实际设置。
+				if isVipAppStartupTask(v) {
+					if round == 1 {
+						c.cmd.Println("  ℹ️ [设置开机启动图] 请在网易云音乐 App 内完成启动图设置，已跳过自动执行。")
+					}
+					continue
+				}
 				// 该任务需 App 内完成，不加入队列，避免无效播放和轮次间等待。
 				if isVipAppListenTask(v) {
 					if round == 1 {
@@ -533,7 +548,7 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 			statusStr := "未完成"
 			if v.Status == 100 {
 				statusStr = "已完成"
-			} else if isVipAppListenTask(v) {
+			} else if isVipAppListenTask(v) || isVipAppStartupTask(v) {
 				statusStr = "需 App 完成（已跳过）"
 			}
 			if isVipSignTask(v) {

@@ -6,6 +6,7 @@ package eapi
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/3899/ncmm/api"
 	"github.com/3899/ncmm/api/types"
@@ -42,19 +43,52 @@ type QrcodeCreateKeyResp struct {
 	UniKey string `json:"unikey"`
 }
 
+const qrcodePCAppVersion = "3.1.29.205117"
+
+// 二维码 key 与轮询必须使用同一 PC 协议及客户端身份，不能与旧 Web type=1 混用。
+type qrcodePCHeader struct {
+	OS        string `json:"os"`
+	OSVersion string `json:"osver"`
+	Appver    string `json:"appver"`
+	Channel   string `json:"channel"`
+	DeviceID  string `json:"deviceId,omitempty"`
+	CSRF      string `json:"__csrf"`
+	RequestID string `json:"requestId"`
+}
+
+type qrcodePCRequest struct {
+	Type   int64          `json:"type"`
+	Key    string         `json:"key,omitempty"`
+	Header qrcodePCHeader `json:"header"`
+	ER     bool           `json:"e_r"`
+}
+
+func (a *Api) qrcodePCRequest(kind int64, key string) (*qrcodePCRequest, *api.Options) {
+	csrf, _ := a.client.GetCSRF("https://music.163.com")
+	header := qrcodePCHeader{OS: "pc", OSVersion: "Microsoft-Windows-10-Professional-build-19045-64bit", Appver: qrcodePCAppVersion, Channel: "netease", DeviceID: a.client.GetDeviceId(), CSRF: csrf, RequestID: fmt.Sprintf("%d_0000", time.Now().UnixMilli())}
+	opts := api.NewOptions()
+	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
+	opts.NoRetry = true
+	opts.Headers = map[string]string{
+		"User-Agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36 Chrome/91.0.4472.164 NeteaseMusicDesktop/" + qrcodePCAppVersion,
+		"x-os":       header.OS, "x-osver": header.OSVersion, "x-appver": header.Appver,
+	}
+	return &qrcodePCRequest{Type: kind, Key: key, Header: header}, opts
+}
+
 // QrcodeCreateKey 生成二维码需要得key
 // 常见问题
 // 1. 请求成功了,但是body为空值什么也没有,原因还是参数加密出现了问题。
 // 2. crsftoken 可传可不传个人猜测前端写得通用框架传了
 func (a *Api) QrcodeCreateKey(ctx context.Context, req *QrcodeCreateKeyReq) (*QrcodeCreateKeyResp, error) {
 	var (
-		url   = "https://music.163.com/eapi/login/qrcode/unikey"
+		url   = "https://interfacepc.music.163.com/eapi/login/qrcode/unikey"
 		reply QrcodeCreateKeyResp
-		opts  = api.NewOptions()
 	)
-	opts.CryptoMode = api.CryptoModeEAPI
+	data, opts := a.qrcodePCRequest(req.Type, "")
 
-	resp, err := a.client.Request(ctx, url, req, &reply, opts)
+	resp, err := a.client.Request(ctx, url, data, &reply, opts)
 	if err != nil {
 		return nil, fmt.Errorf("Request: %w", err)
 	}
@@ -115,13 +149,12 @@ type QrcodeCheckResp struct {
 // 803-授权登录成功
 func (a *Api) QrcodeCheck(ctx context.Context, req *QrcodeCheckReq) (*QrcodeCheckResp, error) {
 	var (
-		url   = "https://music.163.com/eapi/login/qrcode/client/login"
+		url   = "https://interfacepc.music.163.com/eapi/login/qrcode/client/login"
 		reply QrcodeCheckResp
-		opts  = api.NewOptions()
 	)
-	opts.CryptoMode = api.CryptoModeEAPI
+	data, opts := a.qrcodePCRequest(req.Type, req.Key)
 
-	resp, err := a.client.Request(ctx, url, req, &reply, opts)
+	resp, err := a.client.Request(ctx, url, data, &reply, opts)
 	if err != nil {
 		return nil, fmt.Errorf("Request: %w", err)
 	}

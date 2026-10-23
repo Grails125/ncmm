@@ -25,7 +25,7 @@ fs.mkdirSync(output, { recursive: true });
     page.on('pageerror', error => errors.push(error.message));
     page.on('framenavigated', frame => { if (frame === page.mainFrame()) navigations++; });
     page.on('dialog', async dialog => { dialogs.push(dialog.message()); if (dismissNext) { dismissNext = false; await dialog.dismiss(); } else await dialog.accept(); });
-    await page.route('**/api/v1/music-partner/points**', route => route.fulfill({ status: 503, json: { error: '隔离测试无账号' } }));
+    await page.route('**/api/v1/accounts/data**', route => route.fulfill({ status: 503, json: { error: '隔离测试无账号' } }));
     await page.route('**/api/v1/play-stats', route => route.fulfill({ json: [] }));
     await page.route('**/api/v1/update', route => route.fulfill({ json: update }));
     await page.route('**/api/v1/update/check', route => route.fulfill(checkFails ? { status: 502, json: { error: '模拟检查失败' } } : { json: update }));

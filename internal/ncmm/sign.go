@@ -447,7 +447,7 @@ func (c *SignIn) runSignForCookie(
 
 		// 执行云贝系列自动任务打卡并领奖
 		hasYunbeiTasks := false
-		yunbeiKeys := []string{"Reserve", "ViewVipCenter", "LikeComment", "FollowArtist", "LikeSong", "CollectSong", "PublishNote", "ListenIndie", "PlayDailyRecommend"}
+		yunbeiKeys := []string{"Reserve", "ViewVipCenter", "LikeComment", "FollowArtist", "LikeSong", "CollectSong", "PublishNote", "ShareSong", "ListenIndie", "PlayDailyRecommend"}
 		for _, k := range yunbeiKeys {
 			if allowedTasks[k] {
 				hasYunbeiTasks = true

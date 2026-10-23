@@ -530,11 +530,16 @@ func (c *FansGroup) doPublishNote(ctx context.Context, eapiCli *eapi.Api, boardI
 				pics, err = eapiCli.EventUploadImage(ctx, tmpFile)
 				if err != nil {
 					c.cmd.Printf("  上传图片失败: %v\n", err)
-					pics = ""
+					c.cmd.Println("  图文笔记图片准备失败，跳过本项任务")
+					return
 				}
 				break
 			}
 		}
+	}
+	if pics == "" || pics == "[]" || pics == "null" {
+		c.cmd.Println("  没有可用的已上传图片，跳过图文笔记任务；请检查 note.imageUrls")
+		return
 	}
 
 	autoDelete := true

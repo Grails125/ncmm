@@ -231,7 +231,7 @@
           </div>
 
           <div class="login-meta">
-            <a class="star-link" href="https://github.com/3899/ncmm" target="_blank" rel="noopener noreferrer">
+            <a class="star-link" href="https://github.com/Grails125/ncmm" target="_blank" rel="noopener noreferrer">
               <svg aria-hidden="true">
                 <use href="#i-github" />
               </svg><span>点亮 Star</span><svg class="star-icon" aria-hidden="true">
@@ -250,7 +250,7 @@
         </form>
       </div>
       <footer class="login-footer">
-        <a href="https://github.com/3899/ncmm" target="_blank" rel="noopener noreferrer">Copyright © 2026 GitHub
+        <a href="https://github.com/Grails125/ncmm" target="_blank" rel="noopener noreferrer">Copyright © 2026 GitHub
           3899</a>
         <span>|</span><span id="auth-version">NCMM</span>
       </footer>
@@ -296,10 +296,10 @@
             </svg><span>系统设置</span></span></button>
       </nav>
       <div class="sidebar-footer">
-        <a class="sidebar-github-link" href="https://github.com/3899/ncmm" target="_blank" rel="noreferrer"
-          title="GitHub: 3899/ncmm"><svg viewBox="0 0 24 24" aria-hidden="true">
+        <a class="sidebar-github-link" href="https://github.com/Grails125/ncmm" target="_blank" rel="noreferrer"
+          title="GitHub: Grails125/ncmm"><svg viewBox="0 0 24 24" aria-hidden="true">
             <use href="#i-github" />
-          </svg><span>3899/ncmm</span></a>
+          </svg><span>Grails125/ncmm</span></a>
         <div id="version-label" class="sidebar-meta-text">NCMM</div>
         <div id="build-label" class="sidebar-meta-text"></div>
         <div class="sidebar-meta-text">Copyright © 2026 @3899</div>
@@ -344,12 +344,12 @@
                       class="hidden">在线</span></span><strong>任务引擎守护中</strong></div>
               </div>
               <div class="telemetry-info-grid">
-                <div class="telemetry-pill"><span>丨 运行时间:</span><span id="dashboard-uptime"
+                <div class="telemetry-pill telemetry-uptime"><span>运行时间：</span><span id="dashboard-uptime"
                     class="telemetry-val">--</span></div>
               </div>
             </div>
             <div class="telemetry-info-grid">
-              <div class="telemetry-pill"><span>下次任务:</span><span id="dashboard-next-run"
+              <div class="telemetry-pill"><span>下次任务：</span><span id="dashboard-next-run"
                   class="telemetry-val next-run-value">暂无计划</span></div>
             </div>
           </section>
@@ -382,18 +382,21 @@
           <section class="card music-partner-points-panel" aria-labelledby="music-partner-points-title">
             <div class="card-header">
               <div class="music-partner-points-heading">
-                <h3 id="music-partner-points-title" class="card-title"><svg aria-hidden="true"><use href="#i-star" /></svg>音乐合伙人积分</h3>
-                <select id="music-partner-points-account" class="dashboard-account-select" aria-label="选择合伙人积分账号"></select>
+                <h3 id="music-partner-points-title" class="card-title"><svg aria-hidden="true"><use href="#i-star" /></svg>账号数据</h3>
+                <select id="music-partner-points-account" class="dashboard-account-select" aria-label="选择数据账号"></select>
               </div>
               <div class="music-partner-points-actions">
                 <span id="music-partner-points-status" class="badge-pill gray">等待查询</span>
-                <button id="music-partner-points-refresh" type="button" class="btn btn-glass btn-sm"><svg aria-hidden="true"><use href="#i-refresh" /></svg>刷新积分</button>
+                <button id="music-partner-points-refresh" type="button" class="btn btn-glass btn-sm"><svg aria-hidden="true"><use href="#i-refresh" /></svg>刷新数据</button>
               </div>
             </div>
             <div class="music-partner-points-body">
               <dl class="music-partner-points-values">
-                <div><dt>本期积分</dt><dd id="music-partner-points-integral">未知</dd></div>
-                <div><dt>本周积分</dt><dd id="music-partner-points-weekly">未知</dd></div>
+                <div><dt>云贝余额</dt><dd id="account-data-yunbei-balance">未知</dd></div>
+                <div><dt>VIP 等级</dt><dd id="account-data-vip-level">未知</dd></div>
+                <div><dt>成长总值</dt><dd id="account-data-growth-total">未知</dd></div>
+                <div><dt>合伙人本期积分</dt><dd id="music-partner-points-integral">未知</dd></div>
+                <div><dt>合伙人本周积分</dt><dd id="music-partner-points-weekly">未知</dd></div>
               </dl>
               <div class="music-partner-points-details">
                 <p id="music-partner-points-period">期号未知 · 周号未知</p>
@@ -401,7 +404,7 @@
                 <p id="music-partner-points-updated">尚未查询</p>
               </div>
             </div>
-            <p id="music-partner-points-message" class="music-partner-points-message" role="status" aria-live="polite">进入仪表盘后查询所选账号积分。</p>
+            <p id="music-partner-points-message" class="music-partner-points-message" role="status" aria-live="polite">进入仪表盘后查询所选账号数据。</p>
           </section>
 
           <div class="dashboard-primary-grid">
@@ -415,7 +418,7 @@
                 </div>
                 <div id="dashboard-metric" class="metric-tabs"><button class="active"
                     data-metric="plays">有效播放</button><button data-metric="growth">成长值</button><button
-                    data-metric="yunbei">云贝</button></div>
+                    data-metric="yunbei">云贝</button><button data-metric="musicPartner">合伙人积分</button></div>
               </div>
               <div id="dashboard-chart" class="metric-empty">
                 <svg aria-hidden="true">
@@ -824,7 +827,7 @@
                   <button id="system-restart" class="btn btn-glass btn-sm"><svg>
                       <use href="#i-restart" />
                     </svg>重启 ncmm</button>
-                  <a class="btn btn-glass btn-sm github-btn" href="https://github.com/3899/ncmm" target="_blank"
+                  <a class="btn btn-glass btn-sm github-btn" href="https://github.com/Grails125/ncmm" target="_blank"
                     rel="noreferrer"><svg>
                       <use href="#i-github" />
                     </svg>ncmm</a>
@@ -1022,18 +1025,18 @@
       <p id="schedule-delay-help" class="field-note">自动触发时随机等待 0～上限秒，0 表示不延迟；手动运行不延迟。等待中的任务可停止，并遵循重叠策略。</p>
       <div class="form-grid two">
         <label>命令<select id="schedule-command">
-            <option value="task">task</option>
-            <option value="sign">sign</option>
-            <option value="playids">playids</option>
-            <option value="musician">musician</option>
-            <option value="musician-sign">musician-sign</option>
-            <option value="musician-vip">musician-vip</option>
+            <option value="task">task（批量任务队列）</option>
+            <option value="sign">sign（日常签到与云贝任务）</option>
+            <option value="playids">playids（模拟播放歌曲）</option>
+            <option value="musician">musician（音乐人全部任务）</option>
+            <option value="musician-sign">musician-sign（音乐人每日签到）</option>
+            <option value="musician-vip">musician-vip（音乐人进阶任务）</option>
             <option value="music-partner">music-partner（音乐合伙人评分）</option>
-            <option value="note">note</option>
-            <option value="daily-song-share">daily-song-share</option>
-            <option value="vip-member-gift">vip-member-gift</option>
-            <option value="fansgroup">fansgroup</option>
-            <option value="plugin">plugin (插件)</option>
+            <option value="note">note（发布图文笔记）</option>
+            <option value="daily-song-share">daily-song-share（每日推歌）</option>
+            <option value="vip-member-gift">vip-member-gift（黑胶会员赠送与领取）</option>
+            <option value="fansgroup">fansgroup（乐迷团任务）</option>
+            <option value="plugin">plugin（运行插件）</option>
           </select></label>
         <label>重叠策略<select id="schedule-overlap">
             <option value="skip">跳过重复触发</option>
@@ -1051,8 +1054,8 @@
         </div>
         <div id="schedule-plugin-dynamic-fields" class="plugin-dynamic-fields"></div>
       </div>
-      <label>命令参数<input id="schedule-args" placeholder="如 --only-fast 或 run demo -- --days 7"></label>
-      <p id="schedule-music-partner-help" class="field-note hidden">音乐合伙人使用“策略配置”中的账号与评分规则；可留空，或填写 --cookie-file 指定一个账号的 Cookie 文件。</p>
+      <label>命令参数<input id="schedule-args" placeholder="如 --only-fast" aria-describedby="schedule-args-help"></label>
+      <div id="schedule-args-help" class="field-note" aria-live="polite"></div>
       <div class="dialog-actions"><button type="button" class="button subtle dialog-close">取消</button><button
           id="schedule-submit" type="submit" class="button primary"><svg>
             <use href="#i-save" />

@@ -8,6 +8,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -162,6 +163,48 @@ type MusicPartnerConf struct {
 	WaitMax           int                 `json:"waitMax" yaml:"waitMax"`
 	SyncYunCircle     bool                `json:"syncYunCircle" yaml:"syncYunCircle"`
 	Comments          map[string][]string `json:"comments" yaml:"comments"`
+	RecommendCount    int                 `json:"recommendCount,omitempty" yaml:"recommendCount,omitempty"` // 兼容旧版固定数量，仅在缺少推荐范围时读取。
+	RecommendCountMin int                 `json:"recommendCountMin" yaml:"recommendCountMin"`
+	RecommendCountMax int                 `json:"recommendCountMax" yaml:"recommendCountMax"`
+	RecommendOrder    string              `json:"recommendOrder" yaml:"recommendOrder"`
+	RecommendWaitMin  int                 `json:"recommendWaitMin" yaml:"recommendWaitMin"`
+	RecommendWaitMax  int                 `json:"recommendWaitMax" yaml:"recommendWaitMax"`
+	RecommendNotes    []string            `json:"recommendNotes" yaml:"recommendNotes"`
+	RecommendComments []string            `json:"recommendComments" yaml:"recommendComments"`
+	extraRangeSet     bool                // 区分显式的 0～0 与未配置的额外目标。
+	recommendRangeSet bool                // 区分显式关闭与未迁移的旧推荐数量。
+}
+
+func (p *MusicPartnerConf) UnmarshalYAML(value *yaml.Node) error {
+	type plain MusicPartnerConf
+	var decoded plain
+	if err := value.Decode(&decoded); err != nil {
+		return err
+	}
+	*p = MusicPartnerConf(decoded)
+	p.extraRangeSet = effectiveMappingValue(value, "extraLimitMin") != nil || effectiveMappingValue(value, "extraLimitMax") != nil
+	p.recommendRangeSet = effectiveMappingValue(value, "recommendCountMin") != nil || effectiveMappingValue(value, "recommendCountMax") != nil
+	return nil
+}
+
+func (p *MusicPartnerConf) UnmarshalJSON(data []byte) error {
+	type plain MusicPartnerConf
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*p = MusicPartnerConf(decoded)
+	_, extraMin := fields["extraLimitMin"]
+	_, extraMax := fields["extraLimitMax"]
+	_, recommendMin := fields["recommendCountMin"]
+	_, recommendMax := fields["recommendCountMax"]
+	p.extraRangeSet = extraMin || extraMax
+	p.recommendRangeSet = recommendMin || recommendMax
+	return nil
 }
 
 // Validate 补全缺省范围、兼容旧字段，并校验用户乐评；不改写乐评文本。
@@ -181,15 +224,14 @@ func (p *MusicPartnerConf) Validate() error {
 	if p.ScoreMin < 1 || p.ScoreMax < p.ScoreMin || p.ScoreMax > 5 {
 		return fmt.Errorf("音乐合伙人评分范围必须完整填写 1 至 5 分，且上限不得小于下限")
 	}
-	if p.ExtraLimitMin == 0 && p.ExtraLimitMax == 0 {
-		target := p.ExtraLimit
-		if target == 0 {
-			target = 7
+	if p.ExtraLimitMin == 0 && p.ExtraLimitMax == 0 && !p.extraRangeSet {
+		p.ExtraLimitMin, p.ExtraLimitMax = 5, 15
+		if p.ExtraLimit != 0 {
+			p.ExtraLimitMin, p.ExtraLimitMax = p.ExtraLimit, p.ExtraLimit
 		}
-		p.ExtraLimitMin, p.ExtraLimitMax = target, target
 	}
-	if p.ExtraLimitMin < 1 || p.ExtraLimitMax < p.ExtraLimitMin || p.ExtraLimitMax > 500 {
-		return fmt.Errorf("音乐合伙人额外评分目标范围必须完整填写 1 至 500 首，且上限不得小于下限")
+	if p.ExtraLimitMin < 0 || p.ExtraLimitMax < p.ExtraLimitMin || p.ExtraLimitMax > 15 {
+		return fmt.Errorf("音乐合伙人额外评分目标范围必须完整填写 0 至 15 首，且上限不得小于下限")
 	}
 	if p.WaitMin == 0 && p.WaitMax == 0 {
 		p.WaitMin, p.WaitMax = 15, 20
@@ -213,6 +255,46 @@ func (p *MusicPartnerConf) Validate() error {
 			}
 		}
 	}
+	if p.RecommendCountMin == 0 && p.RecommendCountMax == 0 && !p.recommendRangeSet {
+		p.RecommendCountMin, p.RecommendCountMax = p.RecommendCount, p.RecommendCount
+	}
+	if p.RecommendCountMin < 0 || p.RecommendCountMax < p.RecommendCountMin {
+		return fmt.Errorf("音乐合伙人每日推荐目标范围必须完整填写非负整数，且上限不得小于下限")
+	}
+	if p.RecommendOrder == "" {
+		p.RecommendOrder = "sequential"
+	}
+	if p.RecommendOrder != "sequential" && p.RecommendOrder != "random" {
+		return fmt.Errorf("音乐合伙人推荐抽取顺序只能为 sequential（按列表顺序）或 random（随机抽取）")
+	}
+	if p.RecommendWaitMin == 0 && p.RecommendWaitMax == 0 {
+		p.RecommendWaitMin, p.RecommendWaitMax = 16, 20
+	}
+	if p.RecommendWaitMin < 16 || p.RecommendWaitMax < p.RecommendWaitMin || p.RecommendWaitMax > 300 {
+		return fmt.Errorf("音乐合伙人推荐等待范围必须完整填写 16 至 300 秒，且上限不得小于下限")
+	}
+	if p.RecommendNotes == nil {
+		p.RecommendNotes = []string{}
+	}
+	if p.RecommendComments == nil {
+		p.RecommendComments = []string{}
+	}
+	for _, pool := range []struct {
+		name   string
+		values []string
+	}{{"推荐笔记", p.RecommendNotes}, {"推荐乐评", p.RecommendComments}} {
+		if p.RecommendCountMax > 0 && len(pool.values) == 0 {
+			return fmt.Errorf("启用音乐合伙人推荐任务时必须配置%s模板", pool.name)
+		}
+		if len(pool.values) > 50 {
+			return fmt.Errorf("音乐合伙人%s最多配置 50 条模板", pool.name)
+		}
+		for _, value := range pool.values {
+			if strings.TrimSpace(value) == "" || utf8.RuneCountInString(value) > 500 {
+				return fmt.Errorf("音乐合伙人每条%s模板必须为 1 至 500 个字符，不能仅包含空白", pool.name)
+			}
+		}
+	}
 	return nil
 }
 
@@ -223,14 +305,33 @@ func validateMusicPartnerRangePresence(rawValue func(string) (string, bool)) err
 		{"scoreMin", "scoreMax"},
 		{"extraLimitMin", "extraLimitMax"},
 		{"waitMin", "waitMax"},
+		{"recommendCountMin", "recommendCountMax"},
+		{"recommendWaitMin", "recommendWaitMax"},
 	} {
 		minValue, hasMin := rawValue(bounds.minKey)
 		maxValue, hasMax := rawValue(bounds.maxKey)
 		min, minErr := strconv.Atoi(minValue)
 		max, maxErr := strconv.Atoi(maxValue)
-		if hasMin != hasMax || (hasMin && (minErr != nil || maxErr != nil || min <= 0 || max <= 0)) {
-			return fmt.Errorf("音乐合伙人 %s 和 %s 必须同时填写有效的正整数", bounds.minKey, bounds.maxKey)
+		minimum := 1
+		if bounds.minKey == "extraLimitMin" || bounds.minKey == "recommendCountMin" {
+			minimum = 0
+		} else if bounds.minKey == "recommendWaitMin" {
+			minimum = 16
 		}
+		if hasMin != hasMax || (hasMin && (minErr != nil || maxErr != nil || min < minimum || max < minimum)) {
+			return fmt.Errorf("音乐合伙人 %s 和 %s 必须同时填写不小于 %d 的整数", bounds.minKey, bounds.maxKey, minimum)
+		}
+	}
+	_, hasRecommendMin := rawValue("recommendCountMin")
+	_, hasRecommendMax := rawValue("recommendCountMax")
+	if raw, present := rawValue("recommendCount"); present && !hasRecommendMin && !hasRecommendMax {
+		count, err := strconv.Atoi(raw)
+		if err != nil || count < 0 {
+			return fmt.Errorf("音乐合伙人旧版每日推荐数量必须填写非负整数")
+		}
+	}
+	if order, present := rawValue("recommendOrder"); present && order != "sequential" && order != "random" {
+		return fmt.Errorf("音乐合伙人推荐抽取顺序只能为 sequential（按列表顺序）或 random（随机抽取）")
 	}
 	return nil
 }
@@ -585,7 +686,7 @@ func (c *Config) Validate() error {
 		if len(c.Task.FastTasks) == 0 {
 			c.Task.FastTasks = []string{
 				"VipTask", "Reserve", "ViewVipCenter", "LikeComment",
-				"FollowArtist", "LikeSong", "CollectSong", "PublishNote",
+				"FollowArtist", "LikeSong", "CollectSong", "PublishNote", "ShareSong",
 				"musician-sign", "note", "daily-song-share", "vip-member-gift", "fansgroup",
 			}
 		}
@@ -690,6 +791,14 @@ func decodeConfig(v *viper.Viper) (*Config, error) {
 		return fmt.Sprint(v.Get(key)), present || v.IsSet(key)
 	}); err != nil {
 		return nil, err
+	}
+	if conf.MusicPartner != nil {
+		_, hasMin := partnerValues["extralimitmin"]
+		_, hasMax := partnerValues["extralimitmax"]
+		conf.MusicPartner.extraRangeSet = hasMin || hasMax || v.IsSet("musicPartner::extraLimitMin") || v.IsSet("musicPartner::extraLimitMax")
+		_, hasRecommendMin := partnerValues["recommendcountmin"]
+		_, hasRecommendMax := partnerValues["recommendcountmax"]
+		conf.MusicPartner.recommendRangeSet = hasRecommendMin || hasRecommendMax || v.IsSet("musicPartner::recommendCountMin") || v.IsSet("musicPartner::recommendCountMax")
 	}
 	conf.syncMainCookie()
 	if err := conf.Validate(); err != nil {
@@ -809,7 +918,7 @@ func migrateMusicPartnerRangeNodes(root *yaml.Node) (bool, error) {
 	for _, field := range []struct {
 		key   string
 		value int
-	}{{"scoreMin", partner.ScoreMin}, {"scoreMax", partner.ScoreMax}, {"extraLimitMin", partner.ExtraLimitMin}, {"extraLimitMax", partner.ExtraLimitMax}} {
+	}{{"scoreMin", partner.ScoreMin}, {"scoreMax", partner.ScoreMax}, {"extraLimitMin", partner.ExtraLimitMin}, {"extraLimitMax", partner.ExtraLimitMax}, {"recommendCountMin", partner.RecommendCountMin}, {"recommendCountMax", partner.RecommendCountMax}} {
 		if mappingNodeValue(node, field.key) == nil {
 			ensureMappingNodeValue(node, field.key, yaml.ScalarNode, "!!int").Value = strconv.Itoa(field.value)
 			changed = true

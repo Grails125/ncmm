@@ -15,10 +15,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/3899/ncmm/api"
 	"github.com/3899/ncmm/api/types"
@@ -120,12 +120,17 @@ type EventDeleteResp struct {
 // 加密: EAPI
 // 需要登录
 func (a *Api) EventDelete(ctx context.Context, req *EventDeleteReq) (*EventDeleteResp, error) {
+	if req == nil || req.Id <= 0 {
+		return nil, fmt.Errorf("待删除动态 ID 无效")
+	}
 	var (
 		url   = "https://interface3.music.163.com/eapi/event/delete"
 		reply EventDeleteResp
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
+	opts.NoRetry = true
 
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
@@ -182,15 +187,18 @@ func (a *Api) EventUploadImage(ctx context.Context, filePath string) (string, er
 	// 读取文件
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return "", fmt.Errorf("read file: %w", err)
+		return "", imageUploadFailure(ctx, "读取图片", "文件读取失败", 0, 0, err)
+	}
+	contentType, ext, err := eventImageFormat(data)
+	if err != nil {
+		return "", imageUploadFailure(ctx, "识别格式", "图片格式不支持", 0, 0, err)
 	}
 
 	md5, err := utils.MD5Hex(data)
 	if err != nil {
-		return "", fmt.Errorf("MD5Hex: %w", err)
+		return "", imageUploadFailure(ctx, "计算摘要", "编码失败", 0, 0, err)
 	}
 
-	ext := strings.TrimPrefix(filepath.Ext(filePath), ".")
 	filename := filepath.Base(filePath)
 	fileSize := int64(len(data))
 
@@ -218,26 +226,31 @@ func (a *Api) EventUploadImage(ctx context.Context, filePath string) (string, er
 		tokenOpts  = api.NewOptions()
 	)
 	tokenOpts.CryptoMode = api.CryptoModeEAPI
+	tokenOpts.Sensitive = true
 
 	resp, err := a.client.Request(ctx, tokenURL, tokenReq, &tokenReply, tokenOpts)
 	if err != nil {
-		return "", fmt.Errorf("get nos token: %w", err)
+		return "", imageUploadFailure(ctx, "分配凭据", "请求失败", 0, 0, err)
 	}
 	_ = resp
 
 	if tokenReply.Code != 200 {
-		return "", fmt.Errorf("get nos token failed: code=%d, msg=%s", tokenReply.Code, tokenReply.Message)
+		return "", imageUploadFailure(ctx, "分配凭据", "服务拒绝", 200, tokenReply.Code, nil)
+	}
+	if tokenReply.Result.DocId == "" || tokenReply.Result.Token == "" || tokenReply.Result.Bucket == "" || tokenReply.Result.ObjectKey == "" {
+		return "", imageUploadFailure(ctx, "分配凭据", "凭据缺失", 200, tokenReply.Code, nil)
 	}
 
 	// Step 2: 上传文件到 NOS
-	uploadNode, err := a.getUploadNode(ctx, "cloudmusic")
+	uploadNode, err := a.getUploadNode(ctx, tokenReply.Result.Bucket)
 	if err != nil {
-		return "", fmt.Errorf("get upload node: %w", err)
+		return "", imageUploadFailure(ctx, "查询节点", "请求失败", 0, 0, err)
 	}
 
-	contentType := utils.DetectContentType(data, ext)
-	uploadURL := fmt.Sprintf("%s/%s/%s?version=1.0&offset=0&complete=true",
-		uploadNode, tokenReply.Result.Bucket, tokenReply.Result.ObjectKey)
+	uploadURL, err := eventImageUploadURL(uploadNode, tokenReply.Result.Bucket, tokenReply.Result.ObjectKey)
+	if err != nil {
+		return "", imageUploadFailure(ctx, "构造地址", "路径无效", 0, 0, err)
+	}
 
 	headers := map[string]string{
 		"X-Nos-Token":  tokenReply.Result.Token,
@@ -245,13 +258,13 @@ func (a *Api) EventUploadImage(ctx context.Context, filePath string) (string, er
 	}
 
 	if err := a.rawUpload(ctx, uploadURL, headers, data); err != nil {
-		return "", fmt.Errorf("upload file: %w", err)
+		return "", imageUploadFailure(ctx, "上传文件", "请求失败", 0, 0, err)
 	}
 
 	// Step 3: 获取事件图片信息
 	var (
-		imgURL  = "https://music.163.com/eapi/upload/event/img/v1"
-		imgReq  = struct {
+		imgURL = "https://music.163.com/eapi/upload/event/img/v1"
+		imgReq = struct {
 			ImgId  string `json:"imgid"`
 			Format string `json:"format"`
 		}{
@@ -262,15 +275,19 @@ func (a *Api) EventUploadImage(ctx context.Context, filePath string) (string, er
 		imgOpts  = api.NewOptions()
 	)
 	imgOpts.CryptoMode = api.CryptoModeEAPI
+	imgOpts.Sensitive = true
 
 	resp, err = a.client.Request(ctx, imgURL, imgReq, &imgReply, imgOpts)
 	if err != nil {
-		return "", fmt.Errorf("get event img info: %w", err)
+		return "", imageUploadFailure(ctx, "读取图片信息", "请求失败", 0, 0, err)
 	}
 	_ = resp
 
 	if imgReply.Code != 200 {
-		return "", fmt.Errorf("get event img info failed: code=%d, msg=%s", imgReply.Code, imgReply.Message)
+		return "", imageUploadFailure(ctx, "读取图片信息", "服务拒绝", 200, imgReply.Code, nil)
+	}
+	if err := validateEventImageInfo(imgReply); err != nil {
+		return "", imageUploadFailure(ctx, "读取图片信息", "元数据缺失", 200, imgReply.Code, err)
 	}
 
 	// 构建 pics JSON
@@ -291,7 +308,7 @@ func (a *Api) EventUploadImage(ctx context.Context, filePath string) (string, er
 	}
 	picsBytes, err := json.Marshal([]eventImgPicInfo{picInfo})
 	if err != nil {
-		return "", fmt.Errorf("marshal pics: %w", err)
+		return "", imageUploadFailure(ctx, "编码图片信息", "编码失败", 0, 0, err)
 	}
 
 	return string(picsBytes), nil
@@ -306,13 +323,16 @@ func (a *Api) EventUploadImages(ctx context.Context, filePaths []string) (string
 		if err != nil {
 			return "", fmt.Errorf("read file %s: %w", fp, err)
 		}
+		contentType, ext, err := eventImageFormat(data)
+		if err != nil {
+			return "", err
+		}
 
 		md5, err := utils.MD5Hex(data)
 		if err != nil {
 			return "", fmt.Errorf("MD5Hex: %w", err)
 		}
 
-		ext := strings.TrimPrefix(filepath.Ext(fp), ".")
 		filename := filepath.Base(fp)
 		fileSize := int64(len(data))
 
@@ -340,6 +360,7 @@ func (a *Api) EventUploadImages(ctx context.Context, filePaths []string) (string
 			tokenOpts  = api.NewOptions()
 		)
 		tokenOpts.CryptoMode = api.CryptoModeEAPI
+		tokenOpts.Sensitive = true
 
 		if _, err := a.client.Request(ctx, tokenURL, tokenReq, &tokenReply, tokenOpts); err != nil {
 			return "", fmt.Errorf("get nos token for %s: %w", fp, err)
@@ -347,16 +368,20 @@ func (a *Api) EventUploadImages(ctx context.Context, filePaths []string) (string
 		if tokenReply.Code != 200 {
 			return "", fmt.Errorf("get nos token failed for %s: code=%d", fp, tokenReply.Code)
 		}
+		if tokenReply.Result.DocId == "" || tokenReply.Result.Token == "" {
+			return "", fmt.Errorf("NOS 未返回完整的图片上传凭据")
+		}
 
 		// 上传文件
-		uploadNode, err := a.getUploadNode(ctx, "cloudmusic")
+		uploadNode, err := a.getUploadNode(ctx, tokenReply.Result.Bucket)
 		if err != nil {
 			return "", fmt.Errorf("get upload node: %w", err)
 		}
 
-		contentType := utils.DetectContentType(data, ext)
-		uploadURL := fmt.Sprintf("%s/%s/%s?version=1.0&offset=0&complete=true",
-			uploadNode, tokenReply.Result.Bucket, tokenReply.Result.ObjectKey)
+		uploadURL, err := eventImageUploadURL(uploadNode, tokenReply.Result.Bucket, tokenReply.Result.ObjectKey)
+		if err != nil {
+			return "", fmt.Errorf("构造图片上传地址: %w", err)
+		}
 
 		headers := map[string]string{
 			"X-Nos-Token":  tokenReply.Result.Token,
@@ -369,8 +394,8 @@ func (a *Api) EventUploadImages(ctx context.Context, filePaths []string) (string
 
 		// 获取图片信息
 		var (
-			imgURL  = "https://music.163.com/eapi/upload/event/img/v1"
-			imgReq  = struct {
+			imgURL = "https://music.163.com/eapi/upload/event/img/v1"
+			imgReq = struct {
 				ImgId  string `json:"imgid"`
 				Format string `json:"format"`
 			}{
@@ -381,12 +406,16 @@ func (a *Api) EventUploadImages(ctx context.Context, filePaths []string) (string
 			imgOpts  = api.NewOptions()
 		)
 		imgOpts.CryptoMode = api.CryptoModeEAPI
+		imgOpts.Sensitive = true
 
 		if _, err := a.client.Request(ctx, imgURL, imgReq, &imgReply, imgOpts); err != nil {
 			return "", fmt.Errorf("get event img info for %s: %w", fp, err)
 		}
 		if imgReply.Code != 200 {
 			return "", fmt.Errorf("get event img info failed for %s: code=%d", fp, imgReply.Code)
+		}
+		if err := validateEventImageInfo(imgReply); err != nil {
+			return "", err
 		}
 
 		originIdStr := strconv.FormatInt(imgReply.PicInfo.OriginId, 10)
@@ -411,4 +440,30 @@ func (a *Api) EventUploadImages(ctx context.Context, filePaths []string) (string
 		return "", fmt.Errorf("marshal pics: %w", err)
 	}
 	return string(picsBytes), nil
+}
+
+// 下载的临时文件可能统一命名为 .jpg，上传类型和后续图片处理格式都必须以内容为准。
+func eventImageFormat(data []byte) (string, string, error) {
+	contentType := http.DetectContentType(data)
+	switch contentType {
+	case "image/jpeg":
+		return contentType, "jpg", nil
+	case "image/png":
+		return contentType, "png", nil
+	case "image/gif":
+		return contentType, "gif", nil
+	case "image/webp":
+		return contentType, "webp", nil
+	case "image/bmp":
+		return contentType, "bmp", nil
+	default:
+		return "", "", fmt.Errorf("文件内容不是支持的图片格式（JPEG、PNG、GIF、WebP、BMP）")
+	}
+}
+
+func validateEventImageInfo(reply eventUploadImgResp) error {
+	if reply.PicInfo.OriginId <= 0 || reply.PicInfo.SquareId <= 0 || reply.PicInfo.RectangleId <= 0 || reply.PicInfo.Width <= 0 || reply.PicInfo.Height <= 0 {
+		return fmt.Errorf("网易云未返回有效的动态图片信息")
+	}
+	return nil
 }

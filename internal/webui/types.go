@@ -146,30 +146,33 @@ type RunRecord struct {
 }
 
 type RunReward struct {
-	Account            string `json:"account"`
-	UID                string `json:"uid,omitempty"`
-	Nickname           string `json:"nickname,omitempty"`
-	AvatarURL          string `json:"avatarUrl,omitempty"`
-	Identity           string `json:"identity,omitempty"`
-	CookieValid        bool   `json:"cookieValid,omitempty"`
-	CookieKnown        bool   `json:"cookieKnown,omitempty"`
-	VIP                bool   `json:"vip,omitempty"`
-	VIPKnown           bool   `json:"vipKnown,omitempty"`
-	Musician           bool   `json:"musician,omitempty"`
-	MusicianKnown      bool   `json:"musicianKnown,omitempty"`
-	Yunbei             int    `json:"yunbei"`
-	YunbeiKnown        bool   `json:"yunbeiKnown,omitempty"`
-	YunbeiCumulative   bool   `json:"yunbeiCumulative,omitempty"`
-	YunbeiBalance      int    `json:"yunbeiBalance"`
-	YunbeiBalanceKnown bool   `json:"yunbeiBalanceKnown,omitempty"`
-	GrowthToday        int    `json:"growthToday"`
-	GrowthTotal        int    `json:"growthTotal"`
-	GrowthKnown        bool   `json:"growthKnown,omitempty"`
-	EffectivePlays     int    `json:"effectivePlays"`
-	EffectiveTarget    int    `json:"effectiveTarget"`
-	EffectiveKnown     bool   `json:"effectiveKnown,omitempty"`
-	Signed             bool   `json:"signed,omitempty"`
-	SignKnown          bool   `json:"signKnown,omitempty"`
+	Account              string `json:"account"`
+	UID                  string `json:"uid,omitempty"`
+	Nickname             string `json:"nickname,omitempty"`
+	AvatarURL            string `json:"avatarUrl,omitempty"`
+	Identity             string `json:"identity,omitempty"`
+	CookieValid          bool   `json:"cookieValid,omitempty"`
+	CookieKnown          bool   `json:"cookieKnown,omitempty"`
+	VIP                  bool   `json:"vip,omitempty"`
+	VIPKnown             bool   `json:"vipKnown,omitempty"`
+	Musician             bool   `json:"musician,omitempty"`
+	MusicianKnown        bool   `json:"musicianKnown,omitempty"`
+	Yunbei               int    `json:"yunbei"`
+	YunbeiKnown          bool   `json:"yunbeiKnown,omitempty"`
+	YunbeiCumulative     bool   `json:"yunbeiCumulative,omitempty"`
+	YunbeiBalance        int    `json:"yunbeiBalance"`
+	YunbeiBalanceKnown   bool   `json:"yunbeiBalanceKnown,omitempty"`
+	GrowthToday          int    `json:"growthToday"`
+	GrowthTotal          int    `json:"growthTotal"`
+	GrowthKnown          bool   `json:"growthKnown,omitempty"`
+	MusicPartnerDelta    int64  `json:"musicPartnerDelta"`
+	MusicPartnerKnown    bool   `json:"musicPartnerKnown"`
+	musicPartnerObserved bool
+	EffectivePlays       int  `json:"effectivePlays"`
+	EffectiveTarget      int  `json:"effectiveTarget"`
+	EffectiveKnown       bool `json:"effectiveKnown,omitempty"`
+	Signed               bool `json:"signed,omitempty"`
+	SignKnown            bool `json:"signKnown,omitempty"`
 }
 
 type LogStats struct {

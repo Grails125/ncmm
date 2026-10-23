@@ -35,7 +35,7 @@ fs.mkdirSync(outputDir, { recursive: true });
     });
     await page.route('**/api/v1/runs', route => route.fulfill({ json: runs }));
     await page.route('**/api/v1/play-stats', route => route.fulfill({ json: [] }));
-    await page.route('**/api/v1/music-partner/points**', route => route.fulfill({ status: 503, json: { error: '隔离测试未连接网易云账号' } }));
+    await page.route('**/api/v1/accounts/data**', route => route.fulfill({ status: 503, json: { error: '隔离测试未连接网易云账号' } }));
     await page.route('**/api/v1/accounts/cookie', route => {
       cookieAttempt++;
       if (cookieAttempt === 1) return route.fulfill({ status: 400, json: { error: '模拟 Cookie 验证失败' } });

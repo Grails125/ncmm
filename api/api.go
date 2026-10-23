@@ -379,7 +379,8 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 			request.SetCookies(c.GetCookies(mURL))
 		}
 	}
-	if opts.CryptoMode == CryptoModeXEAPI || opts.CryptoMode == CryptoModeEAPI {
+	// PC EAPI 使用自己的身份头，不能混入移动端 AEAPI 的加密、压缩标识。
+	if opts.CryptoMode == CryptoModeXEAPI || (opts.CryptoMode == CryptoModeEAPI && !strings.EqualFold(request.Header.Get("x-os"), "pc")) {
 		c.applyXEAPIHeaders(request)
 	}
 
@@ -498,7 +499,7 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			return nil, errors.New("音乐接口请求失败或超时，请稍后查询任务状态")
+			return nil, sensitiveRequestError(err, response)
 		}
 		return nil, fmt.Errorf("do request: %w", err)
 	}

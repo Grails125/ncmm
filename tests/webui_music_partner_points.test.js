@@ -24,7 +24,7 @@ function harness(fetcher = async () => { throw new Error('unexpected request'); 
 }
 
 const response = (data, status = 200) => ({ ok: status === 200, status, headers: { get: () => 'application/json' }, json: async () => data });
-const snapshot = (account, integral = 118, weekly = 61) => ({ account, period: 73, week: 2, startDate: 1791734400000, endDate: 1794153599999, integral, currentWeekIntegral: weekly, updatedAt: '2026-10-22T09:00:00Z' });
+const snapshot = (account, integral = 118, weekly = 61) => ({ account, partner: { account, period: 73, week: 2, startDate: 1791734400000, endDate: 1794153599999, integral, currentWeekIntegral: weekly }, growthTotal: 500, vipLevel: 5, yunbeiBalance: 1200, updatedAt: '2026-10-22T09:00:00Z', errors: {} });
 function deferred() {
   let resolve;
   const promise = new Promise(done => { resolve = done; });
@@ -48,7 +48,11 @@ test('真实零积分与缺失积分分别显示，日期明确按北京时间�
   await ui.refreshMusicPartnerPoints();
   assert.equal(ui.element('#music-partner-points-integral').textContent, '0');
   assert.equal(ui.element('#music-partner-points-weekly').textContent, '未知');
-  assert.equal(ui.element('#music-partner-points-status').textContent, '部分积分未知');
+  assert.equal(ui.element('#music-partner-points-status').textContent, '部分数据未知');
+  assert.match(ui.calls[0][0], /^\/api\/v1\/accounts\/data\?account=/);
+  assert.equal(ui.element('#account-data-growth-total').textContent, '500');
+  assert.equal(ui.element('#account-data-vip-level').textContent, 'Lv.5');
+  assert.equal(ui.element('#account-data-yunbei-balance').textContent, '1200');
   assert.equal(ui.element('#music-partner-points-period').textContent, '第 73 期 · 第 2 周');
   assert.equal(ui.element('#music-partner-points-dates').textContent, '2026/10/12 至 2026/11/08（北京时间）');
   assert.equal(ui.musicPartnerPeriodDate(null), '未知');
@@ -128,7 +132,7 @@ test('仅相关任务新完成时自动刷新，普通轮询与后台页面不�
   await ui.refreshMusicPartnerPoints();
   const running = [{ id: 'partner-1', command: 'music-partner', status: 'running' }];
   await ui.refreshMusicPartnerPointsAfterRun(running);
-  await ui.refreshMusicPartnerPointsAfterRun([{ id: 'sign-1', command: 'sign', finishedAt: '2026-10-22T09:01:00Z' }]);
+  await ui.refreshMusicPartnerPointsAfterRun([{ id: 'unrelated-1', command: 'download', finishedAt: '2026-10-22T09:01:00Z' }]);
   assert.equal(ui.calls.length, 1);
   const finished = [{ ...running[0], status: 'success', finishedAt: '2026-10-22T09:02:00Z' }];
   await ui.refreshMusicPartnerPointsAfterRun(finished);
@@ -137,6 +141,35 @@ test('仅相关任务新完成时自动刷新，普通轮询与后台页面不�
   ui.state.currentPage = 'config';
   await ui.refreshMusicPartnerPointsAfterRun([...finished, { id: 'batch-2', command: 'task', finishedAt: '2026-10-22T09:03:00Z' }]);
   assert.equal(ui.calls.length, 2);
+});
+
+test('账号数据部分失败用未知替换旧字段，保留本次成功字段', async () => {
+  let partial = false;
+  const ui = harness(async () => response(partial
+    ? { account: './main/cookie.json', partner: null, growthTotal: null, vipLevel: null, yunbeiBalance: 0, errors: { partner: '暂无合伙人资格', growth: '成长值暂不可用' } }
+    : snapshot('./main/cookie.json')));
+  await ui.refreshMusicPartnerPoints();
+  partial = true;
+  await ui.refreshMusicPartnerPoints(true);
+  assert.equal(ui.element('#music-partner-points-integral').textContent, '未知');
+  assert.equal(ui.element('#account-data-growth-total').textContent, '未知');
+  assert.equal(ui.element('#account-data-vip-level').textContent, '未知');
+  assert.equal(ui.element('#account-data-yunbei-balance').textContent, '0');
+  assert.equal(ui.element('#music-partner-points-status').textContent, '部分查询失败');
+  assert.match(ui.element('#music-partner-points-message').textContent, /暂无合伙人资格/);
+});
+
+test('签到完成后刷新账号余额和成长值，切账号时清除前一个账号所有字段', async () => {
+  const ui = harness(async url => url.includes(encodeURIComponent('./main/cookie.json'))
+    ? response(snapshot('./main/cookie.json')) : response({ error: '账号暂不可用' }, 503));
+  await ui.refreshMusicPartnerPoints();
+  await ui.refreshMusicPartnerPointsAfterRun([{ id: 'sign-1', command: 'sign', finishedAt: '2026-10-22T09:01:00Z' }]);
+  assert.equal(ui.calls.length, 2);
+  await ui.refreshMusicPartnerPointsAfterRun([{ id: 'musician-1', command: 'musician', finishedAt: '2026-10-22T09:02:00Z' }]);
+  assert.equal(ui.calls.length, 3);
+  ui.state.musicPartnerAccountPath = './other/cookie.json';
+  await ui.refreshMusicPartnerPoints();
+  for (const selector of ['#account-data-growth-total', '#account-data-vip-level', '#account-data-yunbei-balance']) assert.equal(ui.element(selector).textContent, '未知');
 });
 
 test('返回错误账号或退出登录后的响应不得写入积分', async () => {

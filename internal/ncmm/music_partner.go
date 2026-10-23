@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 	"github.com/3899/ncmm/api/weapi"
 	"github.com/3899/ncmm/config"
 	"github.com/3899/ncmm/internal/partnerpoints"
+	"github.com/3899/ncmm/internal/rewardevent"
 	"github.com/3899/ncmm/pkg/log"
 	"github.com/spf13/cobra"
 )
@@ -82,11 +84,11 @@ func (c *MusicPartner) execute(ctx context.Context) error {
 		accounts = append(accounts, c.cookieFile)
 	} else if c.root.Cfg.Accounts != nil {
 		if cfg.EnableMain {
-			accounts = append(accounts, c.root.musicPartnerCookiePath(c.root.Cfg.Accounts.Main))
+			accounts = append(accounts, c.root.Cfg.Accounts.Main)
 		}
 		if cfg.EnableSecondaries {
 			for _, account := range c.root.Cfg.Accounts.Secondary {
-				accounts = append(accounts, c.root.musicPartnerCookiePath(account))
+				accounts = append(accounts, account)
 			}
 		}
 	}
@@ -99,7 +101,11 @@ func (c *MusicPartner) execute(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(append(failures, err)...)
 		}
-		key, err := filepath.Abs(account)
+		cookieFile := account
+		if strings.TrimSpace(c.cookieFile) == "" {
+			cookieFile = c.root.musicPartnerCookiePath(account)
+		}
+		key, err := filepath.Abs(cookieFile)
 		if err != nil {
 			return fmt.Errorf("账号 Cookie 路径无效")
 		}
@@ -110,8 +116,7 @@ func (c *MusicPartner) execute(ctx context.Context) error {
 			continue
 		}
 		seen[key] = true
-		c.printf("开始处理账号 %s", filepath.Base(account))
-		if err := c.ExecuteForCookie(ctx, account); err != nil {
+		if err := c.executeAccount(ctx, account, cookieFile); err != nil {
 			c.root.ReportFailure(account, "music-partner", err)
 			failures = append(failures, fmt.Errorf("账号 %s：%w", filepath.Base(account), err))
 		}
@@ -134,7 +139,13 @@ func (c *Root) musicPartnerCookiePath(path string) string {
 }
 
 // ExecuteForCookie 为每个账号创建独立会话，不修改共享网络配置或写入任务数据库。
-func (c *MusicPartner) ExecuteForCookie(ctx context.Context, cookieFile string) (result error) {
+func (c *MusicPartner) ExecuteForCookie(ctx context.Context, cookieFile string) error {
+	return c.executeAccount(ctx, cookieFile, cookieFile)
+}
+
+// account 保留调用方的账号标识，cookieFile 可以是解析后的绝对路径。
+func (c *MusicPartner) executeAccount(ctx context.Context, account, cookieFile string) (result error) {
+	c.printf(">>> 账号 (%s) 开始评分 <<<", account)
 	defer func() {
 		if result != nil {
 			c.printf("账号任务失败：%v", result)
@@ -172,32 +183,52 @@ func (c *MusicPartner) ExecuteForCookie(ctx context.Context, cookieFile string) 
 	if !ok || musicCookie.Value == "" {
 		musicCookie, ok = client.Cookie("https://music.163.com", "MUSIC_U")
 	}
-	csrf, hasCSRF := client.GetCSRF(endpoint)
-	if !hasCSRF {
-		csrf, hasCSRF = client.GetCSRF("https://music.163.com")
-	}
-	if !ok || musicCookie.Value == "" || !hasCSRF || csrf == "" {
+	// 手动导入的有效登录 Cookie 可能不含 CSRF；沿用 API 客户端原值，由平台判断会话是否有效。
+	if !ok || musicCookie.Value == "" {
 		return fmt.Errorf("账号 Cookie 不完整，请重新登录后执行音乐合伙人任务")
 	}
 	partner := weapi.New(client)
-	return c.runWithPoints(ctx, func(ctx context.Context) (*partnerpoints.Snapshot, error) {
+	return c.runWithPoints(ctx, account, func(ctx context.Context) (*partnerpoints.Snapshot, error) {
 		return partnerpoints.Read(ctx, partner)
 	}, func(ctx context.Context) error {
-		return c.run(ctx, partner, cfg)
+		scoreErr := c.run(ctx, partner, cfg)
+		if ctx.Err() != nil || errors.Is(scoreErr, context.Canceled) || errors.Is(scoreErr, context.DeadlineExceeded) || errors.Is(scoreErr, errMusicPartnerAccountBlocked) {
+			return scoreErr
+		}
+		return errors.Join(scoreErr, c.recommendAccount(ctx, client, cfg, cookieFile))
 	})
 }
 
-// 积分读取仅用于日志，不能替代或覆盖评分本身的执行结果。
-func (c *MusicPartner) runWithPoints(ctx context.Context, read func(context.Context) (*partnerpoints.Snapshot, error), run func(context.Context) error) error {
+// 积分读取用于日志及收益记录，不能替代或覆盖评分本身的执行结果。
+func (c *MusicPartner) runWithPoints(ctx context.Context, account string, read func(context.Context) (*partnerpoints.Snapshot, error), run func(context.Context) error) error {
 	before := c.readPoints(ctx, "评分前", read)
 	result := run(ctx)
 	if ctx.Err() != nil || errors.Is(result, context.Canceled) || errors.Is(result, context.DeadlineExceeded) {
 		c.printf("评分后积分未查询：任务已取消或超时")
+		c.emitPointsReward(account, before, nil)
 		return result
 	}
 	after := c.readPoints(ctx, "评分后", read)
 	c.logPointsChanges(before, after)
+	c.emitPointsReward(account, before, after)
 	return result
+}
+
+func (c *MusicPartner) emitPointsReward(account string, before, after *partnerpoints.Snapshot) {
+	if os.Getenv("NCMM_WEB_CHILD") != "1" {
+		return
+	}
+	points := &rewardevent.MusicPartner{}
+	if before != nil && after != nil && before.Period != nil && after.Period != nil && *before.Period == *after.Period && before.Integral != nil && after.Integral != nil {
+		points.Delta = *after.Integral - *before.Integral
+		points.Known = true
+	}
+	line, err := rewardevent.MarshalLine(rewardevent.Event{Account: account, Domain: rewardevent.DomainMusicPartner, MusicPartner: points})
+	if err != nil {
+		log.Debug("音乐合伙人收益事件生成失败：%v", err)
+		return
+	}
+	c.cmd.Println("  " + line)
 }
 
 func (c *MusicPartner) readPoints(ctx context.Context, phase string, read func(context.Context) (*partnerpoints.Snapshot, error)) *partnerpoints.Snapshot {
@@ -394,6 +425,14 @@ func (c *MusicPartner) extraList(ctx context.Context, client musicPartnerAPI) (*
 }
 
 func (c *MusicPartner) extra(ctx context.Context, client musicPartnerAPI, cfg *config.MusicPartnerConf, taskID int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	target := musicPartnerDailyTarget(taskID, cfg)
+	if !cfg.FullExtraTasks && target == 0 {
+		c.printf("当日额外评分目标为 0，跳过额外任务")
+		return nil
+	}
 	list, err := c.extraList(ctx, client)
 	if err != nil {
 		return err
@@ -404,7 +443,6 @@ func (c *MusicPartner) extra(ctx context.Context, client musicPartnerAPI, cfg *c
 			completed++
 		}
 	}
-	target := musicPartnerDailyTarget(taskID, cfg)
 	if cfg.FullExtraTasks {
 		target = len(list.Data)
 	}
@@ -619,6 +657,7 @@ func musicPartnerDayContext(parent context.Context, now time.Time) (context.Cont
 }
 
 var errMusicPartnerAccountBlocked = errors.New("账号鉴权失效或被限流")
+var errMusicPartnerStop = errors.New("停止当前账号任务")
 
 type musicPartnerFailure struct {
 	message        string
@@ -629,15 +668,14 @@ type musicPartnerFailure struct {
 func (e *musicPartnerFailure) Error() string { return e.message }
 
 func (e *musicPartnerFailure) Is(target error) bool {
-	return e.accountBlocked && target == errMusicPartnerAccountBlocked
+	return (e.accountBlocked && target == errMusicPartnerAccountBlocked) || (e.stop && target == errMusicPartnerStop)
 }
 
 func musicPartnerMustStop(ctx context.Context, err error) bool {
 	if ctx.Err() != nil {
 		return true
 	}
-	var failure *musicPartnerFailure
-	return errors.As(err, &failure) && failure.stop
+	return errors.Is(err, errMusicPartnerStop) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func musicPartnerResponseError(operation string, code int64, message string) error {

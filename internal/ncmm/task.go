@@ -36,7 +36,10 @@ type Task struct {
 	l               *log.Logger
 	opts            TaskOpts
 	rng             *rand.Rand
-	musicPartnerErr error
+	wait            func(context.Context, time.Duration)
+	failures        []error
+	skipped         int
+	musicPartnerErr error // 评分未能执行时保留非零退出；已执行的评分错误统一记入 failures。
 }
 
 type Account struct {
@@ -49,6 +52,7 @@ func NewTask(root *Root, l *log.Logger) *Task {
 		root: root,
 		l:    l,
 		rng:  rand.New(rand.NewSource(time.Now().UnixNano())),
+		wait: taskWait,
 		cmd: &cobra.Command{
 			Use:     "task",
 			Short:   "Batch execute configured tasks",
@@ -57,7 +61,13 @@ func NewTask(root *Root, l *log.Logger) *Task {
 	}
 	c.addFlags()
 	c.cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		return c.execute(cmd.Context())
+		err := c.execute(cmd.Context())
+		if err != nil {
+			// 运行时错误由 Root.Execute 统一输出，避免重复错误和无关的命令用法。
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
+		}
+		return err
 	}
 	return c
 }
@@ -99,7 +109,7 @@ func (c *Task) getAccounts() []Account {
 func (c *Task) standardizeActionKey(action string) string {
 	keys := []string{
 		"VipTask", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
-		"LikeSong", "CollectSong", "PublishNote", "ListenIndie", "PlayDailyRecommend",
+		"LikeSong", "CollectSong", "PublishNote", "ShareSong", "ListenIndie", "PlayDailyRecommend",
 		"musician-sign", "note", "daily-song-share", "vip-member-gift", "fansgroup", "playids", "musician-vip", "music-partner",
 	}
 	for _, k := range keys {
@@ -113,7 +123,7 @@ func (c *Task) standardizeActionKey(action string) string {
 func (c *Task) isActionActive(stdAction string, activeTasks map[string]bool) bool {
 	signSubtasks := []string{
 		"VipTask", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
-		"LikeSong", "CollectSong", "PublishNote", "ListenIndie", "PlayDailyRecommend",
+		"LikeSong", "CollectSong", "PublishNote", "ShareSong", "ListenIndie", "PlayDailyRecommend",
 	}
 	for _, sub := range signSubtasks {
 		if stdAction == sub {
@@ -140,7 +150,7 @@ func (c *Task) isActionEnabledForAccount(stdAction string, isMain bool) bool {
 	isSignSubtask := false
 	signSubtasks := []string{
 		"viptask", "reserve", "viewvipcenter", "likecomment", "followartist",
-		"likesong", "collectsong", "publishnote", "listenindie", "playdailyrecommend",
+		"likesong", "collectsong", "publishnote", "sharesong", "listenindie", "playdailyrecommend",
 	}
 	for _, sub := range signSubtasks {
 		if actionLower == sub {
@@ -209,21 +219,47 @@ func (c *Task) isActionEnabledForAccount(stdAction string, isMain bool) bool {
 }
 
 func (c *Task) sleepBetweenTasks(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
 	sleepSec := 1 + c.rng.Intn(5) // 1 ~ 5 秒
 	c.cmd.Printf("[task] ⏳ 为规避数据库锁竞争与接口频率限制，随机等待 %d 秒后继续下一个任务...\n", sleepSec)
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Duration(sleepSec) * time.Second):
-	}
+	c.wait(ctx, time.Duration(sleepSec)*time.Second)
 }
 
 func (c *Task) sleepBetweenAccounts(ctx context.Context, currentAccount string) {
+	if ctx.Err() != nil {
+		return
+	}
 	sleepSec := 5 + c.rng.Intn(16) // 5 ~ 20 秒
 	c.cmd.Printf("[task] ⏳ 账号 (%s) 任务处理完毕，为规避风控，随机等待 %d 秒后继续下一个账号...\n", currentAccount, sleepSec)
+	c.wait(ctx, time.Duration(sleepSec)*time.Second)
+}
+
+func taskWait(ctx context.Context, duration time.Duration) {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-	case <-time.After(time.Duration(sleepSec) * time.Second):
+	case <-timer.C:
 	}
+}
+
+func (c *Task) reportFailure(account, action string, err error) {
+	if err == nil {
+		return
+	}
+	label := action
+	if action == "music-partner" {
+		label = "音乐合伙人评分"
+	}
+	c.failures = append(c.failures, fmt.Errorf("账号 (%s) [%s]: %w", account, label, err))
+	c.root.ReportFailure(account, action, err)
+}
+
+func (c *Task) reportSkip(account, action, reason string) {
+	c.skipped++
+	c.root.ReportSkip(account, action, reason)
 }
 
 // isSessionInvalidError 判断错误是否为 Cookie/会话失效，此类错误应跳过该账号后续任务。
@@ -271,12 +307,9 @@ func (c *Task) executeAction(
 		p := NewMusicPartner(c.root, c.l)
 		p.Command().SetOut(c.cmd.OutOrStdout())
 		p.Command().SetErr(c.cmd.ErrOrStderr())
-		if err := p.ExecuteForCookie(ctx, c.root.musicPartnerCookiePath(account.Filepath)); err != nil {
+		if err := p.executeAccount(ctx, account.Filepath, c.root.musicPartnerCookiePath(account.Filepath)); err != nil {
 			c.cmd.Printf("[task] ❌ 账号 (%s) [音乐合伙人评分] 失败: %s\n", account.Filepath, err)
-			c.root.ReportFailure(account.Filepath, "music-partner", err)
-			if c.musicPartnerErr == nil {
-				c.musicPartnerErr = fmt.Errorf("音乐合伙人评分未全部完成: %w", err)
-			}
+			c.reportFailure(account.Filepath, "music-partner", err)
 			sessionInvalid = isSessionInvalidError(err)
 		}
 		c.sleepBetweenTasks(ctx)
@@ -285,7 +318,7 @@ func (c *Task) executeAction(
 	isSignSubtask := false
 	signSubtasks := []string{
 		"VipTask", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
-		"LikeSong", "CollectSong", "PublishNote", "ListenIndie", "PlayDailyRecommend",
+		"LikeSong", "CollectSong", "PublishNote", "ShareSong", "ListenIndie", "PlayDailyRecommend",
 	}
 	for _, sub := range signSubtasks {
 		if stdAction == sub {
@@ -315,7 +348,7 @@ func (c *Task) executeAction(
 				}
 				if err := s.runSignForCookie(ctx, account.Filepath, account.IsMain, allowedTasks, report, finalizeSignEarnings); err != nil {
 					c.cmd.Printf("[task] ❌ 账号 (%s) [日常签到] 执行失败: %s\n", account.Filepath, err)
-					c.root.ReportFailure(account.Filepath, "sign", err)
+					c.reportFailure(account.Filepath, "sign", err)
 					sessionInvalid = isSessionInvalidError(err)
 				} else {
 					c.cmd.Printf("[task] ✅ 账号 (%s) [日常签到] 执行完毕\n", account.Filepath)
@@ -333,7 +366,7 @@ func (c *Task) executeAction(
 		p := NewPlayIds(c.root, c.l)
 		if err := p.RunForCookie(ctx, account.Filepath); err != nil {
 			c.cmd.Printf("[task] ❌ 账号 (%s) [播放指定歌曲] 执行失败: %s\n", account.Filepath, err)
-			c.root.ReportFailure(account.Filepath, "playids", err)
+			c.reportFailure(account.Filepath, "playids", err)
 			sessionInvalid = isSessionInvalidError(err)
 		} else {
 			c.cmd.Printf("[task] ✅ 账号 (%s) [播放指定歌曲] 执行完毕\n", account.Filepath)
@@ -347,7 +380,7 @@ func (c *Task) executeAction(
 		m := NewMusician(c.root, c.l)
 		if err := m.RunSignForCookie(ctx, account.Filepath); err != nil {
 			c.cmd.Printf("[task] ❌ 账号 (%s) [音乐人日常签到] 执行失败: %s\n", account.Filepath, err)
-			c.root.ReportFailure(account.Filepath, "musician-sign", err)
+			c.reportFailure(account.Filepath, "musician-sign", err)
 			sessionInvalid = isSessionInvalidError(err)
 		} else {
 			c.cmd.Printf("[task] ✅ 账号 (%s) [音乐人日常签到] 执行完毕\n", account.Filepath)
@@ -361,7 +394,7 @@ func (c *Task) executeAction(
 		m := NewMusician(c.root, c.l)
 		if err := m.RunVipForCookie(ctx, account.Filepath); err != nil {
 			c.cmd.Printf("[task] ❌ 账号 (%s) [音乐人VIP进阶] 执行失败: %s\n", account.Filepath, err)
-			c.root.ReportFailure(account.Filepath, "musician-vip", err)
+			c.reportFailure(account.Filepath, "musician-vip", err)
 			sessionInvalid = isSessionInvalidError(err)
 		} else {
 			c.cmd.Printf("[task] ✅ 账号 (%s) [音乐人VIP进阶] 执行完毕\n", account.Filepath)
@@ -375,7 +408,7 @@ func (c *Task) executeAction(
 		n := NewNote(c.root, c.l)
 		if _, err := n.ExecuteForCookie(ctx, account.Filepath); err != nil {
 			c.cmd.Printf("[task] ❌ 账号 (%s) [发布图文动态] 执行失败: %s\n", account.Filepath, err)
-			c.root.ReportFailure(account.Filepath, "note", err)
+			c.reportFailure(account.Filepath, "note", err)
 			sessionInvalid = isSessionInvalidError(err)
 		} else {
 			c.cmd.Printf("[task] ✅ 账号 (%s) [发布图文动态] 执行完毕\n", account.Filepath)
@@ -390,21 +423,21 @@ func (c *Task) executeAction(
 		cfg, err := d.getConfig()
 		if err != nil {
 			c.cmd.Printf("[task] account (%s) [daily song share] skipped: %s\n", account.Filepath, err)
-			c.root.ReportSkip(account.Filepath, "daily-song-share", err.Error())
+			c.reportSkip(account.Filepath, "daily-song-share", err.Error())
 			return false, false
 		}
 		if err := d.validatePrerequisites(cfg); err != nil {
 			c.cmd.Printf("[task] account (%s) [daily song share] skipped: %s\n", account.Filepath, err)
-			c.root.ReportSkip(account.Filepath, "daily-song-share", err.Error())
+			c.reportSkip(account.Filepath, "daily-song-share", err.Error())
 			return false, false
 		}
 		if _, err := d.ExecuteForCookie(ctx, account.Filepath); err != nil {
 			c.cmd.Printf("[task] account (%s) [daily song share] failed: %s\n", account.Filepath, err)
 			// missing token is operational skip rather than hard failure
 			if strings.Contains(err.Error(), "跳过") || strings.Contains(strings.ToLower(err.Error()), "skip") {
-				c.root.ReportSkip(account.Filepath, "daily-song-share", err.Error())
+				c.reportSkip(account.Filepath, "daily-song-share", err.Error())
 			} else {
-				c.root.ReportFailure(account.Filepath, "daily-song-share", err)
+				c.reportFailure(account.Filepath, "daily-song-share", err)
 				sessionInvalid = isSessionInvalidError(err)
 			}
 		} else {
@@ -420,20 +453,20 @@ func (c *Task) executeAction(
 		cfg, err := v.getConfig()
 		if err != nil {
 			c.cmd.Printf("[task] account (%s) [vip member gift] skipped: %s\n", account.Filepath, err)
-			c.root.ReportSkip(account.Filepath, "vip-member-gift", err.Error())
+			c.reportSkip(account.Filepath, "vip-member-gift", err.Error())
 			return false, false
 		}
 		if err := v.validateCommonPrerequisites(cfg); err != nil {
 			c.cmd.Printf("[task] account (%s) [vip member gift] skipped: %s\n", account.Filepath, err)
-			c.root.ReportSkip(account.Filepath, "vip-member-gift", err.Error())
+			c.reportSkip(account.Filepath, "vip-member-gift", err.Error())
 			return false, false
 		}
 		if err := v.ExecuteForCookie(ctx, account.Filepath); err != nil {
 			c.cmd.Printf("[task] account (%s) [vip member gift] failed: %s\n", account.Filepath, err)
 			if strings.Contains(err.Error(), "跳过") || strings.Contains(strings.ToLower(err.Error()), "skip") {
-				c.root.ReportSkip(account.Filepath, "vip-member-gift", err.Error())
+				c.reportSkip(account.Filepath, "vip-member-gift", err.Error())
 			} else {
-				c.root.ReportFailure(account.Filepath, "vip-member-gift", err)
+				c.reportFailure(account.Filepath, "vip-member-gift", err)
 				sessionInvalid = isSessionInvalidError(err)
 			}
 		} else {
@@ -448,7 +481,7 @@ func (c *Task) executeAction(
 		f := NewFansGroup(c.root, c.l)
 		if err := f.ExecuteForCookie(ctx, account.Filepath); err != nil {
 			c.cmd.Printf("[task] ❌ 账号 (%s) [乐迷团任务] 执行失败: %s\n", account.Filepath, err)
-			c.root.ReportFailure(account.Filepath, "fansgroup", err)
+			c.reportFailure(account.Filepath, "fansgroup", err)
 			sessionInvalid = isSessionInvalidError(err)
 		} else {
 			c.cmd.Printf("[task] ✅ 账号 (%s) [乐迷团任务] 执行完毕\n", account.Filepath)
@@ -463,7 +496,7 @@ func (c *Task) queueHasActiveSignTasks(queue []string, activeTasks map[string]bo
 	for _, action := range queue {
 		switch c.standardizeActionKey(action) {
 		case "VipTask", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
-			"LikeSong", "CollectSong", "PublishNote", "ListenIndie", "PlayDailyRecommend":
+			"LikeSong", "CollectSong", "PublishNote", "ShareSong", "ListenIndie", "PlayDailyRecommend":
 			if activeTasks["sign"] {
 				return true
 			}
@@ -493,13 +526,13 @@ func (c *Task) runQueue(
 			break
 		}
 		if invalidSessions[account.Filepath] {
-			c.markMusicPartnerBlocked(account, queue, activeTasks)
+			c.markAccountTasksBlocked(account, queue, activeTasks, false)
 			c.cmd.Printf("[task] ⚠️ 账号 (%s) 鉴权失效或被限流，跳过本队列全部任务\n", account.Filepath)
 			continue
 		}
 
 		var hasExecuted bool
-		for _, action := range queue {
+		for actionIndex, action := range queue {
 			if ctx.Err() != nil {
 				break
 			}
@@ -527,7 +560,7 @@ func (c *Task) runQueue(
 			}
 			if sessionInvalid {
 				invalidSessions[account.Filepath] = true
-				c.markMusicPartnerBlocked(account, queue, activeTasks)
+				c.markAccountTasksBlocked(account, queue[actionIndex+1:], activeTasks, signRunMap[account.Filepath])
 				c.cmd.Printf("[task] ⚠️ 账号 (%s) 鉴权失效或被限流，跳过该账号后续任务\n", account.Filepath)
 				break
 			}
@@ -539,15 +572,36 @@ func (c *Task) runQueue(
 	return queueExecuted
 }
 
-func (c *Task) markMusicPartnerBlocked(account Account, queue []string, activeTasks map[string]bool) {
-	if c.musicPartnerErr != nil || !activeTasks["music-partner"] || !hasMusicPartnerAction(queue) || !c.isActionEnabledForAccount("music-partner", account.IsMain) {
-		return
+func (c *Task) markAccountTasksBlocked(account Account, queue []string, activeTasks map[string]bool, signAlreadyRun bool) {
+	seen := make(map[string]bool)
+	for _, action := range queue {
+		stdAction := c.standardizeActionKey(action)
+		if stdAction == "" || !c.isActionActive(stdAction, activeTasks) || !c.isActionEnabledForAccount(stdAction, account.IsMain) {
+			continue
+		}
+		reportAction := stdAction
+		if !activeTasks[stdAction] {
+			// 签到子任务由同一个 runSignForCookie 调用处理，不重复统计该调用。
+			if signAlreadyRun {
+				continue
+			}
+			reportAction = "sign"
+		}
+		if seen[reportAction] {
+			continue
+		}
+		seen[reportAction] = true
+		reason := "账号鉴权失效或被限流，任务未执行"
+		if reportAction == "music-partner" && c.musicPartnerErr == nil {
+			c.musicPartnerErr = fmt.Errorf("账号 (%s) 鉴权失效或被限流，音乐合伙人评分未执行", account.Filepath)
+		}
+		c.reportSkip(account.Filepath, reportAction, reason)
 	}
-	c.musicPartnerErr = fmt.Errorf("账号鉴权失效或被限流，音乐合伙人评分未执行")
-	c.root.ReportSkip(account.Filepath, "music-partner", c.musicPartnerErr.Error())
 }
 
 func (c *Task) execute(ctx context.Context) error {
+	c.failures = nil
+	c.skipped = 0
 	c.musicPartnerErr = nil
 	if err := ctx.Err(); err != nil {
 		return err
@@ -660,7 +714,7 @@ func (c *Task) execute(ctx context.Context) error {
 		}
 		if !selected {
 			c.musicPartnerErr = fmt.Errorf("音乐合伙人未选择可执行账号，请启用已配置的主账号或辅助账号")
-			c.root.ReportSkip("-", "music-partner", c.musicPartnerErr.Error())
+			c.reportSkip("-", "music-partner", c.musicPartnerErr.Error())
 		}
 	}
 	// 整次 task 进程共享：同一账号 Cookie 失效后，快/慢任务组均不再继续执行该账号
@@ -673,12 +727,18 @@ func (c *Task) execute(ctx context.Context) error {
 		if runFast {
 			c.cmd.Println("[task] >>>>>> 开始执行 [快任务组] (跨账号串行) <<<<<<")
 			c.runQueue(ctx, fastQueue, accounts, activeTasks, invalidSessions, earningsReports, !slowHasSignTasks)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			c.cmd.Printf("[task] >>>>>> [快任务组] 执行完毕 <<<<<<\n\n")
 		}
 
 		if runSlow {
 			c.cmd.Println("[task] >>>>>> 开始执行 [慢任务组] (跨账号串行) <<<<<<")
 			c.runQueue(ctx, slowQueue, accounts, activeTasks, invalidSessions, earningsReports, true)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			c.cmd.Printf("[task] >>>>>> [慢任务组] 执行完毕 <<<<<<\n\n")
 		}
 	} else if mode == "by-account" {
@@ -693,11 +753,17 @@ func (c *Task) execute(ctx context.Context) error {
 				if c.runQueue(ctx, fastQueue, []Account{account}, activeTasks, invalidSessions, earningsReports, !slowHasSignTasks) {
 					hasExecuted = true
 				}
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 			}
 			if runSlow {
 				c.cmd.Println("  --- [慢任务组] ---")
 				if c.runQueue(ctx, slowQueue, []Account{account}, activeTasks, invalidSessions, earningsReports, true) {
 					hasExecuted = true
+				}
+				if err := ctx.Err(); err != nil {
+					return err
 				}
 			}
 			c.cmd.Printf("[task] >>>>>> 账号 (%s) 执行完毕 <<<<<<\n\n", account.Filepath)
@@ -712,8 +778,20 @@ func (c *Task) execute(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if len(c.failures) > 0 {
+		c.cmd.Printf("[task] 批量任务执行结束：%d 项任务失败，%d 项跳过；失败项已跳过，其余可执行任务已继续处理。\n", len(c.failures), c.skipped)
+		batchErr := errors.Join(c.failures...)
+		if c.musicPartnerErr != nil {
+			batchErr = errors.Join(batchErr, c.musicPartnerErr)
+		}
+		return fmt.Errorf("批量任务执行结束：%d 项任务失败: %w", len(c.failures), batchErr)
+	}
 	if c.musicPartnerErr != nil {
 		return c.musicPartnerErr
+	}
+	if c.skipped > 0 {
+		c.cmd.Printf("[task] 批量任务执行结束：0 项任务失败，%d 项跳过。\n", c.skipped)
+		return nil
 	}
 	c.cmd.Println("[task] 所有任务批量执行完毕！")
 	return nil

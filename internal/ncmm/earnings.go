@@ -111,11 +111,11 @@ func (c *SignIn) fetchYunbeiEarnings(
 		c.cmd.Println("  ⚠️ 未获取到账号 UID，跳过今日云贝收入查询")
 	}
 
-	if balance, err := request.YunBeiBalance(ctx, &weapi.YunBeiBalanceReq{}); err == nil && balance.Code == 200 {
-		result.Balance = balance.Data.Balance
+	if balance, err := request.YunBeiAvailableBalance(ctx); err == nil {
+		result.Balance = balance
 		result.BalanceKnown = true
-	} else if err != nil {
-		log.Debug("YunBeiBalance err: %s", err)
+	} else {
+		log.Debug("YunBeiAvailableBalance err: %s", err)
 	}
 	return result
 }

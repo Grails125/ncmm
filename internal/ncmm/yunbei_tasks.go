@@ -57,7 +57,7 @@ func (c *SignIn) executeSingleYunbeiTask(ctx context.Context, eapiRequest *eapi.
 	switch v.TaskName {
 	case "浏览会员中心":
 		c.cmd.Println("  👉 开始执行 [浏览会员中心] 任务...")
-		c.doViewVipCenter(ctx, eapiRequest)
+		c.doViewVipCenter(ctx, eapiRequest, v.TaskId)
 	case "点赞评论、动态", "点赞":
 		c.cmd.Printf("  👉 开始执行 [%s] 任务 (使用 [点赞评论] 开关控制)...\n", v.TaskName)
 		c.doLikeComments(ctx, request)
@@ -101,10 +101,15 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 	}
 
 	// 2. 多轮循环执行任务并领奖 (最多3轮)
+	claimedRewards := make(map[string]bool)
 	for round := 1; round <= 3; round++ {
+		if ctx.Err() != nil {
+			return
+		}
 		c.cmd.Printf("  👉 [云贝任务第 %d/3 轮] 获取待做任务列表...\n", round)
-		task, err := eapiRequest.YunBeiTaskTodo(ctx, &eapi.YunBeiTaskTodoReq{})
-		if err != nil || task.Code != 200 {
+		// todo/query 会遗漏分享、关注等任务，调度必须使用完整列表；旧接口仅用于领奖。
+		task, err := request.YunBeiTaskList(ctx, &weapi.YunBeiTaskListReq{})
+		if err != nil || task == nil || task.Code != 200 {
 			c.cmd.Printf("  ❌ 获取云贝任务列表失败: %v\n", err)
 			return
 		}
@@ -123,13 +128,15 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 				playDailyRecommendTaskName = v.TaskName
 				continue
 			}
-			todoTasks = append(todoTasks, v)
+			todoTasks = append(todoTasks, eapi.YunBeiTaskTodoRespData{
+				TaskId: v.TaskId, TaskName: v.TaskName, TaskPoint: v.TaskPoint,
+				UserTaskId: v.UserTaskId, Period: v.Period, Link: v.Link,
+			})
 		}
 
-		// 若本轮没有需要做的任务，提前终止循环
+		// 没有待做任务时仍检查一次未领取奖励。
 		if len(todoTasks) == 0 && playDailyRecommendTaskName == "" {
-			c.cmd.Printf("  ℹ️ [云贝任务第 %d/3 轮] 无待执行的未完成任务，退出循环\n", round)
-			break
+			c.cmd.Printf("  ℹ️ [云贝任务第 %d/3 轮] 无待执行任务，检查已有奖励后退出\n", round)
 		}
 
 		c.cmd.Printf("  👉 [云贝任务第 %d/3 轮] 成功拉取到待完成任务:\n", round)
@@ -142,7 +149,13 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 
 		// 执行常规任务
 		for i, v := range todoTasks {
+			if ctx.Err() != nil {
+				return
+			}
 			c.executeSingleYunbeiTask(ctx, eapiRequest, request, v, allowedTasks, cookieFile, userId)
+			if ctx.Err() != nil {
+				return
+			}
 			if i < len(todoTasks)-1 || playDailyRecommendTaskName != "" {
 				c.sleepBetweenSubtasks(ctx, v.TaskName)
 			}
@@ -157,10 +170,25 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 		// 重新拉取任务列表，对本轮已完成的任务进行领奖
 		c.cmd.Println("  👉 重新获取任务列表并领取奖励...")
 		refreshedTask, err := eapiRequest.YunBeiTaskTodo(ctx, &eapi.YunBeiTaskTodoReq{})
-		if err == nil && refreshedTask.Code == 200 {
+		fullTask, fullErr := request.YunBeiTaskList(ctx, &weapi.YunBeiTaskListReq{})
+		var todoRewards []eapi.YunBeiTaskTodoRespData
+		var fullRewards []weapi.YunBeiTaskListRespData
+		todoOK := err == nil && refreshedTask != nil && refreshedTask.Code == 200
+		fullOK := fullErr == nil && fullTask != nil && fullTask.Code == 200
+		if todoOK {
+			todoRewards = refreshedTask.Data
+		}
+		if fullOK {
+			fullRewards = fullTask.Data
+		}
+		if todoOK || fullOK {
 			var claimedCount int
-			for _, v := range refreshedTask.Data {
-				if !v.Completed {
+			for _, v := range yunbeiRewardTasks(todoRewards, fullRewards) {
+				if ctx.Err() != nil {
+					return
+				}
+				rewardKey := fmt.Sprintf("%d/%d", v.UserTaskId, v.Period)
+				if claimedRewards[rewardKey] {
 					continue
 				}
 				reply, err := request.YunBeiTaskFinish(ctx, &weapi.YunBeiTaskFinishReq{
@@ -168,9 +196,13 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 					UserTaskId:  fmt.Sprintf("%d", v.UserTaskId),
 					DepositCode: fmt.Sprintf("%d", v.DepositCode),
 				})
-				if err == nil && reply.Code == 200 {
+				if err == nil && reply != nil && reply.Code == 200 && reply.Data {
+					// 完整列表会保留已完成条目，仅跳过本次运行中明确领取成功的凭据。
+					claimedRewards[rewardKey] = true
 					c.cmd.Printf("  🎉 成功领取云贝 [%s] 任务奖励，获得云贝: %v\n", v.TaskName, v.TaskPoint)
 					claimedCount++
+				} else {
+					c.cmd.Printf("  ℹ️ [%s] 奖励领取未获确认，可能已领取或暂不可领取\n", v.TaskName)
 				}
 			}
 			if claimedCount == 0 {
@@ -178,6 +210,9 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 			}
 		} else {
 			c.cmd.Printf("  ❌ 重新拉取任务列表失败: %v\n", err)
+		}
+		if len(todoTasks) == 0 && playDailyRecommendTaskName == "" {
+			break
 		}
 	}
 
@@ -213,21 +248,17 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 }
 
 // doViewVipCenter 执行浏览会员中心任务（15~25秒随机延迟）
-func (c *SignIn) doViewVipCenter(ctx context.Context, eapiRequest *eapi.Api) {
-	_, err := eapiRequest.YunbeiClickTask(ctx, &eapi.YunbeiClickTaskReq{
-		TaskId:     6758460,
-		SubAction:  "weibo",
-		Type:       "feizhu",
-		CheckToken: "",
+func (c *SignIn) doViewVipCenter(ctx context.Context, eapiRequest *eapi.Api, taskID int64) {
+	sleepSec := 15 + rand.Intn(11)
+	err := runYunbeiVipBrowse(ctx, eapiRequest, taskID, func(ctx context.Context) error {
+		c.cmd.Printf("  ⏳ 会员中心任务已触发，等待 %d 秒后提交浏览请求...\n", sleepSec)
+		return waitYunbeiAction(ctx, time.Duration(sleepSec)*time.Second)
 	})
 	if err != nil {
-		c.cmd.Printf("  ❌ 浏览会员中心触发失败: %v\n", err)
+		c.cmd.Printf("  ❌ 浏览会员中心失败: %v\n", err)
 		return
 	}
-	sleepSec := 15 + rand.Intn(11) // 15 ~ 25 秒随机
-	c.cmd.Printf("  ⏳ 已模拟触发浏览会员中心任务，随机浏览 %d 秒...\n", sleepSec)
-	time.Sleep(time.Duration(sleepSec) * time.Second)
-	c.cmd.Println("  ✅ 浏览会员中心模拟结束")
+	c.cmd.Println("  ℹ️ 浏览请求已提交，任务完成和奖励以网易云返回的列表为准")
 }
 
 // doLikeComments 点赞热门评论（点赞10个，3~10秒随机延迟后取消点赞）
@@ -444,63 +475,30 @@ func (c *SignIn) handleReserveYunbei(ctx context.Context, eapiRequest *eapi.Api)
 	c.cmd.Printf("  ℹ️ 当前预约状态: [%s]，无须做预约或领奖操作\n", chineseStatus)
 }
 
-// doFollowArtist 关注歌手（获取热门，关注第一个，3~10秒随机延迟后取消关注）
+// doFollowArtist 只操作明确未关注的歌手，并在等待后清理本次新增关注。
 func (c *SignIn) doFollowArtist(ctx context.Context, eapiRequest *eapi.Api) {
-	var artistIdStr = "6452" // 默认周杰伦
-	var artistName = "周杰伦"
-
+	if ctx.Err() != nil {
+		c.cmd.Println("  ℹ️ 关注歌手任务已取消")
+		return
+	}
 	hot, err := eapiRequest.ArtistHot(ctx, &eapi.ArtistHotReq{Offset: 0, Limit: 10})
-	if err == nil && hot.Code == 200 && len(hot.Data) > 0 && len(hot.Data[0].Artists) > 0 {
-		found := false
-		for _, artist := range hot.Data[0].Artists {
-			// 必须找一个目前未关注过的歌手，否则关注已关注的歌手不会触发任务完成
-			if !artist.Followed {
-				artistIdStr = fmt.Sprintf("%d", artist.Id)
-				artistName = artist.Name
-				found = true
-				break
+	if err != nil || hot == nil {
+		c.cmd.Printf("  ❌ 获取热门歌手失败，已跳过关注任务: %v\n", err)
+		return
+	}
+	if hot.Code != 200 {
+		c.cmd.Printf("  ❌ 获取热门歌手失败，已跳过关注任务: Code=%d\n", hot.Code)
+		return
+	}
+	for _, group := range hot.Data {
+		for _, artist := range group.Artists {
+			if artist.Id > 0 && artist.Followed != nil && !*artist.Followed {
+				c.followYunbeiArtist(ctx, eapiRequest, artist, time.Duration(3+rand.Intn(8))*time.Second)
+				return
 			}
 		}
-		if !found {
-			// 如果全都是已关注的，只能默认选第一个
-			artist := hot.Data[0].Artists[0]
-			artistIdStr = fmt.Sprintf("%d", artist.Id)
-			artistName = artist.Name
-		}
-	} else {
-		c.cmd.Printf("  ℹ️ 获取热门歌手失败 (err=%v)，将使用默认歌手 [周杰伦] 进行关注歌手任务...\n", err)
 	}
-
-	// 1. 关注
-	subResp, subErr := eapiRequest.ArtistSub(ctx, &eapi.ArtistSubReq{
-		ArtistId: artistIdStr,
-	})
-	if subErr != nil {
-		c.cmd.Printf("  ❌ 关注歌手 [%s] 失败: %v\n", artistName, subErr)
-		return
-	}
-	if subResp.Code != 200 {
-		c.cmd.Printf("  ❌ 关注歌手 [%s] 失败: Code=%d, Message=%s\n", artistName, subResp.Code, subResp.Message)
-		return
-	}
-
-	// 2. 延迟 3~10 秒取消关注
-	sleepSec := 3 + rand.Intn(8) // 3 ~ 10 秒
-	c.cmd.Printf("  ⏳ 已成功关注歌手 [%s]，将在 %d 秒后取消关注以避嫌...\n", artistName, sleepSec)
-	time.Sleep(time.Duration(sleepSec) * time.Second)
-
-	unsubResp, unsubErr := eapiRequest.ArtistUnsub(ctx, &eapi.ArtistUnsubReq{
-		ArtistIds: fmt.Sprintf("[%s]", artistIdStr),
-	})
-	if unsubErr != nil {
-		c.cmd.Printf("  ❌ 取消关注歌手 [%s] 失败: %v\n", artistName, unsubErr)
-		return
-	}
-	if unsubResp.Code != 200 {
-		c.cmd.Printf("  ❌ 取消关注歌手 [%s] 失败: Code=%d, Message=%s\n", artistName, unsubResp.Code, unsubResp.Message)
-		return
-	}
-	c.cmd.Printf("  ✅ 关注并取消关注歌手 [%s] 操作完毕\n", artistName)
+	c.cmd.Println("  ℹ️ 没有找到可确认未关注的歌手，已跳过；现有关注保持不变")
 }
 
 // doLikeSong 红心歌曲（获取日推，红心第一个，3~10秒随机延迟后取消红心）
@@ -735,18 +733,24 @@ func (c *SignIn) doPlayDailyRecommend(ctx context.Context, cookieFile string, ta
 
 // doShareSong 执行分享歌曲/单曲任务（优先从【最近播放】列表中随机选择一首歌曲进行分享打卡，无记录时回退至【红心歌曲】列表）
 func (c *SignIn) doShareSong(ctx context.Context, eapiRequest *eapi.Api, request *weapi.Api, userId int64, taskId int64, userTaskId int64) {
-	// 1. 模拟任务点击上报与 H5 页面浏览停留
-	tId := taskId
-	if tId <= 0 {
-		tId = 10795676 // 兜底缺省 ID
+	if ctx.Err() != nil {
+		return
 	}
-	_, _ = eapiRequest.YunbeiClickTask(ctx, &eapi.YunbeiClickTaskReq{
-		TaskId: tId,
-	})
+	if taskId <= 0 {
+		c.cmd.Println("  ❌ 分享任务缺少有效任务编号，已跳过")
+		return
+	}
+	clicked, clickErr := eapiRequest.YunbeiClickTask(ctx, &eapi.YunbeiClickTaskReq{TaskId: taskId})
+	if clickErr != nil || clicked == nil || clicked.Code != 200 || !clicked.Data {
+		c.cmd.Printf("  ❌ 触发分享任务失败: %v\n", clickErr)
+		return
+	}
 
 	browseDelaySec := 2 + rand.Intn(3) // 2 ~ 4 秒
 	c.cmd.Printf("  ⏳ 模拟打开云贝分享 H5 页面并停留 %d 秒...\n", browseDelaySec)
-	time.Sleep(time.Duration(browseDelaySec) * time.Second)
+	if waitYunbeiAction(ctx, time.Duration(browseDelaySec)*time.Second) != nil {
+		return
+	}
 
 	var trackIdStr string
 	var songName string
@@ -845,6 +849,13 @@ func (c *SignIn) doShareSong(ctx context.Context, eapiRequest *eapi.Api, request
 		}
 	}
 
+	if ctx.Err() != nil {
+		return
+	}
+	if trackIdStr == "" || trackIdStr == "0" || strings.HasPrefix(trackIdStr, "-") {
+		c.cmd.Println("  ❌ 没有获取到可分享的歌曲，已跳过")
+		return
+	}
 	c.cmd.Printf("  👉 从【%s】中随机选择歌曲: ID=%s, 歌名《%s》\n", sourceDesc, trackIdStr, songName)
 
 	// 5. 调用核心接口 A: 分享触发 (DailySongShareTrigger，优先 wxsession，失败时尝试 copylink 兜底)
@@ -855,10 +866,10 @@ func (c *SignIn) doShareSong(ctx context.Context, eapiRequest *eapi.Api, request
 	triggerReq.CryptoMode = api.CryptoModeEAPI
 
 	triggerResp, triggerErr := eapiRequest.DailySongShareTrigger(ctx, triggerReq)
-	if triggerErr != nil || triggerResp.Code != 200 || !triggerResp.Data {
+	if triggerErr != nil || triggerResp == nil || triggerResp.Code != 200 || !triggerResp.Data {
 		if triggerErr != nil {
 			c.cmd.Printf("  ⚠️ 歌曲《%s》(ID: %s) 微信分享(wxsession)请求异常: %v，尝试复制链接(copylink)兜底...\n", songName, trackIdStr, triggerErr)
-		} else {
+		} else if triggerResp != nil {
 			c.cmd.Printf("  ⚠️ 歌曲《%s》(ID: %s) 微信分享(wxsession)返回 code=%d, msg=%s，尝试复制链接(copylink)兜底...\n", songName, trackIdStr, triggerResp.Code, triggerResp.Message)
 		}
 		// 复制链接 (copylink) 兜底
@@ -866,34 +877,18 @@ func (c *SignIn) doShareSong(ctx context.Context, eapiRequest *eapi.Api, request
 		triggerResp, triggerErr = eapiRequest.DailySongShareTrigger(ctx, triggerReq)
 		if triggerErr != nil {
 			c.cmd.Printf("  ⚠️ 歌曲《%s》(ID: %s) 复制链接(copylink)分享请求异常: %v\n", songName, trackIdStr, triggerErr)
-		} else if triggerResp.Code == 200 {
-			c.cmd.Printf("  🎉 成功触发歌曲《%s》(ID: %s) 复制链接(copylink)分享接口\n", songName, trackIdStr)
-		} else {
+		} else if triggerResp != nil && triggerResp.Code == 200 && triggerResp.Data {
+			c.cmd.Printf("  ℹ️ 网易云已接受歌曲《%s》的复制链接分享请求\n", songName)
+		} else if triggerResp != nil {
 			c.cmd.Printf("  ⚠️ 歌曲《%s》(ID: %s) 复制链接(copylink)分享接口返回 code=%d, msg=%s\n", songName, trackIdStr, triggerResp.Code, triggerResp.Message)
 		}
 	} else {
-		c.cmd.Printf("  🎉 成功触发歌曲《%s》(ID: %s) 微信(wxsession)分享接口\n", songName, trackIdStr)
+		c.cmd.Printf("  ℹ️ 网易云已接受歌曲《%s》的分享请求\n", songName)
 	}
-
-	// 6. 模拟前台点击分享、跳转第三方应用及返回网易云 APP 停留 2~3 秒
-	shareDelaySec := 2 + rand.Intn(2) // 2 ~ 3 秒
-	c.cmd.Printf("  ⏳ 模拟分享跳转并返回应用，停留 %d 秒...\n", shareDelaySec)
-	time.Sleep(time.Duration(shareDelaySec) * time.Second)
-
-	// 7. 调用核心接口 B: 粉丝团/资源分享进度上报 (FansGroupMissionForwardProgress)
-	progressResp, progressErr := eapiRequest.FansGroupMissionForwardProgress(ctx, &eapi.FansGroupMissionForwardProgressReq{
-		Action:       "share",
-		ResourceId:   trackIdStr,
-		ResourceType: "4",
-	})
-	if progressErr != nil {
-		c.cmd.Printf("  ⚠️ 歌曲《%s》(ID: %s) 分享进度上报异常: %v\n", songName, trackIdStr, progressErr)
-	} else if progressResp.Code == 200 {
-		c.cmd.Printf("  ✅ 成功上报歌曲《%s》(ID: %s) 分享进度\n", songName, trackIdStr)
-	} else {
-		c.cmd.Printf("  ⚠️ 歌曲《%s》(ID: %s) 分享进度上报返回 code=%d, msg=%s\n", songName, trackIdStr, progressResp.Code, progressResp.Message)
+	if triggerErr != nil || triggerResp == nil || triggerResp.Code != 200 || !triggerResp.Data {
+		c.cmd.Println("  ❌ 分享请求未被接受，本次不计为完成")
+		return
 	}
-
-	c.cmd.Printf("  ✅ 分享歌曲《%s》操作完成\n", songName)
+	// 乐迷团进度不属于云贝任务；不能拿该接口的成功代替云贝服务端确认。
+	c.cmd.Println("  ℹ️ 分享请求已提交，任务完成和奖励以网易云返回的列表为准")
 }
-
