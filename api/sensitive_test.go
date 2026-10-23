@@ -36,7 +36,7 @@ func TestSensitiveRequestDoesNotExposeCredentials(t *testing.T) {
 	previous := log.Default
 	log.Default = l
 	t.Cleanup(func() { log.Default = previous; _ = l.Close() })
-	c, err := NewClient(&Config{Debug: true, Cookie: cookie.Config{Filepath: filepath.Join(t.TempDir(), "cookie.json")}}, l)
+	c, err := NewClient(&Config{Debug: true, Retry: 1, Cookie: cookie.Config{Filepath: filepath.Join(t.TempDir(), "cookie.json")}}, l)
 	if err != nil {
 		t.Fatal(err)
 	}

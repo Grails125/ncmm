@@ -363,7 +363,7 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 
 	// append
 	if opts.Sensitive {
-		request.SetDebug(false)
+		request.SetDebug(false).SetLogger(sensitiveRequestLogger{})
 	}
 	if len(opts.Headers) > 0 {
 		request.SetHeaders(opts.Headers)
