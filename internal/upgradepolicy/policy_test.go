@@ -7,6 +7,42 @@ import (
 	"time"
 )
 
+func TestCompareNativeAcceptsGrailsWithoutRevision(t *testing.T) {
+	for _, tc := range []struct {
+		left, right string
+		want        int
+	}{
+		{"1.2.3-grails", "v1.2.3-grails", 0},
+		{"v1.2.3-grails", "1.2.2-grails.99", 1},
+		{"1.2.2-grails.2", "v1.2.3-grails", -1},
+		{"1.2.3-grails", "1.2.3-grails.0", 0},
+		{"1.2.3-grails", "1.2.3-grails.1", -1},
+		{"1.2.3-grails.2", "1.2.3-grails.1", 1},
+	} {
+		if got, ok := CompareNative(tc.left, tc.right); !ok || got != tc.want {
+			t.Errorf("CompareNative(%q, %q) = %d, %t，预期 %d, true", tc.left, tc.right, got, ok, tc.want)
+		}
+	}
+	for _, invalid := range []string{"1.2.9", "1.2.3", "1.2.3-grals", "1.2.3-grals.1", "1.2.3-grails.foo", "v1.2.3-grails/other", "v1.2.3-grails?redirect=other", "1.2.3-grails\n", "1.2.3-grails+other", "1.2.3-grails.18446744073709551616"} {
+		if _, ok := CompareNative(invalid, "v1.2.3-grails"); ok {
+			t.Errorf("非原生或非法版本被接受：%q", invalid)
+		}
+	}
+}
+
+func TestPolicyCanRequireGrailsWithoutRevisionAfterLegacyRelease(t *testing.T) {
+	published := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	now := published.AddDate(0, 1, 0)
+	cache := Cache{LastCheckTime: now}
+	cache.Observe("v1.2.3-grails", Marker, published)
+	if status := Evaluate(cache, "1.2.2-grails.2", now); !status.Required || status.RequiredVersion != "v1.2.3-grails" {
+		t.Fatalf("旧原生版本未识别新后缀升级要求：%+v", status)
+	}
+	if status := Evaluate(cache, "1.2.3-grails", now); status.Required {
+		t.Fatalf("已升级的新后缀版本仍被拦截：%+v", status)
+	}
+}
+
 func TestPolicyRequiresExplicitNativeReleaseAfterGrace(t *testing.T) {
 	published := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	now := published.AddDate(0, 1, 0)

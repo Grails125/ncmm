@@ -41,10 +41,10 @@ class UpdateScriptTests(unittest.TestCase):
     def completed(self, code=0, output=""):
         return subprocess.CompletedProcess([], code, stdout=output)
 
-    def run_installed(self, update_code=0, final_version="1.2.2-grails.2"):
+    def run_installed(self, update_code=0, final_version="1.2.2-grails.2", current_version="1.2.2-grails.1"):
         self.binary.write_bytes(b"existing executable")
         self.backup.write_bytes(b"recovery copy")
-        responses = [self.completed(output="Version: 1.2.2-grails.1\n"), self.completed(update_code)]
+        responses = [self.completed(output=f"Version: {current_version}\n"), self.completed(update_code)]
         if update_code == 0:
             responses.append(self.completed(output=f"Version: {final_version}\n"))
         process = self.enterContext(mock.patch.object(self.script.subprocess, "run", side_effect=responses))
@@ -101,8 +101,28 @@ class UpdateScriptTests(unittest.TestCase):
                 self.assertEqual(self.version.read_text(encoding="utf-8"), version + "\n")
                 self.assertEqual(self.backup.read_bytes(), b"recovery copy")
 
+    def test_installed_legacy_and_unnumbered_versions_can_update(self):
+        for current, final in (("1.2.2-grails.1", "1.2.3-grails"), ("1.2.3-grails", "1.2.3-grails"), ("1.2.3-grails", "1.2.4-grails")):
+            with self.subTest(current=current, final=final):
+                process = self.run_installed(current_version=current, final_version=final)
+                self.script.main()
+                self.assertEqual(process.call_count, 3)
+                self.assertEqual(self.version.read_text(encoding="utf-8"), final + "\n")
+                self.assertEqual(self.backup.read_bytes(), b"recovery copy")
+                self.network.assert_not_called()
+
+    def test_unknown_installed_suffix_never_delegates_update(self):
+        for current in ("1.2.3", "1.2.3-grals", "1.2.3-grails.x", "1.2.3-grails+other", "1.2.3-grails/other"):
+            with self.subTest(current=current):
+                process = self.run_installed(current_version=current)
+                with self.assertRaises(SystemExit) as result:
+                    self.script.main()
+                self.assertEqual(result.exception.code, 1)
+                self.assertEqual(process.call_count, 1)
+                self.assertEqual(self.version.read_text(encoding="utf-8"), "1.2.2-grails.1\n")
+
     def test_unverified_result_does_not_record_success(self):
-        for version in ("", "1.2.3"):
+        for version in ("", "1.2.3", "1.2.3-grals", "1.2.3-grails+other"):
             with self.subTest(version=version):
                 self.version.write_text("1.2.2-grails.1\n", encoding="utf-8")
                 self.run_installed(final_version=version)
@@ -143,12 +163,13 @@ class UpdateScriptTests(unittest.TestCase):
             release.assert_not_called()
 
     def test_first_install_still_uses_native_release(self):
-        for ok in (True, False):
-            with self.subTest(ok=ok), mock.patch.object(self.script, "get_latest_release", return_value=("v1.2.2-grails.2", [])), mock.patch.object(self.script, "install_from_archive", return_value=ok) as install:
-                with self.assertRaises(SystemExit) as result:
-                    self.script.main()
-                self.assertEqual(result.exception.code, 0 if ok else 1)
-                install.assert_called_once_with("v1.2.2-grails.2", [], "ncmm.exe", str(self.binary), str(self.root / "config.yaml"), str(self.version))
+        for tag in ("v1.2.2-grails.2", "v1.2.3-grails", "1.2.3-grails"):
+            for ok in (True, False):
+                with self.subTest(tag=tag, ok=ok), mock.patch.object(self.script, "get_latest_release", return_value=(tag, [])), mock.patch.object(self.script, "install_from_archive", return_value=ok) as install:
+                    with self.assertRaises(SystemExit) as result:
+                        self.script.main()
+                    self.assertEqual(result.exception.code, 0 if ok else 1)
+                    install.assert_called_once_with(tag, [], "ncmm.exe", str(self.binary), str(self.root / "config.yaml"), str(self.version))
 
     def test_install_archive_keeps_existing_configuration(self):
         config = self.root / "config.yaml"
@@ -209,6 +230,11 @@ class UpdateScriptTests(unittest.TestCase):
             ("v1.2.2-grails.2", "1.2.9", True),
             ("v1.2.2-grails.2", "1.2.2-grails.1", True),
             ("v1.2.2-grails.2", "1.2.2-grails.2", False),
+            ("v1.2.3-grals", "1.2.3-grals", True),
+            ("v1.2.3-grails/other", "1.2.3-grails", True),
+            ("v1.2.3-grails", "1.2.3-grails.1", True),
+            ("v1.2.3-grails", "1.2.4-grails", True),
+            ("v1.2.3-grails", "1.2.3-grails+other", True),
         ):
             with self.subTest(tag=tag, version=version, binary=include_binary):
                 ok, _, _ = self.install_archive(tag=tag, reported_version=version, include_binary=include_binary)
@@ -217,6 +243,27 @@ class UpdateScriptTests(unittest.TestCase):
                 self.assertEqual((self.root / "config.yaml").read_text(encoding="utf-8"), "user: preserved\n")
                 self.assertEqual(self.version.read_text(encoding="utf-8"), "1.2.2-grails.1\n")
                 self.assertEqual(list(self.root.glob(".ncmm-install-*")), [])
+
+    def test_unnumbered_first_install_checks_source_and_exact_binary_version(self):
+        for tag in ("v1.2.3-grails", "1.2.3-grails"):
+            with self.subTest(tag=tag):
+                url = f"https://github.com/Grails125/ncmm/releases/download/{tag}/ncmm_Windows_x86_64.zip"
+                ok, fetch, version = self.install_archive(tag=tag, reported_version="1.2.3-grails", assets=[{"name": "ncmm_Windows_x86_64.zip", "browser_download_url": url}])
+                self.assertTrue(ok)
+                self.assertEqual(fetch.call_args.args[0], url)
+                self.assertNotEqual(version.call_args.args[0], str(self.binary))
+                self.assertEqual(self.binary.read_bytes(), b"candidate executable")
+                self.assertEqual(self.version.read_text(encoding="utf-8"), "1.2.3-grails\n")
+                self.binary.unlink()
+
+    def test_unnumbered_first_install_rejects_an_asset_for_a_different_native_tag(self):
+        url = "https://github.com/Grails125/ncmm/releases/download/v1.2.3-grails.1/ncmm_Windows_x86_64.zip"
+        ok, fetch, version = self.install_archive(tag="v1.2.3-grails", reported_version="1.2.3-grails", assets=[{"name": "ncmm_Windows_x86_64.zip", "browser_download_url": url}])
+        self.assertFalse(ok)
+        fetch.assert_not_called()
+        version.assert_not_called()
+        self.assertFalse(self.binary.exists())
+        self.assertEqual(self.version.read_text(encoding="utf-8"), "1.2.2-grails.1\n")
 
     def test_first_install_uses_only_exact_platform_asset_and_canonical_fallback(self):
         for assets in (

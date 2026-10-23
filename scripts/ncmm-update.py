@@ -6,7 +6,7 @@ cron: 1 1 1 1 1
 new Env('NCMM 安装、更新')
 
 更新规则（重点）：
-  本脚本只允许更新带 -grails. 标识的本分支程序。版本比较、下载、解压和配置升级
+  本脚本只允许更新带 -grails 标识（兼容旧 -grails.N）的本分支程序。版本比较、下载、解压和配置升级
   由该程序自身处理；首次安装仅从 Grails125/ncmm 获取发布包。
 
   * 已经装好 ncmm：进入 ncmm 程序目录执行 `ncmm update --apply`，
@@ -34,6 +34,16 @@ target_dir = current_dir  # 直接使用脚本所在目录作为目标目录
 
 # 手动触发更新时给 ncmm 的超时（秒）
 NCMM_UPDATE_TIMEOUT = 600
+
+
+def is_native_version(value, allow_tag=False):
+    """统一校验本分支版本；仅发布标签允许 v 前缀，程序版本保持原样核对。"""
+    if not isinstance(value, str):
+        return False
+    if allow_tag and value.startswith("v"):
+        value = value[1:]
+    return re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-grails(?:\.[0-9]+)?', value) is not None
+
 
 # 2. 识别系统平台与架构判定逻辑（仅首次安装时使用）
 def get_platform_info():
@@ -268,7 +278,7 @@ def extract_install_files(archive_path, ext, binary_name, directory):
 
 
 def install_from_archive(remote_tag, assets, binary_name, binary_path, config_path, version_file):
-    if not isinstance(remote_tag, str) or not re.fullmatch(r'v?[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+', remote_tag):
+    if not is_native_version(remote_tag, allow_tag=True):
         print("[ERROR] 首次安装仅接受本仓库的原生评分版本标签。")
         return False
     if os.path.lexists(binary_path) or os.path.lexists(binary_path + ".old"):
@@ -363,7 +373,7 @@ def main():
         if not remote_tag:
             print("[ERROR] 无法获取 GitHub 最新版本信息，安装中止。")
             sys.exit(1)
-        if not re.fullmatch(r'v?[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+', remote_tag):
+        if not is_native_version(remote_tag, allow_tag=True):
             print("[ERROR] 仓库尚无符合版本标识的原生评分发布包，请先从源码构建。")
             sys.exit(1)
         print(f"[LOG] GitHub 最新版本为: {remote_tag}")
@@ -375,8 +385,8 @@ def main():
     current = query_binary_version(binary_path)
     if current:
         print(f"[LOG] 二进制当前版本: {current}")
-    if not current or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+', current):
-        print("[ERROR] 当前程序不是带 -grails. 标识的原生评分版本，已停止自动更新。")
+    if not is_native_version(current):
+        print("[ERROR] 当前程序不是带 -grails 标识的原生评分版本，已停止自动更新。")
         print("[LOG] 请先从 Grails125/ncmm 构建或安装本分支发布包，再使用此更新脚本。")
         sys.exit(1)
     print("[LOG] 交由 ncmm 自身的更新规则执行（ncmm update --apply），脚本仅做手动触发...")
@@ -387,7 +397,7 @@ def main():
         sys.exit(update_code)
 
     final_version = query_binary_version(binary_path)
-    if not final_version or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+', final_version):
+    if not is_native_version(final_version):
         print("[ERROR] 更新命令已结束，但无法确认当前程序为本分支版本；已保留 VERSION 记录及恢复备份，请检查后重试。")
         sys.exit(1)
     write_local_version(version_file, final_version)

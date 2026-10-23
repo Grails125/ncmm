@@ -21,6 +21,61 @@ func fixture(t *testing.T) (string, string) {
 	return root, image
 }
 
+func TestInitializeAcceptsNativeGrailsVersion(t *testing.T) {
+	for _, version := range []string{"1.2.3-grails", "v1.2.3-grails"} {
+		t.Run(version, func(t *testing.T) {
+			dir := t.TempDir()
+			root, image := filepath.Join(dir, "runtime"), filepath.Join(dir, "image")
+			if err := os.WriteFile(image, []byte("native grails image"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := Initialize(root, image, version); err != nil {
+				t.Fatalf("原生 grails 镜像应能初始化：%v", err)
+			}
+			state, err := Read(root)
+			if err != nil || state.Current.Version != "1.2.3-grails" || !Valid(root, state.Current) || state.Pending.Path != "" {
+				t.Fatalf("初始化后运行版本未保持规范化的 grails 版本：%+v，%v", state, err)
+			}
+		})
+	}
+}
+
+func TestInitializeStagesGrailsImageAfterLegacyNativeVersion(t *testing.T) {
+	root, image := fixture(t)
+	if err := os.WriteFile(image, []byte("grails image update"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := Initialize(root, image, "v1.2.3-grails"); err != nil {
+		t.Fatal(err)
+	}
+	state, err := Read(root)
+	if err != nil || state.Current.Version != "1.2.2-grails.1" || state.Pending.Version != "1.2.3-grails" || !Valid(root, state.Pending) {
+		t.Fatalf("旧原生版本应保留，grails 新镜像须等待健康确认：%+v，%v", state, err)
+	}
+	if err := Confirm(root, state.Pending); err != nil {
+		t.Fatal(err)
+	}
+	state, err = Read(root)
+	if err != nil || state.Current.Version != "1.2.3-grails" || state.Previous.Version != "1.2.2-grails.1" {
+		t.Fatalf("确认后应进入 grails 版本且保留旧版本：%+v，%v", state, err)
+	}
+}
+
+func TestInitializeRejectsMisspelledNativeSuffix(t *testing.T) {
+	for _, version := range []string{"1.2.3-grals", "v1.2.3-grals"} {
+		t.Run(version, func(t *testing.T) {
+			dir := t.TempDir()
+			image := filepath.Join(dir, "image")
+			if err := os.WriteFile(image, []byte("misspelled image"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := Initialize(filepath.Join(dir, "runtime"), image, version); err == nil {
+				t.Fatal("误拼的 grals 后缀不能作为本仓库原生版本启动")
+			}
+		})
+	}
+}
+
 func TestStageKeepsCurrentUntilHealthConfirmed(t *testing.T) {
 	root, _ := fixture(t)
 	before, err := Read(root)

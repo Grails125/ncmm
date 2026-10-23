@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const nativeVersion = /^v?\d+\.\d+\.\d+-grails\.\d+$/;
+  const nativeVersion = /^v?\d+\.\d+\.\d+-grails(?:\.\d+)?$/;
 
   function render(policy) {
     // 是否到期由服务端决定；浏览器不把缓存、网络错误或未知分发版本升级为阻断。

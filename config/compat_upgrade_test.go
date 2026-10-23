@@ -50,7 +50,7 @@ func TestSessionSafetyMigrationRunsOnlyOnceForOfficialLegacy(t *testing.T) {
 	for _, item := range []struct {
 		version string
 		want    bool
-	}{{"1.2.7", false}, {"1.2.8", true}, {"1.2.9", true}, {"1.2.2-grails.1", true}} {
+	}{{"1.2.3", false}, {"1.2.7", false}, {"1.2.8", true}, {"1.2.9", true}, {"1.2.2-grails.1", true}, {"1.2.3-grails", true}, {"v1.2.3-grails", true}} {
 		t.Run(item.version, func(t *testing.T) {
 			path := writeCompatibilityConfig(t, fmt.Sprintf("version: %s\nfansgroup:\n  webSession: true # 用户说明\n", item.version))
 			if err := AutoUpgradeConfig(path); err != nil {
@@ -71,6 +71,19 @@ func TestSessionSafetyMigrationRunsOnlyOnceForOfficialLegacy(t *testing.T) {
 			cfg, err = New(path)
 			if err != nil || !cfg.FansGroup.WebSession {
 				t.Fatalf("manual choice changed on next upgrade: %v", err)
+			}
+		})
+	}
+}
+
+func TestSessionSafetyMigrationRecognizesNativeGrailsVersions(t *testing.T) {
+	for _, item := range []struct {
+		version string
+		want    bool
+	}{{"1.2.3", true}, {"v1.2.3", true}, {"1.2.2-grails.1", false}, {"1.2.3-grails", false}, {"v1.2.3-grails", false}, {"1.2.3-grals", true}, {"v1.2.3-grals", true}} {
+		t.Run(item.version, func(t *testing.T) {
+			if got := needsOfficialSessionSafetyMigration(item.version); got != item.want {
+				t.Fatalf("needsOfficialSessionSafetyMigration(%q) = %t，预期 %t", item.version, got, item.want)
 			}
 		})
 	}

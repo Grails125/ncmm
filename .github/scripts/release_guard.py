@@ -31,8 +31,8 @@ def validate_release(source_sha, version, ref):
         version = ref.removeprefix("refs/tags/")
     elif version in ("", "auto"):
         version = Path("VERSION").read_text(encoding="utf-8").strip()
-    if not re.fullmatch(r"v?[0-9]+\.[0-9]+\.[0-9]+-grails\.[0-9]+", version):
-        raise ValueError("发布版本必须是本仓库原生版本，例如 1.2.2-grails.1")
+    if not re.fullmatch(r"v?[0-9]+\.[0-9]+\.[0-9]+-grails(?:\.[0-9]+)?", version):
+        raise ValueError("发布版本必须是本仓库原生版本，例如 1.2.3-grails")
     version = version.removeprefix("v")
     existing = remote_tag_commit(version)
     if existing is not None and existing != source_sha:

@@ -12,12 +12,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/3899/ncmm/internal/atomicfile"
+	"github.com/3899/ncmm/internal/upgradepolicy"
 	"gopkg.in/yaml.v3"
 )
 
 // 官方配置完成转换后写入本分支版本，下一次启动不再重置用户手动选择。
 func needsOfficialSessionSafetyMigration(version string) bool {
-	if strings.Contains(version, "-grails.") {
+	if _, ok := upgradepolicy.CompareNative(strings.TrimSpace(version), strings.TrimSpace(version)); ok {
 		return false
 	}
 	core := strings.SplitN(strings.TrimPrefix(strings.TrimSpace(version), "v"), "-", 2)[0]

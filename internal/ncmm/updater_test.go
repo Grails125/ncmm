@@ -58,6 +58,45 @@ func TestNativeUpdateSourceBoundary(t *testing.T) {
 	}
 }
 
+func TestNativeUpdateAcceptsGrailsWithoutRevisionAndRejectsUnparsedTags(t *testing.T) {
+	const asset = "ncmm_Windows_x86_64.zip"
+	for _, tc := range []struct {
+		tag  string
+		want bool
+	}{
+		{"v1.2.3-grails", true},
+		{"1.2.3-grails", true},
+		{"v1.2.2-grails.2", true},
+		{"v1.2.9", false},
+		{"v1.2.3-grals", false},
+		{"v1.2.3-grals.1", false},
+		{"v1.2.3-grails.foo", false},
+		{"v1.2.3-grails.1-extra", false},
+		{"v1.2.3-grails.1%2fother", false},
+		{"v1.2.3-grails?redirect=other", false},
+		{"v1.2.3-grails\n", false},
+	} {
+		url := "https://github.com/Grails125/ncmm/releases/download/" + tc.tag + "/" + asset
+		if got := isNativeUpdate(tc.tag, asset, url); got != tc.want {
+			t.Errorf("isNativeUpdate(%q) = %t，预期 %t", tc.tag, got, tc.want)
+		}
+	}
+	for _, url := range []string{
+		"https://github.com/3899/ncmm/releases/download/v1.2.3-grails/" + asset,
+		"https://github.com/Grails125/ncmm/releases/download/v1.2.3-grails/" + asset + "?redirect=other",
+		"https://github.com/Grails125/ncmm/releases/download/v1.2.2-grails.2/" + asset,
+	} {
+		if isNativeUpdate("v1.2.3-grails", asset, url) {
+			t.Errorf("新后缀不得放宽仓库或下载路径校验：%s", url)
+		}
+	}
+	root := &Root{AppVersion: "1.2.3-grails"}
+	state := root.initDefaultUpdateState()
+	if !isNativeUpdate(state.LatestVersion, state.AssetFilename, state.DownloadURL) {
+		t.Fatal("新版本默认更新状态不应拒绝自己的发布地址")
+	}
+}
+
 func TestApplyAvailableUpdateRejectsOfficialDocker(t *testing.T) {
 	t.Setenv("NCMM_DOCKER_OFFICIAL", "1")
 	root := &Root{AppVersion: "1.1.14", Opts: RootOpts{Home: t.TempDir()}}

@@ -14,7 +14,7 @@ import (
 
 const Marker = "<!-- ncmm-force-upgrade -->"
 
-var nativeVersion = regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)-grails\.(\d+)$`)
+var nativeVersion = regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)-grails(?:\.(\d+))?$`)
 
 // CompareNative 仅比较本仓库版本；未知或上游分发版本不能触发强制升级。
 func CompareNative(a, b string) (int, bool) {
@@ -23,6 +23,13 @@ func CompareNative(a, b string) (int, bool) {
 		return 0, false
 	}
 	for i := 1; i <= 4; i++ {
+		// 新版本省略分支修订号时按 0 比较，旧 .N 的顺序保持不变。
+		if x[i] == "" {
+			x[i] = "0"
+		}
+		if y[i] == "" {
+			y[i] = "0"
+		}
 		left, e1 := strconv.ParseUint(x[i], 10, 64)
 		right, e2 := strconv.ParseUint(y[i], 10, 64)
 		if e1 != nil || e2 != nil {

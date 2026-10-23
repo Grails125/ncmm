@@ -96,6 +96,23 @@ class ReleaseGuardTests(unittest.TestCase):
         self.git("remote", "set-url", "origin", str(self.root / "missing.git"))
         self.assertNotEqual(self.run_guard().returncode, 0)
 
+    def test_native_version_without_revision_supports_manual_tag_and_source_defaults(self):
+        for version in ("1.2.3-grails", "v1.2.3-grails"):
+            with self.subTest(version=version):
+                result = self.run_guard(version)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["version"], "1.2.3-grails")
+        result = self.run_guard(ref="refs/tags/v1.2.3-grails")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["version"], "1.2.3-grails")
+        (self.repo / "VERSION").write_text("1.2.3-grails\n", encoding="utf-8")
+        result = self.run_guard()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["version"], "1.2.3-grails")
+        for version in ("1.2.3-grals", "1.2.3-grails/other", "1.2.3-grails+unknown", "1.2.3-grails."):
+            with self.subTest(rejected=version):
+                self.assertNotEqual(self.run_guard(version).returncode, 0)
+
     def reserve_tag(self, create, source=None):
         actual_run = subprocess.run
         requests = []
@@ -108,7 +125,8 @@ class ReleaseGuardTests(unittest.TestCase):
             return create(args, kwargs, actual_run)
 
         with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "owner/ncmm", "GH_TOKEN": "private-test-token"}), mock.patch.object(release_guard.subprocess, "run", side_effect=run):
-            result = release_guard.validate_release(source or self.current, "auto", "")
+            # 预留测试读取隔离仓库的版本，不依赖运行测试的源码目录 VERSION。
+            result = release_guard.validate_release(source or self.current, (self.repo / "VERSION").read_text(encoding="utf-8").strip(), "")
             reserved = release_guard.reserve_release_tag(result)
         self.assertTrue(reserved["tagExists"])
         self.assertNotIn("private-test-token", repr(requests))

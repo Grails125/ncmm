@@ -666,7 +666,7 @@ func (c *Root) showUpgradeGraceNotice() {
 
 // CompareVersions 比对版本号。v1 > v2 返回 1，v1 < v2 返回 -1，相等返回 0
 func isNativeUpdate(tag, assetName, downloadURL string) bool {
-	if !strings.Contains(tag, "-grails.") || strings.ContainsAny(tag, "/\\?#") || assetName == "" || strings.ContainsAny(assetName, "/\\?#") {
+	if _, ok := upgradepolicy.CompareNative(tag, tag); !ok || assetName == "" || strings.ContainsAny(assetName, "/\\?#") {
 		return false
 	}
 	return downloadURL == "https://github.com/Grails125/ncmm/releases/download/"+tag+"/"+assetName
