@@ -109,7 +109,8 @@ async function hasHorizontalScroll(locator, label) {
   assert(await page.locator('.stat-card .badge-pill').first().evaluate(element => getComputedStyle(element).fontSize === '11px'), 'dashboard stat chip was not 11px');
   assert((await page.locator('#stat-account-health').textContent()).includes('2 有效'), 'account availability did not use task results');
   const rewardText = (await page.locator('#account-rewards-list').innerText()).replaceAll('\n', ' ');
-  assert(rewardText.includes('云贝 +12 / 345') && rewardText.includes('成长值 8 / 99'), `dashboard reward format was incomplete: ${rewardText}`);
+  assert(rewardText.includes('云贝 +12') && rewardText.includes('成长值 +8'), `dashboard reward changes were incomplete: ${rewardText}`);
+  assert(!rewardText.includes('345') && !rewardText.includes('99') && !rewardText.includes(' / '), `dashboard rewards still displayed account totals: ${rewardText}`);
   const auxiliaryRewardText = await page.locator('#account-rewards-list .reward-row').filter({ hasText: '测试辅助账号' }).innerText();
   assert(!auxiliaryRewardText.includes('成长值'), `non-VIP account still displayed growth: ${auxiliaryRewardText}`);
   // 播放统计独立异步加载；等待图表就绪，避免慢机器上把加载状态误判为渲染失败。
@@ -285,13 +286,13 @@ async function hasHorizontalScroll(locator, label) {
   assert(await firstConfigSection.getAttribute('data-section') === 'task' && (await firstConfigSection.innerText()).includes('批量任务'), 'batch tasks were not the first simplified navigation item');
   assert((await page.locator('#config-current-title').innerText()).includes('规则配置面板'), 'continuous flow title was not rendered');
   assert(await page.locator('.card-flow-section').count() === 16, 'configuration did not render all 16 modules');
-  assert(await page.locator('.config-card-box').count() === 34, 'configuration card flow did not include all cards, per-score comments and deprecated play warning');
+  assert(await page.locator('.config-card-box').count() === 35, 'configuration card flow did not include recommendations, per-score comments and deprecated play warning');
   assert(await page.locator('#config-block-play').count() === 0, 'deprecated play created an extra configuration module');
   const deprecatedPlay = page.locator('#config-block-playids input[data-path=\'["play","webSession"]\']');
   assert(await deprecatedPlay.count() === 1 && await deprecatedPlay.isDisabled() && !await deprecatedPlay.isChecked(), 'deprecated play warning must stay disabled inside playids');
   assert((await page.locator('#config-block-playids').innerText()).includes('已废弃') && (await page.locator('#config-block-playids').innerText()).includes('风控'), 'deprecated play risk explanation missing');
-  assert(await page.locator('#config-block-musicPartner .range-inputs-row').count() === 3, 'partner score, extra target and wait ranges were incomplete');
-  assert(await page.locator('#config-block-musicPartner textarea[data-kind="array"]').count() === 5, 'partner per-score comment pools were incomplete');
+  assert(await page.locator('#config-block-musicPartner .range-inputs-row').count() === 5, 'partner score, extra target, recommendation target and wait ranges were incomplete');
+  assert(await page.locator('#config-block-musicPartner textarea[data-kind="array"]').count() === 7, 'partner per-score comments and independent recommendation templates were incomplete');
   assert(await page.locator('#config-block-task .task-card').count() === 9, 'task matrix did not render nine task cards');
   assert(await page.locator('#config-block-task .schema-segmented').count() === 1, 'task mode segmented control was missing');
   assert(await page.locator('.schema-fallback').count() === 0, 'registered task fields fell back to generic controls');

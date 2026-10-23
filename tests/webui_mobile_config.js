@@ -120,8 +120,10 @@ async function assertSaveBar(page) {
       await page.screenshot({ path: path.join(outputDir, `task-queues-${width}.png`), animations: 'disabled' });
       await selectModule(page, 'musicPartner');
       assert.equal(await page.locator('.card-flow-section:visible').count(), 1, 'module change must hide the previous module');
-      assert.equal(await page.locator('#config-block-musicPartner .range-inputs-row').count(), 3);
-      assert.equal(await page.locator('#config-block-musicPartner textarea').count(), 5);
+      assert.equal(await page.locator('#config-block-musicPartner .range-inputs-row').count(), 5, 'scoring and recommendation ranges remain available');
+      assert.equal(await page.locator('#config-block-musicPartner .partner-comment-pools textarea').count(), 5, 'all score comment pools remain available');
+      for (const name of ['recommendNotes', 'recommendComments']) assert.equal(await page.locator(`textarea[data-path='["musicPartner","${name}"]']`).count(), 1, 'recommendation template pool missing');
+      assert.equal(await page.locator('#config-block-musicPartner .schema-segment').count(), 2, 'recommendation order choices missing');
       await commentField(page).fill(`${comments}\n窄屏 ${width}`);
       await page.locator('#config-dirty').waitFor({ state: 'visible' });
       await assertSaveBar(page);

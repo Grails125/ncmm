@@ -51,7 +51,7 @@ jobs:
         run: node --check internal/webui/static/app.js
 
       - name: Test browser launcher, account status and task configuration
-        run: node --test tests/run_webui_browser.test.js tests/webui_cookie_status.test.js tests/webui_music_partner_config.test.js tests/webui_music_partner_points.test.js tests/webui_task_config.test.js tests/webui_update_restart.test.js tests/webui_upgrade_policy.test.js tests/webui_base_fixes.test.js tests/webui_plugin_platform.test.js
+        run: node --test tests/*.test.js
 
       - name: Test login, updater and release scripts
         run: |
@@ -75,6 +75,9 @@ jobs:
 
       - name: Test WebUI in Chromium
         run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_smoke.js "$RUNNER_TEMP/webui-smoke"
+
+      - name: Test account data and daily rewards in Chromium
+        run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_dashboard_data.js "$RUNNER_TEMP/webui-dashboard-data"
 
       - name: Test native scoring UI in Chromium
         run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_music_partner.js "$RUNNER_TEMP/webui-music-partner"
