@@ -39,15 +39,42 @@ func TestVipAppListenTaskDoesNotStartPlayback(t *testing.T) {
 	}
 }
 
+func TestVipStartupTaskRequiresAppWithoutRemoteSetting(t *testing.T) {
+	for _, task := range []eapi.VipTaskListData{
+		{MissionCode: "SZKJQDT", MainTitle: "启动画面任务"},
+		{MainTitle: "设置开机启动图"},
+	} {
+		t.Run(task.MainTitle, func(t *testing.T) {
+			command := NewSign(nil, nil)
+			var output bytes.Buffer
+			command.cmd.SetOut(&output)
+			// 需要 App 原生能力的任务不得调用设置或浏览上报接口。
+			command.executeSingleVipTask(t.Context(), nil, nil, nil, task, "", 0, nil)
+			if !strings.Contains(output.String(), "[设置开机启动图]") || !strings.Contains(output.String(), "App") || !strings.Contains(output.String(), "跳过") {
+				t.Fatalf("启动图任务应明确提示到 App 内设置: %s", output.String())
+			}
+			if strings.Contains(output.String(), "成功") {
+				t.Fatalf("手动任务不能被报告为完成: %s", output.String())
+			}
+		})
+	}
+}
+
 func TestVipAppListenSkipKeepsSignAndRewardFlow(t *testing.T) {
 	for _, scenario := range []struct {
 		name          string
 		alreadySigned bool
 		missingSign   bool
+		startupTask   bool
+		startupDone   bool
 	}{
 		{name: "仍执行乐签并领取奖励"},
 		{name: "仅剩App任务时不重复轮询", alreadySigned: true},
 		{name: "列表缺少乐签时保留兜底签到", missingSign: true},
+		{name: "启动图跳过后仍执行乐签并领取奖励", startupTask: true},
+		{name: "仅剩启动图时不重复轮询", alreadySigned: true, startupTask: true},
+		{name: "启动图列表缺少乐签时保留兜底签到", missingSign: true, startupTask: true},
+		{name: "已设置的启动图保持服务端完成状态", alreadySigned: true, startupTask: true, startupDone: true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			command := NewSign(&Root{Cfg: &config.Config{Sign: &config.SignConf{Automatic: true}}}, nil)
@@ -84,6 +111,12 @@ func TestVipAppListenSkipKeepsSignAndRewardFlow(t *testing.T) {
 				default:
 					t.Fatalf("不应执行额外播放或其他 API: %s", request.URL.Path)
 				}
+				if scenario.startupTask {
+					body = strings.ReplaceAll(body, `"missionCode":"MRGSSVIPGQ","mainTitle":"每日听3首VIP歌曲","status":10`, `"missionCode":"SZKJQDT","mainTitle":"设置开机启动图","status":10`)
+					if scenario.startupDone {
+						body = strings.ReplaceAll(body, `"mainTitle":"设置开机启动图","status":10`, `"mainTitle":"设置开机启动图","status":100`)
+					}
+				}
 				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
 			})
 			growth := command.handleVipTasks(t.Context(), client, weapi.New(client), 0)
@@ -97,8 +130,17 @@ func TestVipAppListenSkipKeepsSignAndRewardFlow(t *testing.T) {
 			if signCalls != wantSigns || rewardCalls != 1 || listCalls != wantLists {
 				t.Fatalf("任务调用异常: sign=%d reward=%d list=%d", signCalls, rewardCalls, listCalls)
 			}
-			if growth == nil || growth.GrowthPoint != 10 || !strings.Contains(output.String(), "需 App 完成（已跳过）") {
+			if growth == nil || growth.GrowthPoint != 10 || (!scenario.startupDone && !strings.Contains(output.String(), "需 App 完成（已跳过）")) {
 				t.Fatalf("最终成长值与跳过状态应保留: growth=%v output=%s", growth, output.String())
+			}
+			if scenario.startupTask {
+				wantHints := 1
+				if scenario.startupDone {
+					wantHints = 0
+				}
+				if strings.Count(output.String(), "[设置开机启动图] 请在网易云音乐 App 内完成") != wantHints || strings.Contains(output.String(), "子任务 [设置开机启动图] 执行完毕") {
+					t.Fatalf("启动图只应提示一次，不应加入执行等待队列: %s", output.String())
+				}
 			}
 		})
 	}

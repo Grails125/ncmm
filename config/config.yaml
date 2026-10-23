@@ -71,6 +71,7 @@ task:
     - LikeSong         # 红心歌曲
     - CollectSong      # 收藏歌曲
     - PublishNote      # 发布图文动态
+    - ShareSong        # 分享歌曲
     - musician-sign    # 音乐人每日签到
     - note             # 公共图文笔记
     - vip-member-gift  # 黑胶会员赠送与领取
@@ -95,9 +96,9 @@ musicPartner:
   extraTasks: true
   # false=按下方目标范围补齐每日累计数量；true=处理本次接口返回的全部待评额外作品。
   fullExtraTasks: false
-  # 由每日任务 ID 和目标范围确定当日额外评分目标，重复运行保持一致；上下限均为 1～500。
-  extraLimitMin: 7
-  extraLimitMax: 7
+  # 由每日任务 ID 和目标范围确定当日额外评分目标，重复运行保持一致；上下限均为 0～15；当日目标为 0 时跳过额外任务。
+  extraLimitMin: 5
+  extraLimitMax: 15
   # 每首提交前随机等待的秒数，上下限均为 1～300。
   waitMin: 15
   waitMax: 20
@@ -112,6 +113,21 @@ musicPartner:
     "3": []
     "4": []
     "5": []
+  # 今日歌曲推荐：每天在范围内选取目标首数，日内保持不变；上下限均为 0 时关闭。
+  # 按平台可用歌曲执行，奖励按平台结算，不保证超过平台奖励额度的发布仍有积分。
+  # 成功发布满 7 天后，在下次音乐合伙人任务中自动删除。
+  recommendCountMin: 0
+  recommendCountMax: 0
+  # sequential=按推荐列表顺序，random=随机抽取；默认按列表顺序。
+  recommendOrder: sequential
+  # 每首推荐前随机等待，上下限必须完整填写且均为 16～300 秒；等待不能代替服务器对试听/任务状态的确认。
+  recommendWaitMin: 16
+  recommendWaitMax: 20
+  # 独立笔记/乐评模板池，每项最多 50 条，每条 1～500 个字符；启用推荐时两项均不能为空。
+  # 推荐笔记使用歌曲封面，必须包含图片；缺少可用封面时不会改成纯文字发布。
+  # {name} 替换歌曲名、{artist} 替换作者名，仅作文本替换；替换后仍须通过长度检查。
+  recommendNotes: []
+  recommendComments: []
 
 # 签到、云贝与会员成长值任务
 sign:

@@ -10,8 +10,9 @@ const (
 	Prefix  = "[NCMM_REWARD] "
 	Version = 1
 
-	DomainYunbei = "yunbei"
-	DomainVIP    = "vip"
+	DomainYunbei       = "yunbei"
+	DomainVIP          = "vip"
+	DomainMusicPartner = "musicPartner"
 )
 
 type Yunbei struct {
@@ -29,13 +30,20 @@ type VIP struct {
 	GrowthKnown bool  `json:"growthKnown"`
 }
 
+// MusicPartner 记录本次评分前后同一期积分的账面差值，未知不能按零收益展示。
+type MusicPartner struct {
+	Delta int64 `json:"delta"`
+	Known bool  `json:"known"`
+}
+
 // Event 是 CLI 子进程与 WebUI 之间的稳定收益数据契约，展示文案可以独立调整。
 type Event struct {
-	Version int     `json:"version"`
-	Account string  `json:"account"`
-	Domain  string  `json:"domain"`
-	Yunbei  *Yunbei `json:"yunbei,omitempty"`
-	VIP     *VIP    `json:"vip,omitempty"`
+	Version      int           `json:"version"`
+	Account      string        `json:"account"`
+	Domain       string        `json:"domain"`
+	Yunbei       *Yunbei       `json:"yunbei,omitempty"`
+	VIP          *VIP          `json:"vip,omitempty"`
+	MusicPartner *MusicPartner `json:"musicPartner,omitempty"`
 }
 
 func MarshalLine(event Event) (string, error) {
@@ -76,12 +84,16 @@ func validate(event Event) error {
 	}
 	switch event.Domain {
 	case DomainYunbei:
-		if event.Yunbei == nil || event.VIP != nil {
+		if event.Yunbei == nil || event.VIP != nil || event.MusicPartner != nil {
 			return fmt.Errorf("yunbei reward event has invalid payload")
 		}
 	case DomainVIP:
-		if event.VIP == nil || event.Yunbei != nil {
+		if event.VIP == nil || event.Yunbei != nil || event.MusicPartner != nil {
 			return fmt.Errorf("vip reward event has invalid payload")
+		}
+	case DomainMusicPartner:
+		if event.MusicPartner == nil || event.VIP != nil || event.Yunbei != nil || (!event.MusicPartner.Known && event.MusicPartner.Delta != 0) {
+			return fmt.Errorf("music partner reward event has invalid payload")
 		}
 	default:
 		return fmt.Errorf("unsupported reward event domain: %q", event.Domain)

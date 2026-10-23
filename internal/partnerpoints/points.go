@@ -131,8 +131,7 @@ func NewReadClient(network *api.Config, cookieFile string) (*api.Client, error) 
 	if !hasSession || strings.TrimSpace(session.Value) == "" {
 		session, hasSession = client.Cookie("https://music.163.com", "MUSIC_U")
 	}
-	csrf, hasCSRF := client.GetCSRF(endpoint)
-	if !hasSession || strings.TrimSpace(session.Value) == "" || !hasCSRF || strings.TrimSpace(csrf) == "" {
+	if !hasSession || strings.TrimSpace(session.Value) == "" {
 		_ = client.Close(context.Background())
 		return nil, errors.New("账号 Cookie 不完整，请重新登录后查看音乐合伙人积分")
 	}
