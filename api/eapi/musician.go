@@ -9,6 +9,7 @@ package eapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/3899/ncmm/api"
@@ -100,6 +101,7 @@ func (a *Api) MusicianVipTasks(ctx context.Context, req *MusicianVipTasksReq) (*
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
 
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
@@ -159,6 +161,7 @@ func (a *Api) MusicianRoleGet(ctx context.Context, req *MusicianRoleGetReq) (*Mu
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
 
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
@@ -192,6 +195,8 @@ func (a *Api) MusicianSign(ctx context.Context, req *MusicianSignReq) (*Musician
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
+	opts.NoRetry = true
 
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
@@ -249,6 +254,9 @@ type MusicianMissionTask struct {
 	RewardType                   int64  `json:"rewardType"`
 	NeedToReceive                int64  `json:"needToReceive"`
 	Title                        string `json:"title"`
+
+	// 存在该字段时为阶段聚合项，不直接领取。
+	UserStageTargetList json.RawMessage `json:"userStageTargetList,omitempty"`
 }
 
 // MusicianMissionCycleList 获取音乐人周期任务列表。
@@ -265,6 +273,7 @@ func (a *Api) MusicianMissionCycleList(ctx context.Context, req *MusicianMission
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
 
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
@@ -288,6 +297,7 @@ func (a *Api) MusicianMissionStageList(ctx context.Context, req *MusicianMission
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
 
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
@@ -326,6 +336,8 @@ func (a *Api) MusicianRewardObtain(ctx context.Context, req *MusicianRewardObtai
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
+	opts.NoRetry = true
 
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {

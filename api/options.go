@@ -40,7 +40,7 @@ type Options struct {
 	Sensitive bool
 	// FansGroupWebSession 仅用于乐迷团播放；请求独立过滤 os，不修改或回写账号 Cookie。
 	FansGroupWebSession bool
-	// NoRetry 禁止自动重发不可安全重放的评论创建请求。
+	// NoRetry 禁止自动重发不可安全重放的写请求。
 	NoRetry bool
 }
 

@@ -49,3 +49,10 @@ func sensitiveRequestError(err error, response *resty.Response) error {
 	log.Warn("音乐接口请求失败：分类=%s，HTTP=%d，响应编码=%s，错误类型=%T", kind, status, encoding, err)
 	return fmt.Errorf("音乐接口%s，请稍后重试", kind)
 }
+
+// Resty 重试会直接记录原始错误；敏感请求改由 sensitiveRequestError 输出安全诊断。
+type sensitiveRequestLogger struct{}
+
+func (sensitiveRequestLogger) Errorf(string, ...interface{}) {}
+func (sensitiveRequestLogger) Warnf(string, ...interface{})  {}
+func (sensitiveRequestLogger) Debugf(string, ...interface{}) {}

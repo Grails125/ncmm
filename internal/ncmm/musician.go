@@ -5,6 +5,7 @@ package ncmm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"path/filepath"
@@ -358,18 +359,25 @@ func (c *Musician) execute(ctx context.Context) error {
 		return nil
 	}
 
+	var failures []error
 	for i, acc := range activeAccounts {
+		if ctx.Err() != nil {
+			failures = append(failures, ctx.Err())
+			break
+		}
 		if acc.IsMain {
 			c.cmd.Printf("[musician] >>>>>> 开始主账号音乐人任务 (%s) <<<<<<\n", acc.Filepath)
 			if err := c.runMusicianForCookie(ctx, acc.Filepath, true); err != nil {
 				c.cmd.Printf("[musician] ❌ 主账号任务失败: %s\n", err)
 				c.root.ReportFailure(acc.Filepath, "musician", err)
+				failures = append(failures, err)
 			}
 		} else {
 			c.cmd.Printf("[musician] >>>>>> 开始辅助账号音乐人任务 (%s) <<<<<<\n", acc.Filepath)
 			if err := c.runMusicianForCookie(ctx, acc.Filepath, false); err != nil {
 				c.cmd.Printf("[musician] ❌ 辅助账号任务失败: %s\n", err)
 				c.root.ReportFailure(acc.Filepath, "musician", err)
+				failures = append(failures, err)
 			}
 		}
 
@@ -379,7 +387,7 @@ func (c *Musician) execute(ctx context.Context) error {
 	}
 
 	c.cmd.Println("[musician] 所有音乐人日常与 VIP 任务执行完毕！")
-	return nil
+	return errors.Join(failures...)
 }
 
 func (c *Musician) sleepBetweenAccounts(ctx context.Context, currentAccount string) {
@@ -400,7 +408,7 @@ func (c *Musician) runMusicianForCookie(ctx context.Context, cookieFile string, 
 	defer mctx.close(ctx)
 
 	// 第一阶段：音乐人日常任务
-	c.doSignPhase(ctx, mctx, cookieFile)
+	signErr := c.doSignPhase(ctx, mctx, cookieFile)
 
 	// 第二阶段：音乐人 VIP 任务
 	c.doVipPhase(ctx, mctx, cookieFile)
@@ -411,7 +419,7 @@ func (c *Musician) runMusicianForCookie(ctx context.Context, cookieFile string, 
 	// 统计接口每天 09:00 后最多请求一次；历史缺口才调用趋势接口回补。
 	c.syncAndPrintPlayStats(ctx, mctx, cookieFile)
 
-	return nil
+	return signErr
 }
 
 // ==================== executeSign: 仅日常签到 ====================
@@ -431,6 +439,7 @@ func (c *Musician) executeSign(ctx context.Context) error {
 	}
 
 	var hasExecuted bool
+	var failures []error
 
 	// 1. 主账号
 	if cfg.Musician != nil && cfg.Musician.EnableMain && cfg.Accounts.Main != "" {
@@ -438,6 +447,7 @@ func (c *Musician) executeSign(ctx context.Context) error {
 		if err := c.RunSignForCookie(ctx, cfg.Accounts.Main); err != nil {
 			c.cmd.Printf("[musician sign] ❌ 主账号签到失败: %s\n", err)
 			c.root.ReportFailure(cfg.Accounts.Main, "musician-sign", err)
+			failures = append(failures, err)
 		}
 		hasExecuted = true
 	} else {
@@ -451,10 +461,15 @@ func (c *Musician) executeSign(ctx context.Context) error {
 	// 2. 辅助账号
 	if cfg.Musician != nil && cfg.Musician.EnableSecondaries && len(cfg.Accounts.Secondary) > 0 {
 		for _, secCookie := range cfg.Accounts.Secondary {
+			if ctx.Err() != nil {
+				failures = append(failures, ctx.Err())
+				break
+			}
 			c.cmd.Printf("[musician sign] >>>>>> 开始辅助账号音乐人日常签到 (%s) <<<<<<\n", secCookie)
 			if err := c.RunSignForCookie(ctx, secCookie); err != nil {
 				c.cmd.Printf("[musician sign] ❌ 辅助账号签到失败: %s\n", err)
 				c.root.ReportFailure(secCookie, "musician-sign", err)
+				failures = append(failures, err)
 			}
 			hasExecuted = true
 		}
@@ -472,7 +487,7 @@ func (c *Musician) executeSign(ctx context.Context) error {
 	} else {
 		c.cmd.Println("[musician sign] 所有音乐人日常签到任务执行完毕！")
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 // RunSignForCookie 执行单个账号的音乐人日常签到
@@ -483,9 +498,9 @@ func (c *Musician) RunSignForCookie(ctx context.Context, cookieFile string) erro
 	}
 	defer mctx.close(ctx)
 
-	c.doSignPhase(ctx, mctx, cookieFile)
+	signErr := c.doSignPhase(ctx, mctx, cookieFile)
 	c.syncAndPrintPlayStats(ctx, mctx, cookieFile)
-	return nil
+	return signErr
 }
 
 // ==================== executeVip: 仅 VIP 进阶任务 ====================
@@ -564,211 +579,6 @@ func (c *Musician) RunVipForCookie(ctx context.Context, cookieFile string) error
 }
 
 // ==================== 任务执行阶段 ====================
-
-// doSignPhase 执行第一阶段：音乐人日常签到 + 领云豆
-func (c *Musician) doSignPhase(ctx context.Context, mctx *musicianContext, cookieFile string) {
-	c.cmd.Println("  👉 [第一阶段] 开始执行音乐人日常任务 (日常签到与云豆领奖)...")
-
-	if deviceId := mctx.cli.GetDeviceId(); deviceId != "" {
-		c.cmd.Printf("    👉 [deviceId] 使用 Cookie 中的设备 ID: %s\n", deviceId)
-	}
-
-	// 1. 执行前先展示任务列表，便于观察签到前后的状态变化。
-	c.cmd.Println("    👉 音乐人任务列表（执行前）...")
-	beforeTasks := c.fetchMusicianRewardTasks(ctx, mctx)
-	c.printMusicianTaskList(beforeTasks)
-
-	// 2. 音乐人日常签到。HAR 对应 /api/creator/user/access。
-	c.cmd.Println("    👉 开始音乐人日常签到...")
-	signResp, err := mctx.eapiCli.MusicianSign(ctx, &eapi.MusicianSignReq{})
-	if err != nil {
-		c.cmd.Printf("    ❌ 音乐人日常签到失败: %v\n", err)
-	} else if signResp.Code == 200 && signResp.Data {
-		c.cmd.Println("    ✅ 音乐人日常签到成功")
-	} else if signResp.Code == 200 {
-		c.cmd.Println("    ℹ️ 音乐人日常签到接口已成功返回，但未返回新的签到状态")
-	} else {
-		c.cmd.Printf("    ℹ️ 音乐人日常签到提示: code=%d msg=%s\n", signResp.Code, signResp.Message)
-	}
-
-	// 3. 签到后刷新任务状态，领取可领取的周期/阶段云豆奖励。
-	afterSignTasks := c.fetchMusicianRewardTasks(ctx, mctx)
-	claimCount := c.claimMusicianRewards(ctx, mctx, cookieFile, afterSignTasks)
-
-	finalTasks := afterSignTasks
-	if claimCount > 0 {
-		finalTasks = c.fetchMusicianRewardTasks(ctx, mctx)
-	}
-
-	// 4. 展示执行后任务列表。
-	c.cmd.Println("    👉 音乐人任务列表（执行后）...")
-	c.printMusicianTaskList(finalTasks)
-}
-
-func (c *Musician) claimMusicianRewards(ctx context.Context, mctx *musicianContext, cookieFile string, tasks []eapi.MusicianMissionTask) int {
-	if len(tasks) == 0 {
-		c.cmd.Println("    ℹ️ 没有可领取的云豆奖励")
-		return 0
-	}
-
-	var claimCount int
-	claimed := make(map[string]bool)
-	for _, task := range tasks {
-		if !isMusicianRewardClaimable(task) {
-			continue
-		}
-
-		key := fmt.Sprintf("%d:%d", task.UserMissionId, task.Period)
-		if claimed[key] {
-			continue
-		}
-		claimed[key] = true
-		if c.isMusicianRewardClaimCached(ctx, mctx, cookieFile, task) {
-			continue
-		}
-
-		name := musicianTaskDisplayName(task)
-		reward, err := mctx.eapiCli.MusicianRewardObtain(ctx, &eapi.MusicianRewardObtainReq{
-			UserMissionId: task.UserMissionId,
-			Period:        task.Period,
-		})
-		if err != nil {
-			c.cmd.Printf("    ❌ 领取 [%s]云豆奖励失败: %v\n", name, err)
-			continue
-		}
-		if reward.Code != 200 {
-			c.cmd.Printf("    ℹ️ 领取 [%s]云豆奖励提示: code=%d msg=%s\n", name, reward.Code, reward.Message)
-			continue
-		}
-
-		if rewardWorth := musicianTaskRewardWorth(task); rewardWorth != "" {
-			c.cmd.Printf("    🎉 成功领取 [%s]云豆奖励：+%s\n", name, rewardWorth)
-		} else {
-			c.cmd.Printf("    🎉 成功领取 [%s]云豆奖励\n", name)
-		}
-		c.saveMusicianRewardClaimCache(ctx, mctx, cookieFile, task)
-		claimCount++
-	}
-
-	if claimCount == 0 {
-		c.cmd.Println("    ℹ️ 没有可领取的云豆奖励")
-	}
-	return claimCount
-}
-
-func (c *Musician) isMusicianRewardClaimCached(ctx context.Context, mctx *musicianContext, cookieFile string, task eapi.MusicianMissionTask) bool {
-	if mctx.db == nil || task.UserMissionId <= 0 {
-		return false
-	}
-	ok, err := mctx.db.Exists(ctx, musicianRewardClaimCacheKey(cookieFile, task.UserMissionId, task.Period))
-	if err != nil {
-		log.Warn("[musician] 读取云豆领奖缓存失败: %s", err)
-		return false
-	}
-	return ok
-}
-
-func (c *Musician) saveMusicianRewardClaimCache(ctx context.Context, mctx *musicianContext, cookieFile string, task eapi.MusicianMissionTask) {
-	if mctx.db == nil || task.UserMissionId <= 0 {
-		return
-	}
-	if err := mctx.db.Set(ctx, musicianRewardClaimCacheKey(cookieFile, task.UserMissionId, task.Period), "1", 45*24*time.Hour); err != nil {
-		log.Warn("[musician] 写入云豆领奖缓存失败: %s", err)
-	}
-}
-
-func (c *Musician) fetchMusicianRewardTasks(ctx context.Context, mctx *musicianContext) []eapi.MusicianMissionTask {
-	var allTasks []eapi.MusicianMissionTask
-	seen := make(map[string]bool)
-	appendTasks := func(tasks []eapi.MusicianMissionTask) {
-		for _, task := range tasks {
-			key := fmt.Sprintf("%d:%d:%d", task.UserMissionId, task.MissionId, task.Period)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			allTasks = append(allTasks, task)
-		}
-	}
-
-	// 日常签到周期任务：移动端抓包主要使用 platform=300, tag=101。
-	if cycle, err := mctx.eapiCli.MusicianMissionCycleList(ctx, &eapi.MusicianMissionListReq{Platform: 300, Tag: 101}); err == nil && cycle.Code == 200 {
-		appendTasks(cycle.Data.List)
-	} else if err != nil {
-		c.cmd.Printf("    ⚠️ 获取音乐人周期任务失败: %v\n", err)
-	}
-
-	// 兼容网页版/旧移动端入口：HAR 中也出现 actionType=102, platform=200 的周期列表。
-	if cycle, err := mctx.eapiCli.MusicianMissionCycleList(ctx, &eapi.MusicianMissionListReq{Platform: 200, ActionType: 102}); err == nil && cycle.Code == 200 {
-		appendTasks(cycle.Data.List)
-	}
-
-	// 阶段任务用于补充可领取云豆，抓包参数为 platform=300, tag=303。
-	if stage, err := mctx.eapiCli.MusicianMissionStageList(ctx, &eapi.MusicianMissionListReq{Platform: 300, Tag: 303}); err == nil && stage.Code == 200 {
-		appendTasks(stage.Data.List)
-	} else if err != nil {
-		c.cmd.Printf("    ⚠️ 获取音乐人阶段任务失败: %v\n", err)
-	}
-
-	return allTasks
-}
-
-func musicianTaskDisplayName(task eapi.MusicianMissionTask) string {
-	for _, v := range []string{task.Description, task.Name, task.Title} {
-		v = strings.TrimSpace(v)
-		if v != "" {
-			return v
-		}
-	}
-	if task.MissionId > 0 {
-		return fmt.Sprintf("mission-%d", task.MissionId)
-	}
-	return "unknown"
-}
-
-func (c *Musician) printMusicianTaskList(tasks []eapi.MusicianMissionTask) {
-	if len(tasks) == 0 {
-		c.cmd.Println("    ℹ️ 暂无音乐人周期/阶段任务")
-		return
-	}
-
-	for _, task := range tasks {
-		c.cmd.Printf("    - 任务: %-20s | %s | 进度: %d/%d | 云豆: %s\n",
-			musicianTaskDisplayName(task),
-			musicianTaskStatusText(task),
-			task.ProgressRate,
-			task.TargetCount,
-			musicianTaskRewardWorth(task),
-		)
-	}
-}
-
-func musicianTaskStatusText(task eapi.MusicianMissionTask) string {
-	if task.Status == 100 {
-		return "已完成"
-	}
-	return "未完成"
-}
-
-func musicianTaskRewardWorth(task eapi.MusicianMissionTask) string {
-	return strings.TrimSpace(task.RewardWorth)
-}
-
-func isMusicianRewardClaimable(task eapi.MusicianMissionTask) bool {
-	if task.UserMissionId <= 0 {
-		return false
-	}
-	if task.Status != 100 && task.NeedToReceive <= 0 {
-		return false
-	}
-	if task.RewardId <= 0 && task.RewardWorth == "" && task.NeedToReceive <= 0 {
-		return false
-	}
-	if task.TargetCount > 0 && task.ProgressRate < task.TargetCount && task.NeedToReceive <= 0 {
-		return false
-	}
-	return true
-}
 
 // doVipPhase 执行第二阶段：音乐人 VIP 进阶任务
 func (c *Musician) doVipPhase(ctx context.Context, mctx *musicianContext, cookieFile string) {
