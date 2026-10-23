@@ -108,7 +108,16 @@ docker compose up -d --build
 
 ## 🖼️ WebUI 预览
 
-![NCMM WebUI 仪表盘](./static/webui-dashboard-light.png)
+以下为当前 WebUI 的实际界面，账号、收益和任务记录均使用合成演示数据。
+
+![NCMM WebUI 仪表盘：账号数据、今日收益及合伙人积分趋势](./static/webui-dashboard-light.png)
+
+<table>
+  <tr>
+    <td width="50%"><strong>原生音乐合伙人评分</strong><br/><img src="./static/webui-music-partner-light.png" alt="音乐合伙人分数范围、每日额外评分目标和随机等待时间配置" /></td>
+    <td width="50%"><strong>今日推荐笔记与乐评</strong><br/><img src="./static/webui-music-partner-recommend-light.png" alt="推荐歌曲数量范围、随机抽取、试听等待和独立笔记与乐评模板" /></td>
+  </tr>
+</table>
 
 [查看完整功能说明与界面预览](docs/webui.md)
 

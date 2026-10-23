@@ -1,6 +1,6 @@
 # 🖥️ WebUI 使用说明
 
-本分支在原有任务和配置页面内置“音乐合伙人评分”，支持主副账号、评分策略、额外任务以及独立定时规则，详见 [启用步骤](music-partner.md)。恢复的源码基线为 v1.2.2，较新上游截图或功能描述不代表本分支已包含，版本差异见 [源码说明](source-baseline.md)。
+本分支在原有任务和配置页面内置“音乐合伙人评分”和今日推荐歌曲任务，支持主副账号、评分策略、额外任务、推荐歌曲试听上报、图文笔记与乐评，以及独立定时规则，详见 [启用步骤](music-partner.md)。恢复的源码基线为 v1.2.2，较新上游截图或功能描述不代表本分支已包含，版本差异见 [源码说明](source-baseline.md)。
 
 NCMM WebUI 是随 `ncmm web` 启动的管理工作台，包含仪表盘、账号中心、定时任务、策略配置、运行日志和系统设置。它适合在本机、服务器或 Docker 中常驻运行；只使用命令行、系统 cron 或青龙面板时不需要启动 WebUI。
 
@@ -176,23 +176,35 @@ v1.2.0 使用全新的 WebUI 认证状态，不迁移 v1.1.x 管理令牌。升�
 
 ## 10. 界面预览
 
-以下截图使用脱敏演示数据，界面支持明亮与深色两套主题。
+以下预览按当前 `1.2.3-grails` 的 WebUI 拍摄。账号、数值、任务及运行日志均为合成演示数据；二维码为离线示意图，不能用于登录。界面支持明亮与深色两套主题。
 
 <table>
   <tr>
-    <td width="50%"><strong>仪表盘</strong><br/><img src="../static/webui-dashboard-light.png" alt="WebUI 仪表盘" /></td>
-    <td width="50%"><strong>账号中心与二维码登录</strong><br/><img src="../static/webui-accounts-qrcode-light.png" alt="WebUI 账号中心" /></td>
+    <td width="50%"><strong>仪表盘 · 明亮主题</strong><br/><img src="../static/webui-dashboard-light.png" alt="NCMM 明亮主题仪表盘，展示账号数据、今日收益与最近七日变化" /></td>
+    <td width="50%"><strong>仪表盘 · 深色主题</strong><br/><img src="../static/webui-dashboard-dark.png" alt="NCMM 深色主题仪表盘，展示账号数据、今日收益与最近七日变化" /></td>
   </tr>
   <tr>
-    <td width="50%"><strong>定时任务</strong><br/><img src="../static/webui-schedules-light.png" alt="WebUI 定时任务" /></td>
-    <td width="50%"><strong>规则配置</strong><br/><img src="../static/webui-config-rules-light.png" alt="WebUI 规则配置" /></td>
+    <td width="50%"><strong>账号列表与实时余额</strong><br/><img src="../static/webui-accounts-light.png" alt="NCMM 账号中心，展示演示账号、实时云贝余额与任务收益" /></td>
+    <td width="50%"><strong>二维码登录 · 离线演示</strong><br/><img src="../static/webui-accounts-qrcode-light.png" alt="NCMM 账号中心二维码登录面板，二维码为不可登录的离线示意图" /></td>
   </tr>
   <tr>
-    <td width="50%"><strong>推送配置</strong><br/><img src="../static/webui-config-notify-light.png" alt="WebUI 推送配置" /></td>
-    <td width="50%"><strong>运行日志</strong><br/><img src="../static/webui-runs-light.png" alt="WebUI 运行日志" /></td>
+    <td width="50%"><strong>定时任务列表</strong><br/><img src="../static/webui-schedules-light.png" alt="NCMM 定时任务列表，展示演示计划与任务状态" /></td>
+    <td width="50%"><strong>新建任务与命令参数说明</strong><br/><img src="../static/webui-schedule-command-light.png" alt="NCMM 新建任务面板，展示音乐合伙人命令、中文用途与参数说明" /></td>
   </tr>
   <tr>
-    <td width="50%"><strong>系统概览</strong><br/><img src="../static/webui-system-overview-light.png" alt="WebUI 系统概览" /></td>
-    <td width="50%"><strong>安全设置</strong><br/><img src="../static/webui-system-security-light.png" alt="WebUI 安全设置" /></td>
+    <td width="50%"><strong>规则配置</strong><br/><img src="../static/webui-config-rules-light.png" alt="NCMM 策略配置，展示批量任务与规则设置" /></td>
+    <td width="50%"><strong>音乐合伙人评分配置</strong><br/><img src="../static/webui-music-partner-light.png" alt="NCMM 音乐合伙人配置，展示评分范围、每日额外目标与随机等待时间" /></td>
+  </tr>
+  <tr>
+    <td width="50%"><strong>今日推荐歌曲配置</strong><br/><img src="../static/webui-music-partner-recommend-light.png" alt="NCMM 今日推荐歌曲配置，展示数量范围、抽取顺序、试听等待及笔记和乐评模板" /></td>
+    <td width="50%"><strong>推送通道配置</strong><br/><img src="../static/webui-config-notify-light.png" alt="NCMM 推送配置，展示通知通道与发送选项" /></td>
+  </tr>
+  <tr>
+    <td width="50%"><strong>运行日志与任务结果</strong><br/><img src="../static/webui-runs-light.png" alt="NCMM 运行日志，展示合成任务记录与执行结果" /></td>
+    <td width="50%"><strong>插件中心</strong><br/><img src="../static/webui-plugins-light.png" alt="NCMM 插件中心，展示插件安装与管理界面" /></td>
+  </tr>
+  <tr>
+    <td width="50%"><strong>系统概览与更新</strong><br/><img src="../static/webui-system-overview-light.png" alt="NCMM 系统概览，展示运行状态、存储位置与版本更新" /></td>
+    <td width="50%"><strong>认证与安全设置</strong><br/><img src="../static/webui-system-security-light.png" alt="NCMM 安全设置，展示密码策略与会话配置" /></td>
   </tr>
 </table>
