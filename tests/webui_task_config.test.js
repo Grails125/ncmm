@@ -19,10 +19,57 @@ function harness() {
     renderConfig = () => {};
     toast = () => {};
     markConfigDirty = () => { state.configDirty = true; };
-    globalThis.ui = { state, PRESET_STRATEGIES, applyPreset, renderSchedules, renderRuns, configSectionKeys, configSectionOrder };
+    globalThis.ui = { state, PRESET_STRATEGIES, applyPreset, renderSchedules, renderRuns, configSectionKeys, configSectionOrder, getTaskQueueLists, getTaskSubtaskInfo, getMissingTaskSubtasks, addTaskToQueue, renderFlowTaskKanban };
   })();`), context);
   return { ...context.ui, nodes };
 }
+
+test('分享歌曲出现在默认队列和任务名称映射中，读取旧队列不擅自增加任务', () => {
+  const ui = harness();
+  ui.state.config = { data: {} };
+  assert(ui.getTaskQueueLists().fastTasks.includes('ShareSong'));
+  assert.equal(ui.getTaskSubtaskInfo('ShareSong').name, '分享歌曲');
+  ui.state.config.data.task = { fast_tasks: ['VipTask'], slow_tasks: ['ListenIndie'] };
+  const queues = ui.getTaskQueueLists();
+  assert.deepEqual(Array.from(queues.fastTasks), ['VipTask']);
+  assert.deepEqual(Array.from(queues.slowTasks), ['ListenIndie']);
+});
+
+test('添加任务只展示两个队列均未包含的已知任务，兼容旧队列大小写', () => {
+  const ui = harness();
+  const missing = ui.getMissingTaskSubtasks(['viptask', 'custom-extension'], ['sharesong']);
+  assert(!missing.some(task => ['VipTask', 'ShareSong', 'custom-extension'].includes(task.id)));
+  assert(missing.some(task => task.id === 'ViewVipCenter'));
+  const html = ui.renderFlowTaskKanban(['VipTask'], ['ListenIndie']);
+  assert.match(html, /<label[^>]+for="task-queue-add"/);
+  assert.match(html, /<option value="ShareSong">分享歌曲<\/option>/);
+  assert.doesNotMatch(html, /<option value="(?:VipTask|ListenIndie)">/);
+  assert.match(html, /data-task-add="fast"/);
+  assert.match(html, /data-task-add="slow"/);
+});
+
+test('用户明确添加才追加到指定队列，不改变开关、现有顺序和音乐合伙人配置', () => {
+  for (const group of ['fast', 'slow']) {
+    const ui = harness();
+    ui.state.config = { data: {
+      task: { sign: false, fast_tasks: ['VipTask', 'custom-extension'], slow_tasks: ['ListenIndie'] },
+      sign: { yunbeiTask: { enableShareSong: false } },
+      musicPartner: { scoreMin: 2, scoreMax: 5 },
+    } };
+    assert.equal(ui.addTaskToQueue('sharesong', group), true);
+    const root = ui.state.config.data;
+    assert.deepEqual(Array.from(root.task.fast_tasks), group === 'fast' ? ['VipTask', 'custom-extension', 'ShareSong'] : ['VipTask', 'custom-extension']);
+    assert.deepEqual(Array.from(root.task.slow_tasks), group === 'slow' ? ['ListenIndie', 'ShareSong'] : ['ListenIndie']);
+    assert.equal(root.task.sign, false);
+    assert.equal(root.sign.yunbeiTask.enableShareSong, false);
+    assert.deepEqual(root.musicPartner, { scoreMin: 2, scoreMax: 5 });
+    assert.equal(ui.state.configDirty, true);
+    assert.equal(ui.addTaskToQueue('ShareSong', group === 'fast' ? 'slow' : 'fast'), false);
+    assert.equal(ui.addTaskToQueue('unrecognized-task', 'fast'), false);
+    assert.equal(ui.addTaskToQueue('ViewVipCenter', 'invalid'), false);
+    assert.equal(ui.getTaskQueueLists().fastTasks.filter(x => x === 'ShareSong').length + ui.getTaskQueueLists().slowTasks.filter(x => x === 'ShareSong').length, 1);
+  }
+});
 
 test('废弃通用播放字段归入播放模块且不增加导航模块，保留原始兼容数据和其他扩展配置', () => {
   const { configSectionKeys, configSectionOrder } = harness();

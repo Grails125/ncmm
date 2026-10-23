@@ -159,7 +159,7 @@ func TestMusicPartnerSchemaRangesAndCommentPools(t *testing.T) {
 	for _, field := range configurationSchema().Targets["config"].Fields {
 		fields[field.Path] = field
 	}
-	for _, legacy := range []string{"musicPartner.score", "musicPartner.extraLimit"} {
+	for _, legacy := range []string{"musicPartner.score", "musicPartner.extraLimit", "musicPartner.recommendCount"} {
 		if _, exists := fields[legacy]; exists {
 			t.Fatalf("legacy control %q must remain hidden", legacy)
 		}
@@ -167,28 +167,40 @@ func TestMusicPartnerSchemaRangesAndCommentPools(t *testing.T) {
 	for _, want := range []struct {
 		path         string
 		defaultValue int
-		max          float64
+		min, max     float64
 		unit         string
 	}{
-		{"musicPartner.scoreMin", 3, 5, "分"},
-		{"musicPartner.scoreMax", 4, 5, "分"},
-		{"musicPartner.extraLimitMin", 7, 500, "首"},
-		{"musicPartner.extraLimitMax", 7, 500, "首"},
-		{"musicPartner.waitMin", 15, 300, "秒"},
-		{"musicPartner.waitMax", 20, 300, "秒"},
+		{"musicPartner.scoreMin", 3, 1, 5, "分"},
+		{"musicPartner.scoreMax", 4, 1, 5, "分"},
+		{"musicPartner.extraLimitMin", 5, 0, 15, "首"},
+		{"musicPartner.extraLimitMax", 15, 0, 15, "首"},
+		{"musicPartner.waitMin", 15, 1, 300, "秒"},
+		{"musicPartner.waitMax", 20, 1, 300, "秒"},
+		{"musicPartner.recommendWaitMin", 16, 16, 300, "秒"},
+		{"musicPartner.recommendWaitMax", 20, 16, 300, "秒"},
 	} {
 		t.Run(want.path, func(t *testing.T) {
 			field, exists := fields[want.path]
 			if !exists || field.Type != "integer" || field.Widget != "number" || field.Unit != want.unit {
 				t.Fatalf("unexpected range control: %+v", field)
 			}
-			if field.Min == nil || *field.Min != 1 || field.Max == nil || *field.Max != want.max || field.Step == nil || *field.Step != 1 {
+			if field.Min == nil || *field.Min != want.min || field.Max == nil || *field.Max != want.max || field.Step == nil || *field.Step != 1 {
 				t.Fatalf("invalid range constraints: %+v", field)
 			}
 			if field.Default != want.defaultValue {
 				t.Fatalf("default = %#v, want %d", field.Default, want.defaultValue)
 			}
 		})
+	}
+	for _, path := range []string{"musicPartner.recommendCountMin", "musicPartner.recommendCountMax"} {
+		field := fields[path]
+		if field.Default != 0 || field.Min == nil || *field.Min != 0 || field.Max != nil || field.Step == nil || *field.Step != 1 || field.Type != "integer" || field.Widget != "number" || field.Unit != "首" {
+			t.Fatalf("推荐目标应默认为0且不限制上限: %+v", field)
+		}
+	}
+	order := fields["musicPartner.recommendOrder"]
+	if order.Default != "sequential" || order.Widget != "segmented" || len(order.Options) != 2 || order.Options[0].Value != "sequential" || order.Options[0].Label != "按列表顺序" || order.Options[1].Value != "random" || order.Options[1].Label != "随机抽取" {
+		t.Fatalf("推荐抽取顺序配置缺失: %+v", order)
 	}
 	for _, score := range []string{"1", "2", "3", "4", "5"} {
 		field, exists := fields["musicPartner.comments."+score]
@@ -202,5 +214,15 @@ func TestMusicPartnerSchemaRangesAndCommentPools(t *testing.T) {
 	}
 	if fields["musicPartner.syncYunCircle"].Default != false {
 		t.Fatal("YunCircle publication must remain disabled by default")
+	}
+	for _, path := range []string{"musicPartner.recommendNotes", "musicPartner.recommendComments"} {
+		field, exists := fields[path]
+		if !exists || field.Type != "string-list" || field.Widget != "textarea-list" || field.Group != "partner-recommend" {
+			t.Fatalf("missing recommendation pool: %+v", field)
+		}
+		encoded, err := json.Marshal(field.Default)
+		if err != nil || string(encoded) != "[]" {
+			t.Fatalf("recommendation pool must start empty: %s", encoded)
+		}
 	}
 }

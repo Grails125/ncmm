@@ -340,7 +340,7 @@ func (m *runManager) wait(runID, jobID string, process *managedProcess, logFile 
 		record.Status = "success"
 	}
 	record.ExitCode = &exitCode
-	record.Rewards = rewards
+	record.Rewards = mergeRunRewards(record.Rewards, rewards)
 	m.runs[runID] = record
 	running := m.running[runID]
 	delete(m.running, runID)
@@ -727,9 +727,12 @@ func (m *runManager) loadHistory() {
 		record.MetaFile = metaPath
 		record.LogFile = strings.TrimSuffix(metaPath, ".json") + ".log"
 		backfilledRewards := false
-		if rewards, rewardErr := parseRunRewards(record.LogFile); rewardErr == nil && len(rewards) > 0 && !reflect.DeepEqual(record.Rewards, rewards) {
-			record.Rewards = rewards
-			backfilledRewards = true
+		if rewards, rewardErr := parseRunRewards(record.LogFile); rewardErr == nil && len(rewards) > 0 {
+			merged := mergeRunRewards(record.Rewards, rewards)
+			if !reflect.DeepEqual(record.Rewards, merged) {
+				record.Rewards = merged
+				backfilledRewards = true
+			}
 		}
 		if record.Status == "running" || record.Status == "queued" {
 			record.Status = "interrupted"

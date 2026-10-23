@@ -50,6 +50,7 @@ type Server struct {
 	http              *http.Server
 	restartCh         chan struct{}
 	readPartnerPoints partnerPointsReader
+	readAccountData   accountDataReader
 }
 
 func New(ctx context.Context, opts Options) (*Server, error) {
@@ -228,6 +229,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1/runs", s.handleRunsGet)
 	mux.HandleFunc("GET /api/v1/play-stats", s.handlePlayStatsGet)
 	mux.HandleFunc("GET /api/v1/music-partner/points", s.handlePartnerPointsGet)
+	mux.HandleFunc("GET /api/v1/accounts/data", s.handleAccountDataGet)
 	mux.HandleFunc("GET /api/v1/runs/{id}/log", s.handleRunLog)
 	mux.HandleFunc("POST /api/v1/runs/{id}/stop", s.handleRunStop)
 	mux.HandleFunc("DELETE /api/v1/runs/{id}", s.handleRunDelete)
@@ -589,7 +591,7 @@ func (s *Server) handleNotifyTest(w http.ResponseWriter, r *http.Request) {
 	}
 	message := notify.Message{
 		Title:   name + " 信使打卡成功✅",
-		Content: "服务支持：NCMM 开源项目\n简介：网易云音乐一站式任务管理系统\nGitHub：https://github.com/3899/ncmm",
+		Content: "服务支持：NCMM 开源项目\n简介：网易云音乐一站式任务管理系统\nGitHub：https://github.com/Grails125/ncmm",
 		Level:   "info",
 	}
 	if err := dispatcher.SendAll(r.Context(), message); err != nil {

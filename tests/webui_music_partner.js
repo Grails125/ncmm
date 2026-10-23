@@ -51,6 +51,9 @@ async function noOverflow(page) {
     await page.locator('#setup-confirm-password').fill('PartnerTest#2026');
     await page.locator('#setup-submit').click();
     await page.locator('#app-shell').waitFor({ state: 'visible' });
+    for (const href of await page.locator('a[href*="github.com/"]').evaluateAll(links => links.map(link => link.href))) {
+      assert(href.startsWith('https://github.com/Grails125/ncmm'), `unexpected repository link: ${href}`);
+    }
     await page.locator('.nav-item[data-page="config"]').click();
     await page.locator('#config-block-musicPartner').waitFor({ state: 'visible' });
     await page.locator('[data-task-card="task.music-partner"]').waitFor({ state: 'visible' });
@@ -61,10 +64,10 @@ async function noOverflow(page) {
     assert(await field(page, 'enableMain').isChecked() && !await field(page, 'enableSecondaries').isChecked(), 'default account selection changed');
     assert(await field(page, 'extraTasks').isChecked() && !await field(page, 'fullExtraTasks').isChecked(), 'extra task defaults changed');
     assert(!await field(page, 'syncYunCircle').isChecked(), 'YunCircle publication must default off');
-    const defaultRanges = [['scoreMin', '3', '5'], ['scoreMax', '4', '5'], ['extraLimitMin', '7', '500'], ['extraLimitMax', '7', '500'], ['waitMin', '15', '300'], ['waitMax', '20', '300']];
+    const defaultRanges = [['scoreMin', '3', '5'], ['scoreMax', '4', '5'], ['extraLimitMin', '5', '15'], ['extraLimitMax', '15', '15'], ['waitMin', '15', '300'], ['waitMax', '20', '300']];
     for (const [name, value, max] of defaultRanges) {
       assert(await field(page, name).inputValue() === value, `${name} default changed`);
-      assert(await field(page, name).getAttribute('min') === '1' && await field(page, name).getAttribute('max') === max && await field(page, name).getAttribute('step') === '1', `${name} range limits missing`);
+      assert(await field(page, name).getAttribute('min') === (name.startsWith('extraLimit') ? '0' : '1') && await field(page, name).getAttribute('max') === max && await field(page, name).getAttribute('step') === '1', `${name} range limits missing`);
     }
     assert(await page.locator('#config-block-musicPartner .range-inputs-row').count() === 3, 'paired scoring, quantity and wait ranges missing');
     assert(await page.locator('#config-block-musicPartner .schema-segment').count() === 0 && await field(page, 'score').count() === 0 && await field(page, 'extraLimit').count() === 0, 'legacy scoring controls remain visible');
@@ -93,16 +96,19 @@ async function noOverflow(page) {
     for (const [name, value] of configuredRanges) assert(await field(page, name).inputValue() === value, `${name} did not survive reload`);
     for (const [score, lines] of Object.entries(comments)) assert(await commentField(page, score).inputValue() === lines.join('\n'), `score ${score} comment pool did not survive reload`);
     await page.locator('#config-sections [data-section="musicPartner"]').click();
-    for (const [name, invalid, valid] of [['scoreMax', '1', '5'], ['scoreMax', '6', '5'], ['extraLimitMax', '7', '11'], ['extraLimitMax', '501', '11'], ['waitMax', '20', '23']]) {
+    for (const [name, invalid, valid] of [['scoreMax', '1', '5'], ['scoreMax', '6', '5'], ['extraLimitMax', '7', '11'], ['extraLimitMax', '16', '11'], ['waitMax', '20', '23']]) {
       await field(page, name).fill(invalid);
       await saveConfig(page, 400);
       await field(page, name).fill(valid);
     }
+    await field(page, 'extraLimitMin').fill('0');
+    await field(page, 'extraLimitMax').fill('0');
     await commentField(page, '4').fill('');
     await saveConfig(page);
     await page.reload({ waitUntil: 'networkidle' });
     await page.locator('#config-block-musicPartner').waitFor({ state: 'visible' });
     assert(await commentField(page, '4').inputValue() === '', 'cleared comment pool did not stay empty');
+    assert(await field(page, 'extraLimitMin').inputValue() === '0' && await field(page, 'extraLimitMax').inputValue() === '0', 'explicit zero range did not survive save and reload');
     assert(await commentField(page, '3').inputValue() === comments['3'].join('\n'), 'clearing one score changed another comment pool');
     await page.locator('[data-preset="music_partner"]').click();
     assert(await commentField(page, '3').inputValue() === comments['3'].join('\n'), 'preset erased custom comment pools');
@@ -121,7 +127,8 @@ async function noOverflow(page) {
     assert(!await page.locator('#schedule-enabled').isChecked(), 'test schedule must stay disabled');
     await page.locator('#schedule-command').selectOption('music-partner');
     assert(await page.locator('#schedule-plugin-fields').isHidden(), 'native task opened plugin controls');
-    assert(await page.locator('#schedule-music-partner-help').isVisible(), 'native account argument help missing');
+    assert(await page.locator('#schedule-args-help').isVisible(), 'native account argument help missing');
+    assert.match(await page.locator('#schedule-args-help').innerText(), /评分规则/);
     await page.locator('#schedule-args').fill('--config other.yaml');
     const invalidSchedule = page.waitForResponse(result => result.url().endsWith('/api/v1/schedules') && result.request().method() === 'POST');
     await page.locator('#schedule-submit').click();
@@ -139,6 +146,9 @@ async function noOverflow(page) {
 
     await page.locator('.nav-item[data-page="runs"]').click();
     assert((await page.locator('#runs-table').innerText()).includes('失败'), 'failed native command did not display failed');
+    for (const href of await page.locator('a[href*="github.com/"]').evaluateAll(links => links.map(link => link.href))) {
+      assert(href.startsWith('https://github.com/Grails125/ncmm'), `unexpected repository link: ${href}`);
+    }
     await page.locator('.nav-item[data-page="config"]').click();
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator('#config-sections [data-section="musicPartner"]').click();

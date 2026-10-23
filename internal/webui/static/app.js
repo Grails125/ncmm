@@ -117,7 +117,7 @@
     playids: { nav: '播放歌曲', title: '播放指定歌曲有效播放量', description: '批量冲刺指定歌曲或歌单有效播放量目标' },
     mixPlay: { nav: '日推混听', title: '日推混听防风控策略', description: '按比例穿插播放官方日推歌曲，模拟真人听歌' },
     musician: { nav: '音乐人任务', title: '音乐人专属任务与 VIP 进阶', description: '日常签到领云豆、VIP 月度进阶与专属播放覆盖' },
-    musicPartner: { nav: '合伙人评分', title: '音乐合伙人自动评分', description: '按配置区间随机评分，可按分值搭配乐评；不分析音频质量' },
+    musicPartner: { nav: '合伙人评分', title: '音乐合伙人评分与推荐', description: '按配置区间随机评分；可另行启用今日推荐歌曲的笔记与乐评任务' },
     note: { nav: '图文动态', title: '图文动态与笔记素材池', description: '通用随机标题、正文与配图素材池（供推歌与音乐人复用）' },
     dailySongShare: { nav: '每日推歌', title: '每日推歌与抽奖', description: '推歌抽奖、话题标签、封面模式与秒删保护（需 antiCheatToken）' },
     fansgroup: { nav: '乐迷团', title: '乐迷团日常打卡', description: '音乐合伙人与关注歌手乐迷团日常应援打卡' },
@@ -193,7 +193,7 @@
       config: {
         task: { sign: true, playids: false, 'musician-sign': false, 'musician-vip': false, 'music-partner': true, note: false, 'daily-song-share': false, 'vip-member-gift': false, fansgroup: false, mode: 'by-task-group' },
         sign: { automatic: true, enableMain: true, enableSecondaries: false, enableVipTask: true },
-        musicPartner: { enableMain: true, enableSecondaries: false, scoreMin: 3, scoreMax: 4, extraTasks: true, fullExtraTasks: false, extraLimitMin: 7, extraLimitMax: 7, waitMin: 15, waitMax: 20, syncYunCircle: false }
+        musicPartner: { enableMain: true, enableSecondaries: false, scoreMin: 3, scoreMax: 4, extraTasks: true, fullExtraTasks: false, extraLimitMin: 5, extraLimitMax: 15, waitMin: 15, waitMax: 20, syncYunCircle: false }
       }
     }
   };
@@ -695,10 +695,29 @@
   }
 
   function accountRewardFrom(rewards, path) {
-    const normalized = normalizeAccountPath(path);
+    const normalized = normalizeCookieAccountPath(path);
+    const direct = (rewards || []).find(reward => normalizeCookieAccountPath(reward.account) === normalized);
+    if (direct) return direct;
+    const configured = configuredRewardPaths();
+    if (!configured.some(candidate => normalizeCookieAccountPath(candidate) === normalized)) return undefined;
     const basename = normalizeAccountPath(fileBase(path));
-    return (rewards || []).find(reward => normalizeAccountPath(reward.account) === normalized)
-      || (rewards || []).find(reward => normalizeAccountPath(fileBase(reward.account)) === basename);
+    const matchingAccounts = configured.filter(candidate => normalizeAccountPath(fileBase(candidate)) === basename);
+    const matchingRewards = (rewards || []).filter(reward => normalizeAccountPath(fileBase(reward.account)) === basename);
+    return matchingAccounts.length === 1 && matchingRewards.length === 1 ? matchingRewards[0] : undefined;
+  }
+
+  function configuredRewardPaths() {
+    const accounts = state.config?.data?.accounts || {};
+    const main = typeof accounts.main === 'string' && accounts.main.trim() ? accounts.main : accounts.primary;
+    return [main, ...(Array.isArray(accounts.secondary) ? accounts.secondary : [])].filter(path => typeof path === 'string' && path.trim());
+  }
+
+  function canonicalRewardAccount(item, rewards) {
+    const configured = configuredRewardPaths();
+    const normalized = normalizeCookieAccountPath(item.account);
+    const direct = configured.find(path => normalizeCookieAccountPath(path) === normalized);
+    if (direct) return direct;
+    return configured.find(path => accountRewardFrom(rewards, path) === item) || item.account;
   }
 
   function configuredAccountProfile(path) {
@@ -796,13 +815,15 @@
     const today = new Date().toDateString();
     const rewards = new Map();
     [...state.runs].reverse().forEach(run => {
-      if (new Date(run.triggeredAt || run.startedAt).toDateString() !== today) return;
+      if (new Date(run.startedAt || run.triggeredAt).toDateString() !== today) return;
       (run.rewards || []).forEach(item => {
-        const key = normalizeAccountPath(item.account);
+        const account = canonicalRewardAccount(item, run.rewards);
+        const key = normalizeCookieAccountPath(account);
         const current = rewards.get(key) || {
-          account: item.account, yunbei: 0, yunbeiKnown: false, yunbeiCumulative: false,
+          account, yunbei: 0, yunbeiKnown: false, yunbeiCumulative: false,
           yunbeiBalance: 0, yunbeiBalanceKnown: false,
           growthToday: 0, growthTotal: 0, growthKnown: false,
+          musicPartnerDelta: 0, musicPartnerKnown: false,
           effectivePlays: 0, effectiveTarget: 0, effectiveKnown: false,
           cookieKnown: false, cookieValid: false,
           vipKnown: false, vip: false, musicianKnown: false, musician: false, signKnown: false, signed: false,
@@ -824,6 +845,10 @@
           current.growthToday = Number(item.growthToday) || 0;
           current.growthTotal = Number(item.growthTotal) || 0;
           current.growthKnown = true;
+        }
+        if (item.musicPartnerKnown && typeof item.musicPartnerDelta === 'number' && Number.isFinite(item.musicPartnerDelta)) {
+          current.musicPartnerDelta += item.musicPartnerDelta;
+          current.musicPartnerKnown = true;
         }
         if (item.effectiveKnown) {
           current.effectivePlays = Number(item.effectivePlays) || 0;
@@ -893,7 +918,7 @@
     }
     const byKey = new Map(days.map(day => [day.key, day]));
     [...state.runs].reverse().forEach(run => {
-      const day = byKey.get(localDateKey(run.triggeredAt || run.startedAt));
+      const day = byKey.get(localDateKey(run.startedAt || run.triggeredAt));
       if (!day) return;
       const reward = accountRewardFrom(run.rewards, account.path);
       if (!reward) return;
@@ -906,6 +931,9 @@
         day.known = true;
       } else if (metric === 'growth' && reward.growthKnown) {
         day.value = Number(reward.growthToday) || 0;
+        day.known = true;
+	  } else if (metric === 'musicPartner' && reward.musicPartnerKnown && typeof reward.musicPartnerDelta === 'number' && Number.isFinite(reward.musicPartnerDelta)) {
+        day.value += reward.musicPartnerDelta;
         day.known = true;
 	  }
     });
@@ -966,7 +994,7 @@
     let account = accounts.find(item => normalizeAccountPath(item.path) === normalizeAccountPath(state.dashboardAccountPath));
     if (!account) account = fallbackAccount;
     state.dashboardAccountPath = account?.path || '';
-    const labels = { plays: '有效播放量', growth: 'VIP 成长值', yunbei: '云贝收益' };
+    const labels = { plays: '有效播放量', growth: 'VIP 成长值', yunbei: '云贝收益', musicPartner: '音乐合伙人积分变化' };
     $('#dashboard-metric-title').textContent = `最近 7 日${labels[state.dashboardMetric]}`;
     const selector = $('#dashboard-account-select');
     selector.innerHTML = accounts.map(item => `<option value="${escapeHTML(item.path)}"${item.path === state.dashboardAccountPath ? ' selected' : ''}>${escapeHTML(item.label)}${item.main ? '（主账号）' : ''}</option>`).join('');
@@ -979,12 +1007,14 @@
     }
     const series = dashboardSeries(account, state.dashboardMetric);
     if (!series.some(item => item.known)) {
-      const copy = { plays: '等待音乐人任务同步', growth: '等待 VIP 任务同步', yunbei: '等待云贝任务同步' }[state.dashboardMetric];
+      const copy = { plays: '等待音乐人任务同步', growth: '等待 VIP 任务同步', yunbei: '等待云贝任务同步', musicPartner: '等待音乐合伙人评分同步' }[state.dashboardMetric];
       $('#dashboard-chart').className = 'metric-empty';
       $('#dashboard-chart').innerHTML = `${icon('dashboard')}<strong>${copy}</strong>`;
       return;
     }
     const maximum = Math.max(1, ...series.filter(item => item.known).map(item => item.value));
+    const minimum = Math.min(0, ...series.filter(item => item.known).map(item => item.value));
+    const range = maximum - minimum;
     const chart = $('#dashboard-chart');
     chart.className = 'metric-chart';
     const chartWidth = Math.max(620, Math.round(chart.clientWidth || 700));
@@ -997,7 +1027,7 @@
     const points = series.map((item, index) => ({
       ...item,
       x: chartLeft + index * ((chartRight - chartLeft) / 6),
-      y: chartBottom - (item.value / maximum * plotHeight),
+      y: chartBottom - ((item.value - minimum) / range * plotHeight),
     }));
     const segments = [];
     let segment = [];
@@ -1008,18 +1038,18 @@
     if (segment.length) segments.push(segment);
     const grid = [0, 1, 2, 3].map(index => {
       const y = chartTop + index * (plotHeight / 3);
-      const value = Math.round(maximum * (1 - index / 3));
+      const value = Math.round(maximum - range * index / 3);
       return `<line class="metric-line-grid" x1="${chartLeft}" y1="${y}" x2="${chartRight}" y2="${y}"></line><text class="metric-line-axis" x="42" y="${y + 4}" text-anchor="end">${value}</text>`;
     }).join('');
     const areas = segments.map(pointsInSegment => {
-      const path = metricAreaPath(pointsInSegment, chartBottom);
+      const path = metricAreaPath(pointsInSegment, chartBottom + minimum / range * plotHeight);
       return path ? `<path class="metric-area-path" d="${path}"></path>` : '';
     }).join('');
     const paths = segments.map(pointsInSegment => `<path class="metric-line-path" d="${monotoneCurvePath(pointsInSegment)}"></path>`).join('');
     const knownPoints = points.filter(item => item.known);
     const lastKnownIndex = points.findLastIndex(item => item.known);
     const average = knownPoints.reduce((total, item) => total + item.value, 0) / knownPoints.length;
-    const averageY = chartBottom - (average / maximum * plotHeight);
+    const averageY = chartBottom - ((average - minimum) / range * plotHeight);
     const averageDisplay = Number.isInteger(average) ? String(average) : average.toFixed(1);
     const averageLabelY = Math.min(chartBottom - 8, Math.max(chartTop + 12, averageY - 7));
     const averageLine = `<line class="metric-average-line" x1="${chartLeft}" y1="${chartCoordinate(averageY)}" x2="${chartRight}" y2="${chartCoordinate(averageY)}"></line><text class="metric-average-label" x="${chartRight - 4}" y="${chartCoordinate(averageLabelY)}" text-anchor="end">近 7 日均值 ${averageDisplay}</text>`;
@@ -1053,27 +1083,34 @@
   function musicPartnerPointsView(account, points) {
     const current = account && points.account === account.path ? points : { data: null, loading: false, error: '', stale: false };
     const data = current.data;
-    const integral = musicPartnerPointNumber(data?.integral);
-    const weekly = musicPartnerPointNumber(data?.currentWeekIntegral);
-    let status = '等待查询', tone = 'gray', message = '点击刷新查询当前账号的合伙人积分。';
+    const partner = data?.partner;
+    const integral = musicPartnerPointNumber(partner?.integral);
+    const weekly = musicPartnerPointNumber(partner?.currentWeekIntegral);
+    const growthTotal = musicPartnerPointNumber(data?.growthTotal);
+    const level = musicPartnerPointNumber(data?.vipLevel);
+    const vipLevel = level === '未知' ? level : `Lv.${level}`;
+    const yunbeiBalance = musicPartnerPointNumber(data?.yunbeiBalance);
+    let status = '等待查询', tone = 'gray', message = '点击刷新查询当前账号数据。';
     if (!account) {
       status = '未配置账号';
-      message = '暂无已配置的 Cookie 账号，积分未知。请先在账号中心登录。';
+      message = '暂无已配置的 Cookie 账号，数据未知。请先在账号中心登录。';
     } else if (current.loading) {
       status = data ? '旧数据 · 刷新中' : '查询中';
       tone = 'blue';
-      message = data ? '正在更新积分，当前显示上次查询结果。' : '正在查询所选账号的合伙人积分。';
+      message = data ? '正在更新账号数据，当前显示上次查询结果。' : '正在查询所选账号数据。';
     } else if (current.error) {
       status = data ? '已过期' : '查询失败';
       tone = 'primary';
-      message = `${data ? '刷新失败，保留上次数据：' : '积分未知：'}${current.error}`;
+      message = `${data ? '刷新失败，保留上次数据：' : '数据未知：'}${current.error}`;
     } else if (data) {
-      const unknown = [integral, weekly].filter(value => value === '未知').length;
-      status = unknown === 2 ? '积分未知' : unknown === 1 ? '部分积分未知' : '已更新';
-      tone = unknown ? 'gray' : 'success';
-      message = unknown ? '接口未返回的积分字段显示为未知。' : '积分来自音乐合伙人接口。';
+      const unknown = [integral, weekly, growthTotal, vipLevel, yunbeiBalance].filter(value => value === '未知').length;
+      const labels = { partner: '合伙人积分', growth: 'VIP 成长', yunbei: '云贝' };
+      const failures = Object.entries(labels).flatMap(([key, label]) => typeof data.errors?.[key] === 'string' && data.errors[key] ? [`${label}：${data.errors[key]}`] : []);
+      status = failures.length ? '部分查询失败' : unknown === 5 ? '数据未知' : unknown ? '部分数据未知' : '已更新';
+      tone = failures.length ? 'primary' : unknown ? 'gray' : 'success';
+      message = failures.length ? failures.join('；') : unknown ? '接口未返回的数据字段显示为未知。' : '当前账号数据已更新；今日收益另列实际变化。';
     }
-    return { data, integral, weekly, status, tone, message, loading: current.loading, stale: current.stale };
+    return { data, partner, integral, weekly, growthTotal, vipLevel, yunbeiBalance, status, tone, message, loading: current.loading, stale: current.stale };
   }
 
   function musicPartnerPeriodDate(value) {
@@ -1092,14 +1129,17 @@
     $('#music-partner-points-refresh').disabled = !account || view.loading;
     $('#music-partner-points-integral').textContent = view.integral;
     $('#music-partner-points-weekly').textContent = view.weekly;
+    $('#account-data-growth-total').textContent = view.growthTotal;
+    $('#account-data-vip-level').textContent = view.vipLevel;
+    $('#account-data-yunbei-balance').textContent = view.yunbeiBalance;
     $('#music-partner-points-status').textContent = view.status;
     $('#music-partner-points-status').className = `badge-pill ${view.tone}`;
     $('#music-partner-points-message').textContent = view.message;
-    const period = musicPartnerPointNumber(view.data?.period);
-    const week = musicPartnerPointNumber(view.data?.week);
+    const period = musicPartnerPointNumber(view.partner?.period);
+    const week = musicPartnerPointNumber(view.partner?.week);
     $('#music-partner-points-period').textContent = `${period === '未知' ? '期号未知' : `第 ${period} 期`} · ${week === '未知' ? '周号未知' : `第 ${week} 周`}`;
-    const start = musicPartnerPeriodDate(view.data?.startDate);
-    const end = musicPartnerPeriodDate(view.data?.endDate);
+    const start = musicPartnerPeriodDate(view.partner?.startDate);
+    const end = musicPartnerPeriodDate(view.partner?.endDate);
     $('#music-partner-points-dates').textContent = start === '未知' && end === '未知' ? '周期时间未知' : `${start} 至 ${end}（北京时间）`;
     const updated = view.data?.updatedAt;
     $('#music-partner-points-updated').textContent = updated && !Number.isNaN(new Date(updated).getTime()) ? `${view.stale ? '上次成功查询' : '查询时间'}：${formatDate(updated)}` : '尚无成功查询时间';
@@ -1126,9 +1166,9 @@
     renderMusicPartnerPoints();
     const isCurrent = () => state.authenticated && requestID === state.musicPartnerPointsRequestID && musicPartnerPointsAccount()?.path === account.path;
     try {
-      const data = await api(`/api/v1/music-partner/points?account=${encodeURIComponent(account.path)}`, { signal: controller.signal });
+      const data = await api(`/api/v1/accounts/data?account=${encodeURIComponent(account.path)}`, { signal: controller.signal });
       if (!isCurrent()) return;
-      if (!data || data.account !== account.path) throw new Error('返回的积分账号不匹配，请刷新重试。');
+      if (!data || data.account !== account.path) throw new Error('返回的数据账号不匹配，请刷新重试。');
       state.musicPartnerPoints = { account: account.path, data, loading: false, error: '', stale: false };
     } catch (error) {
       if (!isCurrent() || error.name === 'AbortError') return;
@@ -1142,7 +1182,7 @@
   }
 
   function musicPartnerFinishedRunKeys(runs) {
-    return (runs || []).filter(run => ['music-partner', 'task'].includes(run.command) && run.finishedAt).map(run => `${run.id}:${run.finishedAt}`);
+    return (runs || []).filter(run => ['music-partner', 'task', 'sign', 'musician', 'musician-sign', 'musician-vip', 'vip-member-gift'].includes(run.command) && run.finishedAt).map(run => `${run.id}:${run.finishedAt}`);
   }
 
   function refreshMusicPartnerPointsAfterRun(runs) {
@@ -1159,7 +1199,7 @@
     const mainCount = accounts.filter(account => account.main).length;
     const secondaryCount = accounts.length - mainCount;
     const today = new Date().toDateString();
-    const todayRuns = state.runs.filter(run => new Date(run.triggeredAt || run.startedAt).toDateString() === today);
+    const todayRuns = state.runs.filter(run => new Date(run.startedAt || run.triggeredAt).toDateString() === today);
     const successCount = todayRuns.filter(run => run.status === 'success').length;
     const failedCount = todayRuns.filter(run => run.status === 'failed').length;
     $('#stat-today-runs').textContent = `${successCount} 成功 · ${failedCount} 失败`;
@@ -1188,16 +1228,23 @@
     $('#recent-runs').className = `compact-list${recent.length ? '' : ' empty-state'}`;
     $('#recent-runs').innerHTML = recent.length ? recent.map(run => `<div class="compact-row"><strong>${escapeHTML(run.jobName)}</strong><span>${escapeHTML(run.command)} ${escapeHTML((run.args || []).join(' '))}</span><span class="badge-pill ${runBadgeClass(run.status)}">${escapeHTML(statusLabel(run.status, run))}</span></div>`).join('') : '暂无运行记录';
 
-    $('#account-rewards-list').className = `reward-list${accounts.length ? '' : ' empty-state'}`;
-    $('#account-rewards-list').innerHTML = accounts.length ? accounts.map(account => {
+    const rewardRows = accounts.map(account => {
       const reward = accountRewardFrom(dailyRewards, account.path);
-      const yunbei = reward?.yunbeiKnown ? `+${reward.yunbei}` : '--';
-      const yunbeiBalance = reward?.yunbeiBalanceKnown ? reward.yunbeiBalance : '--';
-      const growth = reward?.growthKnown ? `${reward.growthToday} / ${reward.growthTotal}` : '--';
-      const growthPart = reward?.vipKnown && !reward.vip ? '' : `<span class="reward-separator">丨</span><span>成长值 ${growth}</span>`;
-      return `<div class="reward-row"><div class="reward-account"><strong>${escapeHTML(account.label)}</strong><small>(${escapeHTML(fileBase(account.path))})</small></div><div class="reward-summary"><span>云贝 ${yunbei} / ${yunbeiBalance}</span>${growthPart}</div></div>`;
-    }).join('') : '暂无已配置账号';
-    const rewardsKnown = dailyRewards.some(reward => reward.yunbeiKnown || reward.growthKnown);
+      const changes = [
+        { label: '云贝', value: reward?.yunbei, known: reward?.yunbeiKnown },
+        { label: '成长值', value: reward?.growthToday, known: reward?.growthKnown },
+        { label: '合伙人积分', value: reward?.musicPartnerDelta, known: reward?.musicPartnerKnown },
+      ].filter(item => item.known && typeof item.value === 'number' && Number.isFinite(item.value) && item.value !== 0);
+      if (!changes.length) return '';
+      const summary = changes.map(item => `<span>${item.label} ${item.value > 0 ? '+' : ''}${item.value}</span>`).join('<span class="reward-separator">丨</span>');
+      return `<div class="reward-row"><div class="reward-account"><strong>${escapeHTML(account.label)}</strong><small>(${escapeHTML(fileBase(account.path))})</small></div><div class="reward-summary">${summary}</div></div>`;
+    }).filter(Boolean);
+    $('#account-rewards-list').className = `reward-list${rewardRows.length ? '' : ' empty-state'}`;
+    $('#account-rewards-list').innerHTML = rewardRows.length ? rewardRows.join('') : accounts.length ? '今日暂无收益变化' : '暂无已配置账号';
+    const rewardsKnown = accounts.some(account => {
+      const reward = accountRewardFrom(dailyRewards, account.path);
+      return reward?.yunbeiKnown || reward?.growthKnown || reward?.musicPartnerKnown;
+    });
     $('#reward-sync-badge').textContent = rewardsKnown ? '已同步' : '等待同步';
     $('#reward-sync-badge').className = `badge-pill ${rewardsKnown ? 'success' : 'primary'}`;
     renderDashboardChart(accounts);
@@ -1595,6 +1642,7 @@
     { id: 'LikeSong', name: '红心歌曲', duration: '', badge: 'success' },
     { id: 'CollectSong', name: '收藏歌单歌曲', duration: '', badge: 'success' },
     { id: 'PublishNote', name: '发布图文动态', duration: '', badge: 'success' },
+    { id: 'ShareSong', name: '分享歌曲', duration: '', badge: 'success' },
     { id: 'musician-sign', name: '音乐人每日签到', duration: '', badge: 'amber' },
     { id: 'note', name: '公共图文笔记', duration: '', badge: 'primary' },
     { id: 'vip-member-gift', name: '黑胶会员赠礼/领礼', duration: '', badge: 'cyan' },
@@ -1608,7 +1656,7 @@
 
   const DEFAULT_FAST_TASKS = [
     'daily-song-share', 'VipTask', 'Reserve', 'ViewVipCenter', 'LikeComment',
-    'FollowArtist', 'LikeSong', 'CollectSong', 'PublishNote', 'musician-sign',
+    'FollowArtist', 'LikeSong', 'CollectSong', 'PublishNote', 'ShareSong', 'musician-sign',
     'note', 'vip-member-gift', 'fansgroup'
   ];
 
@@ -1634,6 +1682,22 @@
     const fastTasks = Array.isArray(root?.task?.fast_tasks) ? [...root.task.fast_tasks] : [...DEFAULT_FAST_TASKS];
     const slowTasks = Array.isArray(root?.task?.slow_tasks) ? [...root.task.slow_tasks] : [...DEFAULT_SLOW_TASKS];
     return { fastTasks, slowTasks };
+  }
+
+  function getMissingTaskSubtasks(fastTasks, slowTasks) {
+    const queued = new Set([...fastTasks, ...slowTasks].map(id => String(id).toLowerCase()));
+    return ALL_TASK_SUBTASKS.filter(task => !queued.has(task.id.toLowerCase()));
+  }
+
+  function addTaskToQueue(taskId, group) {
+    if (!['fast', 'slow'].includes(group)) return false;
+    const { fastTasks, slowTasks } = getTaskQueueLists();
+    const task = getMissingTaskSubtasks(fastTasks, slowTasks).find(item => item.id.toLowerCase() === String(taskId).toLowerCase());
+    if (!task) return false;
+    if (group === 'fast') fastTasks.push(task.id);
+    else slowTasks.push(task.id);
+    setTaskQueueLists(fastTasks, slowTasks);
+    return true;
   }
 
   function setTaskQueueLists(fastTasks, slowTasks) {
@@ -1668,6 +1732,18 @@
   }
 
   function renderFlowTaskKanban(fastTasks, slowTasks) {
+    const missing = getMissingTaskSubtasks(fastTasks, slowTasks);
+    const addTask = missing.length ? renderFlowCard('添加任务', `
+      <div class="form-row">
+        <label class="form-row-label" for="task-queue-add">未加入队列的任务</label>
+        <select id="task-queue-add" class="form-control-input">${missing.map(task => `<option value="${escapeHTML(task.id)}">${escapeHTML(task.name)}</option>`).join('')}</select>
+      </div>
+      <p class="form-row-desc">只添加到所选队列，不改变任务开关。保存配置后生效。</p>
+      <div class="kanban-col-actions">
+        <button type="button" class="kanban-transfer-btn" data-task-add="fast">加入快任务</button>
+        <button type="button" class="kanban-transfer-btn" data-task-add="slow">加入慢任务</button>
+      </div>
+    `) : '';
     const renderCol = (group, title, list, isFast) => {
       const items = list.map((id, idx) => {
         const info = getTaskSubtaskInfo(id);
@@ -1717,6 +1793,7 @@
     };
 
     return `
+      ${addTask ? `<div class="config-cards-grid single">${addTask}</div>` : ''}
       <div class="kanban-grid">
         ${renderCol('fast', '⚡ 快任务列表 (fast_tasks)', fastTasks, true)}
         ${renderCol('slow', '⏳ 慢任务列表 (slow_tasks)', slowTasks, false)}
@@ -1808,21 +1885,29 @@
       }
     }
     if (!has('extraLimitMin') && !has('extraLimitMax')) {
-      const target = partner.extraLimit === undefined || partner.extraLimit === 0 ? 7 : partner.extraLimit;
-      if (Number.isInteger(target) && target >= 1 && target <= 500) {
+      const target = partner.extraLimit;
+      if (target === undefined || target === 0) {
+        partner.extraLimitMin = 5;
+        partner.extraLimitMax = 15;
+      } else if (Number.isInteger(target) && target >= 1 && target <= 15) {
         partner.extraLimitMin = target;
         partner.extraLimitMax = target;
       }
+    }
+    if (!has('recommendCountMin') && !has('recommendCountMax') && Number.isInteger(partner.recommendCount) && partner.recommendCount >= 0) {
+      partner.recommendCountMin = partner.recommendCount;
+      partner.recommendCountMax = partner.recommendCount;
     }
   }
 
   function renderFlowMusicPartner() {
     completeMusicPartnerRanges(activeDocument().data);
     const main = renderFlowCard('账号与评分策略', `${renderFlowFields(['musicPartner.enableMain', 'musicPartner.enableSecondaries'])}${renderFlowRange('评分范围', 'musicPartner.scoreMin', 'musicPartner.scoreMax', '分', '每首歌曲在 1–5 分的配置区间内随机取整数分；上下限相同则固定评分。')}${renderFlowField('musicPartner.syncYunCircle')}`, '合伙人专属', 'cyan');
-    const extra = renderFlowCard('额外评分与等待', `${renderFlowFields(['musicPartner.extraTasks', 'musicPartner.fullExtraTasks'])}${renderFlowRange('每日额外评分目标', 'musicPartner.extraLimitMin', 'musicPartner.extraLimitMax', '首', '从 1–500 首的配置区间内随机选取目标，已完成数量计入目标；选择全部任务时忽略此项。')}${renderFlowRange('评分等待时间', 'musicPartner.waitMin', 'musicPartner.waitMax', '秒', '每次评分请求前随机等待 1–300 秒的配置时长。')}`);
+    const extra = renderFlowCard('额外评分与等待', `${renderFlowFields(['musicPartner.extraTasks', 'musicPartner.fullExtraTasks'])}${renderFlowRange('每日额外评分目标', 'musicPartner.extraLimitMin', 'musicPartner.extraLimitMax', '首', '从 0–15 首的配置区间内选取当日目标，目标为 0 时跳过额外评分；已完成数量计入目标，选择全部任务时忽略此项。')}${renderFlowRange('评分等待时间', 'musicPartner.waitMin', 'musicPartner.waitMax', '秒', '每次评分请求前随机等待 1–300 秒的配置时长。')}`);
     const pools = [1, 2, 3, 4, 5].map(score => renderFlowField(`musicPartner.comments.${score}`, { title: `${score} 分乐评`, description: '每行一条，按此分值随机选取；留空不填写乐评。' })).join('');
     const comments = renderFlowCard('按分值配置乐评', `<p class="form-row-desc">每个分值最多 50 条，每条最多 500 个字符。</p><div class="partner-comment-pools">${pools}</div>`, '选填 · 每行一条', 'gray', 'partner-comments-card');
-    return `<div class="config-cards-grid">${main}${extra}${comments}</div>`;
+    const recommend = renderFlowCard('今日歌曲推荐', `${renderFlowRange('每日推荐目标', 'musicPartner.recommendCountMin', 'musicPartner.recommendCountMax', '首', '每天从范围内选取目标，日内保持不变；上下限均为 0 时关闭，当日目标为 0 时跳过发布。按平台可用歌曲执行，奖励按平台结算。')}${renderFlowField('musicPartner.recommendOrder')}${renderFlowRange('推荐等待时间', 'musicPartner.recommendWaitMin', 'musicPartner.recommendWaitMax', '秒', '每首推荐前从 16–300 秒的配置区间随机等待；实际完成情况以服务器返回的笔记、乐评状态和积分变化为准。')}${renderFlowFields(['musicPartner.recommendNotes', 'musicPartner.recommendComments'])}`, '默认关闭 · 公开发布', 'amber');
+    return `<div class="config-cards-grid">${main}${extra}${recommend}${comments}</div>`;
   }
 
   function renderFlowDailySongShare() {
@@ -2041,7 +2126,7 @@
       case 'textarea':
         return `<textarea class="config-control schema-textarea" data-path='${encodedPath}' data-kind="string"${disabled}>${escapeHTML(stringValue)}</textarea>`;
       default:
-        return `<div class="schema-input-affix"><input class="config-control" data-path='${encodedPath}' data-kind="${field.type === 'integer' || field.type === 'number' ? 'number' : 'string'}" type="${field.sensitive ? 'password' : field.type === 'integer' || field.type === 'number' ? 'number' : 'text'}" value="${escapeHTML(stringValue)}"${numberAttrs}${disabled}>${unit}</div>`;
+        return `<div class="schema-input-affix"><input class="config-control" data-path='${encodedPath}' data-kind="${field.type === 'integer' || field.type === 'number' ? 'number' : 'string'}" type="${field.sensitive ? 'password' : field.type === 'integer' || field.type === 'number' ? 'number' : 'text'}" value="${escapeHTML(stringValue)}" aria-label="${escapeHTML(field.title)}"${numberAttrs}${disabled}>${unit}</div>`;
     }
   }
 
@@ -2651,8 +2736,79 @@
     }
   }
 
+  const SCHEDULE_COMMAND_HELP = {
+    task: {
+      description: '留空时按“策略配置 → 批量任务”中启用的任务和快慢队列执行。',
+      parameters: '可用 --only-fast 仅运行快任务，或 --only-slow 仅运行慢任务，两者不能同时填写。指定 --sign、--playids、--musician-sign、--musician-vip、--music-partner、--note、--daily-song-share、--vip-member-gift、--fansgroup 后，仅执行显式选择的任务；账号和子任务规则仍使用策略配置。',
+      example: '--only-fast',
+    },
+    sign: {
+      description: '留空时使用“策略配置 → 日常签到”的账号和任务开关。',
+      parameters: '可填写 --automatic（简写 -a）开启云贝自动任务和连续签到奖励领取；未填写时沿用配置中的自动领取设置。',
+      example: '--automatic',
+    },
+    playids: {
+      description: '留空时使用策略配置中的账号、歌曲来源和播放范围。',
+      parameters: '--ids 填逗号分隔的歌曲 ID；--ids-file 填歌曲 ID 文件；--playlist-ids 填歌单 ID 或链接，可重复填写并与配置合并。--daily-min / --daily-max 设置每日目标，--run-min / --run-max 设置单次目标，--gap-min / --gap-max 设置间隔秒数，范围下限不能大于上限。--cookie-file 可指定单个账号的 Cookie 文件。',
+      example: '--ids 186016,185809 --run-min 5 --run-max 10',
+    },
+    musician: {
+      description: '运行音乐人每日签到、云豆领取和进阶任务。',
+      parameters: '命令参数留空；账号、子任务开关与播放目标请在“策略配置 → 音乐人任务”中设置。',
+    },
+    'musician-sign': {
+      description: '运行音乐人每日签到和云豆领取。',
+      parameters: '命令参数留空；账号与每日任务开关请在“策略配置 → 音乐人任务”中设置。',
+    },
+    'musician-vip': {
+      description: '运行音乐人进阶任务，包括发布笔记和接力播放。',
+      parameters: '命令参数留空；账号、进阶任务开关与播放目标请在“策略配置 → 音乐人任务”中设置。',
+    },
+    'music-partner': {
+      description: '音乐合伙人使用“策略配置 → 合伙人评分”中的账号与评分规则。',
+      parameters: '可留空，或填写 --cookie-file 指定单个账号的 Cookie 文件；评分、额外任务目标、等待范围和乐评在策略配置中设置。',
+      example: '--cookie-file "sub/my account.json"',
+    },
+    note: {
+      description: '发布图文笔记，标题、正文和图片来源使用“策略配置 → 图文动态”的设置。',
+      parameters: '留空使用主账号；可填写 --cookie-file 指定其他账号的 Cookie 文件。',
+      example: '--cookie-file sub/note.json',
+    },
+    'daily-song-share': {
+      description: '使用“策略配置 → 每日推歌”中的账号、内容和推歌设置。',
+      parameters: '可留空按配置执行，或填写 --cookie-file 指定单个账号的 Cookie 文件。',
+      example: '--cookie-file sub/share.json',
+    },
+    'vip-member-gift': {
+      description: '使用“策略配置 → 会员礼品”的账号与赠送、领取开关。',
+      parameters: '可留空按配置执行，或填写 --cookie-file 指定单个账号的 Cookie 文件。',
+      example: '--cookie-file sub/vip.json',
+    },
+    fansgroup: {
+      description: '使用“策略配置 → 乐迷团”的账号和任务规则。',
+      parameters: '可留空按配置执行，或填写 --cookie-file 指定单个账号的 Cookie 文件。',
+      example: '--cookie-file sub/fans.json',
+    },
+    plugin: {
+      description: '选择已安装的任务插件，上方可视化表单会生成命令参数。',
+      parameters: '手动填写格式为 run 插件名 -- 插件参数；必须指定插件名，插件自身的参数放在 -- 后。下方 demo 和 --days 仅为示例，具体名称与参数以插件说明为准。',
+      example: 'run demo -- --days 7',
+    },
+  };
+
+  function updateScheduleCommandHelp() {
+    const help = $('#schedule-args-help');
+    const input = $('#schedule-args');
+    const entry = SCHEDULE_COMMAND_HELP[$('#schedule-command')?.value];
+    if (!help || !input || !entry) return;
+    input.placeholder = entry.example || '留空，使用策略配置';
+    help.innerHTML = `<p>${escapeHTML(entry.description)}</p><p>${escapeHTML(entry.parameters)}</p>
+      ${entry.example ? `<p>参数示例：<code>${escapeHTML(entry.example)}</code></p>` : ''}
+      <p>只填写参数，不要重复输入 ncmm 或所选命令；多项用空格分隔，带空格的值请整体用双引号包住，值内的双引号写成两个双引号，反斜杠无需转义。文件路径以运行 NCMM 的环境为准，Docker 中填写容器内路径。</p>`;
+  }
+
   function updateSchedulePluginPanel(selectedPluginName = null, initialArgs = []) {
-    $('#schedule-music-partner-help')?.classList.toggle('hidden', $('#schedule-command')?.value !== 'music-partner');
+    updateScheduleCommandHelp();
     const panel = $('#schedule-plugin-fields');
     if (!$('#schedule-command') || $('#schedule-command').value !== 'plugin') {
       panel?.classList.add('hidden');
@@ -2881,17 +3037,11 @@
         if (v !== '') parts.push(`--${pName}`, v);
       } else {
         const v = input.value.trim();
-        if (v !== '') {
-          if (v.includes(' ')) {
-            parts.push(`--${pName}`, `"${v}"`);
-          } else {
-            parts.push(`--${pName}`, v);
-          }
-        }
+        if (v !== '') parts.push(`--${pName}`, v);
       }
     });
 
-    $('#schedule-args').value = parts.join(' ');
+    $('#schedule-args').value = formatArgs(parts);
   }
 
   function openScheduleDialog(job = null, pluginPreset = null) {
@@ -2922,7 +3072,7 @@
     $('#schedule-name').value = job?.name || '';
     $('#schedule-cron').value = job?.cron || '30 8 * * *';
     $('#schedule-command').value = job?.command || 'task';
-    $('#schedule-args').value = (job?.args || []).join(' ');
+    $('#schedule-args').value = formatArgs(job?.args || []);
     const preset = [...$('#cron-preset').options].some(x => x.value === $('#schedule-cron').value) ? $('#schedule-cron').value : 'custom';
     $('#cron-preset').value = preset;
     renderCronNext(job?.nextRuns || []);
@@ -3243,8 +3393,17 @@
     $('#page-title').textContent = $('#app-shell').classList.contains('sidebar-collapsed') ? `NCMM - ${title}` : title;
   }
 
+  function formatArgs(args) {
+    // 反斜杠保持字面值，避免 Windows 路径被当作转义序列；值内双引号使用成对引号。
+    return args.map(arg => {
+      const value = String(arg);
+      return value === '' || /[\s'"]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+    }).join(' ');
+  }
+
   function parseArgs(input) {
-    return [...input.matchAll(/(?:"([^"]*)"|'([^']*)'|(\S+))/g)].map(match => match[1] ?? match[2] ?? match[3]);
+    return [...input.matchAll(/(?:"((?:""|[^"])*)"|'([^']*)'|(\S+))/g)]
+      .map(match => match[1] !== undefined ? match[1].replace(/""/g, '"') : (match[2] ?? match[3]));
   }
 
   function renderCronNext(times) {
@@ -3579,6 +3738,16 @@
         const targetGroup = transferBtn.dataset.taskTransfer;
         if (targetGroup === 'slow') moveTaskToSlow(taskId);
         else moveTaskToFast(taskId);
+        return;
+      }
+      const addTaskBtn = event.target.closest('[data-task-add]');
+      if (addTaskBtn) {
+        const taskId = $('#task-queue-add')?.value;
+        if (addTaskToQueue(taskId, addTaskBtn.dataset.taskAdd)) {
+          const nextSelect = $('#task-queue-add');
+          if (nextSelect) nextSelect.focus();
+          else $('#config-form [data-task-reset]')?.focus();
+        }
         return;
       }
       const resetBtn = event.target.closest('[data-task-reset]');
