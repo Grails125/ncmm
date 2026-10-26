@@ -286,7 +286,11 @@ async function hasHorizontalScroll(locator, label) {
   assert(await firstConfigSection.getAttribute('data-section') === 'task' && (await firstConfigSection.innerText()).includes('批量任务'), 'batch tasks were not the first simplified navigation item');
   assert((await page.locator('#config-current-title').innerText()).includes('规则配置面板'), 'continuous flow title was not rendered');
   assert(await page.locator('.card-flow-section').count() === 16, 'configuration did not render all 16 modules');
-  assert(await page.locator('.config-card-box').count() === 35, 'configuration card flow did not include recommendations, per-score comments and deprecated play warning');
+  const moduleCardCounts = await page.locator('.card-flow-section').evaluateAll(sections => Object.fromEntries(sections.map(section => [section.dataset.configSection, section.querySelectorAll('.config-card-box').length])));
+  assert(await page.locator('.config-card-box').count() === 36, `configuration card flow did not include the optional task card, recommendations, per-score comments and deprecated play warning: ${JSON.stringify(moduleCardCounts)}`);
+  const koiWishOption = page.locator('#task-queue-add option[value="KoiWish"]');
+  assert(await koiWishOption.count() === 1 && (await koiWishOption.textContent()).includes('锦鲤免费许愿'), 'disabled koi wish must be available in the optional task list');
+  assert(!await page.locator('#config-block-sign input[data-path=\'["sign","enableKoiWish"]\']').isChecked(), 'optional koi wish must remain disabled by default');
   assert(await page.locator('#config-block-play').count() === 0, 'deprecated play created an extra configuration module');
   const deprecatedPlay = page.locator('#config-block-playids input[data-path=\'["play","webSession"]\']');
   assert(await deprecatedPlay.count() === 1 && await deprecatedPlay.isDisabled() && !await deprecatedPlay.isChecked(), 'deprecated play warning must stay disabled inside playids');
@@ -301,7 +305,8 @@ async function hasHorizontalScroll(locator, label) {
     assert(await page.locator('#task-queue-wrapper').isVisible(), `${mode} must expose the task queues`);
     const queue = await page.locator('#task-queue-wrapper [data-task-item]').evaluateAll(items => items.map(item => [item.dataset.taskGroup, item.dataset.taskItem]));
     assert(JSON.stringify(queue) === JSON.stringify(originalQueue), 'changing scheduling mode must preserve queue order and partner placement');
-    assert((await page.locator('#task-queue-wrapper').innerText()).includes('关闭「日常签到 → 分享歌曲」开关'), 'automatic queue repair must explain how to disable sharing');
+    const queueHelp = await page.locator('#task-queue-wrapper').innerText();
+    assert(['日常签到', '分享歌曲', '锦鲤免费许愿', '关闭', '开关'].every(text => queueHelp.includes(text)), 'automatic queue repair must explain the switches used to disable sharing and koi wish');
   }
   assert(await page.locator('.schema-fallback').count() === 0, 'registered task fields fell back to generic controls');
   const flowSize = await page.locator('#config-visual').evaluate(element => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight }));
