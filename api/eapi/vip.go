@@ -47,6 +47,7 @@ func (a *Api) VipTaskList(ctx context.Context, req *VipTaskListReq) (*VipTaskLis
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
 		return nil, fmt.Errorf("Request: %w", err)
@@ -75,6 +76,8 @@ func (a *Api) VipTaskSign(ctx context.Context, req *VipTaskSignReq) (*VipTaskSig
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
+	opts.NoRetry = true
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
 		return nil, fmt.Errorf("Request: %w", err)
@@ -116,6 +119,7 @@ func (a *Api) VipSignInfo(ctx context.Context, req *VipSignInfoReq) (*VipSignInf
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
 		return nil, fmt.Errorf("Request: %w", err)
@@ -159,6 +163,7 @@ func (a *Api) VipGrowPoint(ctx context.Context, req *VipGrowPointReq) (*VipGrowP
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
 		return nil, fmt.Errorf("Request: %w", err)
@@ -204,6 +209,7 @@ func (a *Api) VipGrowthDetails(ctx context.Context, req *VipGrowthDetailsReq) (*
 		req.Limit = 20
 	}
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
 		return nil, fmt.Errorf("Request: %w", err)
@@ -271,6 +277,7 @@ func (a *Api) VipMonthPrizeList(ctx context.Context, req *VipCommonReq) (*VipMon
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
 		return nil, fmt.Errorf("Request: %w", err)
@@ -348,6 +355,8 @@ func (a *Api) VipRewardGetAll(ctx context.Context, req *VipRewardGetAllReq) (*Vi
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
+	opts.NoRetry = true
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
 		return nil, fmt.Errorf("Request: %w", err)

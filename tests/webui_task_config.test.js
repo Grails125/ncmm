@@ -11,7 +11,7 @@ assert(boot.test(source), 'WebUI entry point changed; update the test harness');
 function harness() {
   const nodes = new Map();
   const document = { querySelector(selector) {
-    if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '' });
+    if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', style: {} });
     return nodes.get(selector);
   } };
   const context = vm.createContext({ document, structuredClone });
@@ -19,7 +19,7 @@ function harness() {
     renderConfig = () => {};
     toast = () => {};
     markConfigDirty = () => { state.configDirty = true; };
-    globalThis.ui = { state, PRESET_STRATEGIES, applyPreset, renderSchedules, renderRuns, configSectionKeys, configSectionOrder, getTaskQueueLists, getTaskSubtaskInfo, getMissingTaskSubtasks, addTaskToQueue, renderFlowTaskKanban };
+    globalThis.ui = { state, PRESET_STRATEGIES, applyPreset, renderSchedules, renderRuns, configSectionKeys, configSectionOrder, getTaskQueueLists, getTaskSubtaskInfo, getMissingTaskSubtasks, addTaskToQueue, renderFlowTaskKanban, renderFlowTask, setSchemaValue };
   })();`), context);
   return { ...context.ui, nodes };
 }
@@ -33,6 +33,33 @@ test('分享歌曲出现在默认队列和任务名称映射中，读取旧队�
   const queues = ui.getTaskQueueLists();
   assert.deepEqual(Array.from(queues.fastTasks), ['VipTask']);
   assert.deepEqual(Array.from(queues.slowTasks), ['ListenIndie']);
+});
+
+test('启用分享歌曲的旧队列展示自动补齐结果，保留自定义顺序与慢队列位置', () => {
+  const ui = harness();
+  ui.state.config = { data: {
+    task: { fast_tasks: ['VipTask', 'custom-extension'], slow_tasks: ['music-partner'] },
+    sign: { yunbeiTask: { enableShareSong: true } },
+  } };
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().fastTasks), ['VipTask', 'custom-extension', 'ShareSong']);
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().slowTasks), ['music-partner']);
+  ui.state.config.data.task.slow_tasks.push('sharesong');
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().fastTasks), ['VipTask', 'custom-extension']);
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().slowTasks), ['music-partner', 'sharesong']);
+});
+
+test('两种调度模式均展示任务队列，切换为单账号模式不会隐藏队列', () => {
+  const ui = harness();
+  ui.state.config = { data: { task: {} } };
+  for (const mode of ['by-task-group', 'by-account']) {
+    ui.setSchemaValue(['task', 'mode'], mode, false);
+    const html = ui.renderFlowTask();
+    assert.match(html, /data-task-item="ShareSong"/);
+    assert.match(html, /data-task-item="music-partner"/);
+    assert.doesNotMatch(html, /task-queue-wrapper hidden|display:\s*none/);
+    assert.notEqual(ui.nodes.get('#task-queue-wrapper')?.style.display, 'none');
+    assert.match(html, /关闭.*分享歌曲.*开关/);
+  }
 });
 
 test('添加任务只展示两个队列均未包含的已知任务，兼容旧队列大小写', () => {

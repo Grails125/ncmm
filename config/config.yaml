@@ -58,10 +58,13 @@ task:
   music-partner: false
 
   # by-task-group：所有账号先执行快任务，再执行慢任务。
-  # by-account：每个账号依次执行全部任务。
+  # by-account：每个账号依次执行快任务和慢任务，再处理下一个账号。
+  # 两种模式都使用下方队列；任务仍受对应总开关和账号/子任务开关控制。
   mode: "by-task-group"
 
   # 快任务内部执行顺序，通常为秒级任务，非开发调试无需修改。
+  # 分享歌曲开关启用但两个队列均缺少 ShareSong 时，自动补到快任务末尾。
+  # 如需停用分享歌曲，请关闭 sign.yunbeiTask.enableShareSong，而非只删除队列项。
   fast_tasks:
     - VipTask          # 黑胶 VIP 日常任务
     - Reserve          # 预约领云贝

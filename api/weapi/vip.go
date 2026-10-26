@@ -69,6 +69,8 @@ func (a *Api) VipRewardGetAll(ctx context.Context, req *VipRewardGetAllReq) (*Vi
 		opts  = api.NewOptions()
 	)
 
+	opts.Sensitive = true
+	opts.NoRetry = true
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
 		return nil, fmt.Errorf("Request: %w", err)
@@ -864,17 +866,17 @@ type VipWelfareListData struct {
 		ButtonBackgroundColor string `json:"buttonBackgroundColor"`
 		ButtonTextColor       string `json:"buttonTextColor"`
 	} `json:"welfareIcon,omitempty"`
-	JumpUrl         string  `json:"jumpUrl"`
-	EffectStartTime int64   `json:"effectStartTime"`
-	EffectEndTime   int64   `json:"effectEndTime"`
-	ShowMinLevel    int64   `json:"showMinLevel"`
-	ShowMaxLevel    int64   `json:"showMaxLevel"`
-	SpecialPrice    float64 `json:"specialPrice"`
-	OrginalPrice    float64 `json:"orginalPrice"`
-	Status          int64   `json:"status"`
-	UserReceiveStatus int64 `json:"userReceiveStatus"`
-	Seq             int64   `json:"seq"`
-	WelfareItem     struct {
+	JumpUrl           string  `json:"jumpUrl"`
+	EffectStartTime   int64   `json:"effectStartTime"`
+	EffectEndTime     int64   `json:"effectEndTime"`
+	ShowMinLevel      int64   `json:"showMinLevel"`
+	ShowMaxLevel      int64   `json:"showMaxLevel"`
+	SpecialPrice      float64 `json:"specialPrice"`
+	OrginalPrice      float64 `json:"orginalPrice"`
+	Status            int64   `json:"status"`
+	UserReceiveStatus int64   `json:"userReceiveStatus"`
+	Seq               int64   `json:"seq"`
+	WelfareItem       struct {
 		Level        int64  `json:"level"`
 		SubtitleName string `json:"subtitleName"`
 	} `json:"welfareItem"`
@@ -1285,6 +1287,8 @@ func (a *Api) VipTaskSign(ctx context.Context, req *VipTaskSignReq) (*VipTaskSig
 		url = url + "?isNew=" + req.IsNew
 	}
 
+	opts.Sensitive = true
+	opts.NoRetry = true
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
 		return nil, fmt.Errorf("Request: %w", err)
@@ -1367,4 +1371,3 @@ func (a *Api) VipMiddlePageViewReport(ctx context.Context, req *VipMiddlePageVie
 	_ = resp
 	return &reply, nil
 }
-

@@ -156,11 +156,13 @@ func (c *FansGroup) ExecuteForCookie(ctx context.Context, cookieFile string) err
 	groupIds := c.fansGroupIDs()
 	c.cmd.Printf("[fansgroup] 乐迷团任务数: %d\n", len(groupIds))
 	failed := 0
+	groupErrors := make(map[string]error)
 	var firstErr error
 	for i, fansGroupId := range groupIds {
 		c.cmd.Printf("[fansgroup] 开始处理乐迷团 [%d/%d]: groupId=%s\n", i+1, len(groupIds), fansGroupId)
-		if err := c.executeOneFansGroup(ctx, cli, eapiCli, weapiCli, user.Account.Id, fansGroupId, commentCheckToken); err != nil {
+		if err := c.executeOneFansGroup(ctx, cli, eapiCli, weapiCli, user.Account.Id, fansGroupId, commentCheckToken, cookieFile); err != nil {
 			failed++
+			groupErrors[fansGroupId] = err
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -178,6 +180,9 @@ func (c *FansGroup) ExecuteForCookie(ctx context.Context, cookieFile string) err
 	}
 	if failed == len(groupIds) && firstErr != nil {
 		return fmt.Errorf("all configured fansgroup tasks failed: %w", firstErr)
+	}
+	for groupID, err := range groupErrors {
+		c.root.ReportFailure(cookieFile, "fansgroup/"+groupID, err)
 	}
 	return nil
 }
@@ -200,7 +205,12 @@ func configuredFansGroupIDs(cfg *config.FansGroupConf) []string {
 	return ids
 }
 
-func (c *FansGroup) executeOneFansGroup(ctx context.Context, cli *api.Client, eapiCli *eapi.Api, weapiCli *weapi.Api, currentUserId int64, fansGroupId, commentCheckToken string) error {
+func (c *FansGroup) executeOneFansGroup(ctx context.Context, cli *api.Client, eapiCli *eapi.Api, weapiCli *weapi.Api, currentUserId int64, fansGroupId, commentCheckToken string, accountPaths ...string) error {
+	account := strconv.FormatInt(currentUserId, 10)
+	if len(accountPaths) > 0 {
+		account = accountPaths[0]
+	}
+	taskPrefix := "fansgroup/" + fansGroupId + "/"
 	c.cmd.Println("[fansgroup] 查询粉丝团详情...")
 	detail, err := eapiCli.FansGroupDetailGet(ctx, &eapi.FansGroupDetailGetReq{GroupId: fansGroupId})
 	if err != nil {
@@ -227,6 +237,7 @@ func (c *FansGroup) executeOneFansGroup(ctx context.Context, cli *api.Client, ea
 
 	if !joined {
 		c.cmd.Printf("[fansgroup] 未加入粉丝团，跳过 %q\n", groupName)
+		c.root.ReportSkip(account, taskPrefix+"入团", "未加入该乐迷团")
 		return nil
 	}
 
@@ -238,6 +249,7 @@ func (c *FansGroup) executeOneFansGroup(ctx context.Context, cli *api.Client, ea
 		return fmt.Errorf("获取任务列表失败: code=%d", missions.Code)
 	}
 
+	attempted := make(map[int64]string)
 	for _, m := range missions.Data.Normal.Data {
 		c.cmd.Printf("  [%s] %s (%d/%d)\n", fmtMissionStatus(m.Status, m.CurrentProgress, m.AllProgress), m.Title, m.CurrentProgress, m.AllProgress)
 	}
@@ -254,20 +266,36 @@ func (c *FansGroup) executeOneFansGroup(ctx context.Context, cli *api.Client, ea
 
 		switch {
 		case strings.Contains(m.Title, "点赞"):
+			attempted[m.MissionId] = m.Title
 			c.doLikeNotes(ctx, eapiCli, fansGroupId, currentUserId, m)
 		case strings.Contains(m.Title, "播放"):
+			if c.root.Cfg.FansGroup == nil || !c.root.Cfg.FansGroup.WebSession {
+				c.root.ReportSkip(account, taskPrefix+m.Title, "未开启 fansgroup.webSession")
+			} else {
+				attempted[m.MissionId] = m.Title
+			}
 			c.doPlaySong(ctx, cli, weapiCli, m)
 		case strings.Contains(m.Title, "分享"):
+			attempted[m.MissionId] = m.Title
 			c.doShareSong(ctx, eapiCli, m)
 		case strings.Contains(m.Title, "笔记") || strings.Contains(m.Title, "发布"):
+			attempted[m.MissionId] = m.Title
 			c.doPublishNote(ctx, eapiCli, boardId, groupName, m)
 		default:
 			c.cmd.Printf("[fansgroup] [%s] 未知任务类型，跳过\n", m.Title)
+			c.root.ReportSkip(account, taskPrefix+m.Title, "未支持的乐迷团任务，需在 App 完成")
 		}
 	}
 
-	if orig.Title != "" && !missionCompleted(orig.Status, orig.CurrentProgress, orig.AllProgress) {
-		c.doAccelerateTask(ctx, eapiCli, weapiCli, currentUserId, commentCheckToken, missions, orig)
+	attemptedOriginality := orig.Title != "" && !missionCompleted(orig.Status, orig.CurrentProgress, orig.AllProgress)
+	if attemptedOriginality {
+		failed := c.doAccelerateTask(ctx, eapiCli, weapiCli, currentUserId, commentCheckToken, missions, orig, account, taskPrefix)
+		if failed {
+			attemptedOriginality = false
+		}
+		if strings.Contains(orig.Subtitle, "评论") && strings.TrimSpace(commentCheckToken) == "" {
+			attemptedOriginality = false
+		}
 	}
 
 	c.cmd.Println("[fansgroup] 本轮请求处理结束，重新读取实际任务进度")
@@ -287,9 +315,23 @@ func (c *FansGroup) executeOneFansGroup(ctx context.Context, cli *api.Client, ea
 	}
 	for _, m := range updated.Data.Normal.Data {
 		c.cmd.Printf("  [%s] %s：%d → %d/%d\n", fmtMissionStatus(m.Status, m.CurrentProgress, m.AllProgress), m.Title, before[m.MissionId], m.CurrentProgress, m.AllProgress)
+		if _, ok := attempted[m.MissionId]; ok {
+			delete(attempted, m.MissionId)
+			if !missionCompleted(m.Status, m.CurrentProgress, m.AllProgress) {
+				c.root.ReportUnconfirmed(account, taskPrefix+m.Title, fmt.Sprintf("请求已处理，官方进度仍为 %d/%d，尚未确认完成", m.CurrentProgress, m.AllProgress))
+			}
+		}
+	}
+	for _, title := range attempted {
+		c.root.ReportUnconfirmed(account, taskPrefix+title, "执行后未返回对应任务，无法确认完成")
 	}
 	if after := updated.Data.Originality.Data; after.MissionId == orig.MissionId && after.Title != "" {
 		c.cmd.Printf("  [%s] %s：%d → %d/%d\n", fmtMissionStatus(after.Status, after.CurrentProgress, after.AllProgress), after.Subtitle, orig.CurrentProgress, after.CurrentProgress, after.AllProgress)
+		if attemptedOriginality && !missionCompleted(after.Status, after.CurrentProgress, after.AllProgress) {
+			c.root.ReportUnconfirmed(account, taskPrefix+orig.Title, fmt.Sprintf("请求已处理，官方进度仍为 %d/%d，尚未确认完成", after.CurrentProgress, after.AllProgress))
+		}
+	} else if attemptedOriginality {
+		c.root.ReportUnconfirmed(account, taskPrefix+orig.Title, "执行后未返回对应加速任务，无法确认完成")
 	}
 	return nil
 }
@@ -790,11 +832,16 @@ func (c *FansGroup) collectOneSong(ctx context.Context, eapiCli *eapi.Api, songI
 	return true
 }
 
-func (c *FansGroup) doAccelerateTask(ctx context.Context, eapiCli *eapi.Api, weapiCli *weapi.Api, uid int64, commentCheckToken string, missions *eapi.FansGroupMissionAllResp, orig eapi.FansGroupMissionOriginality) {
+func (c *FansGroup) doAccelerateTask(ctx context.Context, eapiCli *eapi.Api, weapiCli *weapi.Api, uid int64, commentCheckToken string, missions *eapi.FansGroupMissionAllResp, orig eapi.FansGroupMissionOriginality, reportContext ...string) (failed bool) {
+	account, task := strconv.FormatInt(uid, 10), "fansgroup/"+orig.Title
+	if len(reportContext) == 2 {
+		account, task = reportContext[0], reportContext[1]+orig.Title
+	}
 	c.cmd.Printf("[fansgroup] 处理加速任务 [%s] %s...\n", orig.Title, orig.Subtitle)
 	if strings.Contains(orig.Subtitle, "评论") {
 		if strings.TrimSpace(commentCheckToken) == "" {
 			c.cmd.Println("[fansgroup] 当前账号未配置 fansgroup.commentCheckTokens 网页评论短效令牌，跳过新建评论；其他任务继续")
+			c.root.ReportSkip(account, task, "未配置 fansgroup.commentCheckTokens 网页评论短效令牌")
 			return
 		}
 		target, err := fansGroupCommentTarget(orig)
@@ -814,7 +861,8 @@ func (c *FansGroup) doAccelerateTask(ctx context.Context, eapiCli *eapi.Api, wea
 		c.cmd.Printf("[fansgroup] 评论任务指定视频笔记 %s，%d 秒后删除\n", target.ThreadID, int(delay/time.Second))
 		if err := runFansGroupComment(ctx, c.commentReceiptPath(uid), uid, target.ThreadID, fansGroupCommentClient{api: weapiCli, token: commentCheckToken}, delay); err != nil {
 			c.cmd.Printf("[fansgroup] 评论任务：%v\n", err)
-			c.root.ReportFailure(strconv.FormatInt(uid, 10), "fansgroup", err)
+			c.root.ReportFailure(account, task, err)
+			return true
 		} else {
 			c.cmd.Println("[fansgroup] 评论已发表并删除，实际任务进度随后刷新确认")
 		}
@@ -869,6 +917,7 @@ func (c *FansGroup) doAccelerateTask(ctx context.Context, eapiCli *eapi.Api, wea
 	} else {
 		c.cmd.Println("  unlike success")
 	}
+	return
 }
 
 // parseSongIdsFromButton 从 button.url 里提取 songIds、songId、trackId 或歌曲 resourceId。

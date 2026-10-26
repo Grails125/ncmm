@@ -44,6 +44,7 @@ type Root struct {
 	// Notifier is nil when notify is disabled or no channels are configured.
 	Notifier               *notify.Dispatcher
 	upgradeGraceNoticeOnce sync.Once
+	yunbeiRewards          *yunbeiRewardRunState
 }
 
 func New() *Root {

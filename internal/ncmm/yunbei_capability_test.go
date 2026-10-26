@@ -111,14 +111,14 @@ func TestYunbeiWaitRespectsCancellation(t *testing.T) {
 
 func TestYunbeiRewardTasksIncludesFullListAndRejectsInvalidClaims(t *testing.T) {
 	todo := []eapi.YunBeiTaskTodoRespData{{Completed: true, UserTaskId: 1, TaskName: "旧任务"}, {Completed: false, UserTaskId: 2}}
-	full := []weapi.YunBeiTaskListRespData{{Completed: true, UserTaskId: 1, TaskName: "旧任务"}, {Completed: true, UserTaskId: 3, TaskName: "分享歌曲"}, {Completed: false, UserTaskId: 4}, {Completed: true, UserTaskId: 0}}
-	got := yunbeiRewardTasks(todo, full)
+	full := []weapi.YunBeiTaskListRespData{{Completed: true, UserTaskId: 1, TaskName: "旧任务"}, {Completed: true, UserTaskId: 3, TaskName: "分享歌曲", TaskId: 42}, {Completed: false, UserTaskId: 4}, {Completed: true, UserTaskId: 0}}
+	got := yunbeiRewardTasks(todo, full, map[string]bool{"42/0": true})
 	if len(got) != 2 || got[0].UserTaskId != 1 || got[1].UserTaskId != 3 {
 		t.Fatalf("领奖列表重复或遗漏: %+v", got)
 	}
 }
 
-func TestYunbeiClaimsCompletedTaskWithoutReportingRejectedReward(t *testing.T) {
+func TestYunbeiClaimsTodoCandidateWithoutReportingRejectedReward(t *testing.T) {
 	for _, accepted := range []bool{true, false} {
 		t.Run(map[bool]string{true: "accepted", false: "rejected"}[accepted], func(t *testing.T) {
 			claims := 0
@@ -127,7 +127,7 @@ func TestYunbeiClaimsCompletedTaskWithoutReportingRejectedReward(t *testing.T) {
 				case "/weapi/usertool/task/list/all":
 					return `{"code":200,"data":[{"completed":true,"taskId":42,"userTaskId":987,"taskName":"分享歌曲","taskPoint":100}]}`
 				case "/eapi/usertool/task/todo/query":
-					return `{"code":200,"data":[]}`
+					return `{"code":200,"data":[{"completed":true,"taskId":42,"userTaskId":987,"taskName":"分享歌曲","taskPoint":100}]}`
 				case "/weapi/usertool/task/point/receive":
 					claims++
 					if accepted {
@@ -197,7 +197,7 @@ func TestYunbeiShareRejectsMissingSongAndRejectedTrigger(t *testing.T) {
 	}
 }
 
-func TestYunbeiRewardClaimsSkipConfirmedSuccessAcrossRounds(t *testing.T) {
+func TestYunbeiRewardClaimsAttemptOnceAcrossRounds(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		rejects     int
@@ -205,8 +205,8 @@ func TestYunbeiRewardClaimsSkipConfirmedSuccessAcrossRounds(t *testing.T) {
 		multiPeriod bool
 	}{
 		{name: "successful-first-round", wantClaims: 1},
-		{name: "retry-unconfirmed-on-next-round", rejects: 1, wantClaims: 2},
-		{name: "keep-retrying-unconfirmed", rejects: 3, wantClaims: 3},
+		{name: "do-not-repeat-unconfirmed", rejects: 1, wantClaims: 1},
+		{name: "rejected-once-only", rejects: 3, wantClaims: 1},
 		{name: "same-user-task-different-period", wantClaims: 2, multiPeriod: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -220,7 +220,10 @@ func TestYunbeiRewardClaimsSkipConfirmedSuccessAcrossRounds(t *testing.T) {
 					}
 					return `{"code":200,"data":[{"completed":false,"taskName":"分享歌曲"},{"completed":true,"taskId":42,"userTaskId":987,"period":1,"taskName":"浏览会员中心","taskPoint":100}]}`
 				case "/eapi/usertool/task/todo/query":
-					return `{"code":200,"data":[]}`
+					if tc.multiPeriod {
+						return `{"code":200,"data":[{"completed":true,"taskId":42,"userTaskId":987,"period":1,"taskName":"浏览会员中心","taskPoint":100},{"completed":true,"taskId":42,"userTaskId":987,"period":2,"taskName":"浏览会员中心","taskPoint":100}]}`
+					}
+					return `{"code":200,"data":[{"completed":true,"taskId":42,"userTaskId":987,"period":1,"taskName":"浏览会员中心","taskPoint":100}]}`
 				case "/weapi/usertool/task/point/receive":
 					claims++
 					if claims <= tc.rejects {
@@ -237,9 +240,9 @@ func TestYunbeiRewardClaimsSkipConfirmedSuccessAcrossRounds(t *testing.T) {
 			command.cmd.SetOut(&output)
 			command.handleYunbeiTasks(t.Context(), client, weapi.New(client), 1, "cookie.json", map[string]bool{"ShareSong": true})
 			if claims != tc.wantClaims {
-				t.Fatalf("只有明确领取成功的凭据才应跨轮去重: got=%d want=%d", claims, tc.wantClaims)
+				t.Fatalf("无论响应结果，同一凭据均应跨轮去重: got=%d want=%d", claims, tc.wantClaims)
 			}
-			wantSuccess := tc.wantClaims - tc.rejects
+			wantSuccess := max(0, tc.wantClaims-tc.rejects)
 			if got := strings.Count(output.String(), "成功领取云贝"); got != wantSuccess {
 				t.Fatalf("领取成功次数不符: got=%d want=%d output=%s", got, wantSuccess, output.String())
 			}

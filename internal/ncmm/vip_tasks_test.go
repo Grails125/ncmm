@@ -3,11 +3,13 @@ package ncmm
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/3899/ncmm/api"
 	"github.com/3899/ncmm/api/eapi"
@@ -97,7 +99,7 @@ func TestVipAppListenSkipKeepsSignAndRewardFlow(t *testing.T) {
 					}
 				case "/weapi/middle/vip/mission/user/progress/list":
 				case "/eapi/vipnewcenter/app/level/growhpoint/basic":
-					body = `{"code":200,"data":{"userLevel":{"growthPoint":10,"extJson":"{\"todayScore\":3}"}}}`
+					body = fmt.Sprintf(`{"code":200,"data":{"userLevel":{"growthPoint":10,"extJson":"{\"todayScore\":3,\"currentDay\":\"%s\"}"}}}`, time.Now().In(neteaseLocation).Format("20060102"))
 				case "/eapi/vipnewcenter/app/user/sign/info":
 					if scenario.alreadySigned || signCalls > 0 {
 						body = `{"code":200,"data":[{"today":true,"recordId":123,"score":3}]}`
@@ -120,12 +122,12 @@ func TestVipAppListenSkipKeepsSignAndRewardFlow(t *testing.T) {
 				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
 			})
 			growth := command.handleVipTasks(t.Context(), client, weapi.New(client), 0)
-			wantSigns, wantLists := 1, 3
+			wantSigns, wantLists := 1, 4
 			if scenario.alreadySigned {
 				wantSigns, wantLists = 0, 2
 			}
 			if scenario.missingSign {
-				wantLists = 2
+				wantLists = 3
 			}
 			if signCalls != wantSigns || rewardCalls != 1 || listCalls != wantLists {
 				t.Fatalf("任务调用异常: sign=%d reward=%d list=%d", signCalls, rewardCalls, listCalls)

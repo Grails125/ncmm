@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/3899/ncmm/pkg/log"
+	"github.com/3899/ncmm/pkg/notify"
 
 	"github.com/spf13/cobra"
 )
@@ -432,11 +433,12 @@ func (c *Task) executeAction(
 			return false, false
 		}
 		if _, err := d.ExecuteForCookie(ctx, account.Filepath); err != nil {
-			c.cmd.Printf("[task] account (%s) [daily song share] failed: %s\n", account.Filepath, err)
 			// missing token is operational skip rather than hard failure
 			if strings.Contains(err.Error(), "跳过") || strings.Contains(strings.ToLower(err.Error()), "skip") {
+				c.cmd.Printf("[task] 账号 (%s) [每日推歌] 跳过: %s\n", account.Filepath, err)
 				c.reportSkip(account.Filepath, "daily-song-share", err.Error())
 			} else {
+				c.cmd.Printf("[task] 账号 (%s) [每日推歌] 失败: %s\n", account.Filepath, err)
 				c.reportFailure(account.Filepath, "daily-song-share", err)
 				sessionInvalid = isSessionInvalidError(err)
 			}
@@ -462,10 +464,11 @@ func (c *Task) executeAction(
 			return false, false
 		}
 		if err := v.ExecuteForCookie(ctx, account.Filepath); err != nil {
-			c.cmd.Printf("[task] account (%s) [vip member gift] failed: %s\n", account.Filepath, err)
 			if strings.Contains(err.Error(), "跳过") || strings.Contains(strings.ToLower(err.Error()), "skip") {
+				c.cmd.Printf("[task] 账号 (%s) [会员礼品] 跳过: %s\n", account.Filepath, err)
 				c.reportSkip(account.Filepath, "vip-member-gift", err.Error())
 			} else {
+				c.cmd.Printf("[task] 账号 (%s) [会员礼品] 失败: %s\n", account.Filepath, err)
 				c.reportFailure(account.Filepath, "vip-member-gift", err)
 				sessionInvalid = isSessionInvalidError(err)
 			}
@@ -603,6 +606,12 @@ func (c *Task) execute(ctx context.Context) error {
 	c.failures = nil
 	c.skipped = 0
 	c.musicPartnerErr = nil
+	c.root.yunbeiRewards = nil
+	if c.root.Report == nil {
+		c.root.Report = notify.NewReport("task")
+	} else {
+		c.root.Report.Reset("task")
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -778,22 +787,41 @@ func (c *Task) execute(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if len(c.failures) > 0 {
-		c.cmd.Printf("[task] 批量任务执行结束：%d 项任务失败，%d 项跳过；失败项已跳过，其余可执行任务已继续处理。\n", len(c.failures), c.skipped)
+	return c.finishRun()
+}
+
+func (c *Task) finishRun() error {
+	failures, skips, unconfirmed := c.root.Report.OutcomeCounts()
+	if failures > 0 || skips > 0 || unconfirmed > 0 {
+		c.cmd.Printf("[task] 批量任务执行结束：%d 项任务失败，%d 项跳过，%d 项未确认；其余可执行任务已继续处理。\n", failures, skips, unconfirmed)
+		for _, item := range c.root.Report.Items() {
+			label := "跳过"
+			if item.Kind == notify.KindFailure {
+				label = "失败"
+			}
+			if item.Kind == notify.KindUnconfirmed {
+				label = "未确认"
+			}
+			c.cmd.Printf("[task] %s | 账号 (%s) [%s]：%s\n", label, item.Account, item.Task, item.Message)
+		}
+	}
+	if failures > 0 || unconfirmed > 0 {
 		batchErr := errors.Join(c.failures...)
 		if c.musicPartnerErr != nil {
 			batchErr = errors.Join(batchErr, c.musicPartnerErr)
 		}
-		return fmt.Errorf("批量任务执行结束：%d 项任务失败: %w", len(c.failures), batchErr)
+		if batchErr != nil {
+			return fmt.Errorf("批量任务执行结束：%d 项任务失败，%d 项未确认: %w", failures, unconfirmed, batchErr)
+		}
+		return fmt.Errorf("批量任务执行结束：%d 项任务失败，%d 项未确认，请查看子任务汇总", failures, unconfirmed)
 	}
 	if c.musicPartnerErr != nil {
 		return c.musicPartnerErr
 	}
-	if c.skipped > 0 {
-		c.cmd.Printf("[task] 批量任务执行结束：0 项任务失败，%d 项跳过。\n", c.skipped)
+	if skips > 0 {
 		return nil
 	}
-	c.cmd.Println("[task] 所有任务批量执行完毕！")
+	c.cmd.Println("[task] 所有可执行任务已处理，未记录失败、跳过或未确认项。")
 	return nil
 }
 

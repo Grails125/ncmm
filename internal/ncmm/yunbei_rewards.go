@@ -7,8 +7,35 @@ import (
 	"github.com/3899/ncmm/api/weapi"
 )
 
-// 完整列表补齐旧待办接口遗漏的已完成任务；同一领取凭据只提交一次。
-func yunbeiRewardTasks(todo []eapi.YunBeiTaskTodoRespData, full []weapi.YunBeiTaskListRespData) []eapi.YunBeiTaskTodoRespData {
+// 每次批量运行按账号保留领奖证据；快、慢任务组使用同一份状态。
+type yunbeiRewardRunState struct {
+	accounts map[string]*yunbeiRewardAccountState
+}
+
+type yunbeiRewardAccountState struct {
+	attempted  map[string]string
+	incomplete map[string]bool
+	diagnosed  map[string]bool
+}
+
+func (c *SignIn) yunbeiRewardState(account string) *yunbeiRewardAccountState {
+	if c.root.yunbeiRewards == nil {
+		c.root.yunbeiRewards = &yunbeiRewardRunState{accounts: make(map[string]*yunbeiRewardAccountState)}
+	}
+	state := c.root.yunbeiRewards.accounts[account]
+	if state == nil {
+		state = &yunbeiRewardAccountState{attempted: make(map[string]string), incomplete: make(map[string]bool), diagnosed: make(map[string]bool)}
+		c.root.yunbeiRewards.accounts[account] = state
+	}
+	return state
+}
+
+func yunbeiTaskPeriodKey(taskID, period int64) string {
+	return fmt.Sprintf("%d/%d", taskID, period)
+}
+
+// completed 仅证明任务已完成，不能证明仍待领奖。完整列表只补齐本次观察到的完成变化，旧待办接口的有效凭据优先。
+func yunbeiRewardTasks(todo []eapi.YunBeiTaskTodoRespData, full []weapi.YunBeiTaskListRespData, observedIncomplete ...map[string]bool) []eapi.YunBeiTaskTodoRespData {
 	var tasks []eapi.YunBeiTaskTodoRespData
 	seen := make(map[string]bool)
 	appendTask := func(task eapi.YunBeiTaskTodoRespData) {
@@ -26,6 +53,9 @@ func yunbeiRewardTasks(todo []eapi.YunBeiTaskTodoRespData, full []weapi.YunBeiTa
 		appendTask(task)
 	}
 	for _, task := range full {
+		if task.TaskId <= 0 || len(observedIncomplete) == 0 || !observedIncomplete[0][yunbeiTaskPeriodKey(task.TaskId, task.Period)] {
+			continue
+		}
 		appendTask(eapi.YunBeiTaskTodoRespData{Completed: task.Completed, UserTaskId: task.UserTaskId, Period: task.Period, TaskId: task.TaskId, TaskName: task.TaskName, TaskPoint: task.TaskPoint})
 	}
 	return tasks

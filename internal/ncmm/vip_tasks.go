@@ -91,9 +91,7 @@ func isVipSignTask(task eapi.VipTaskListData) bool {
 }
 
 func isVipSignTaskDone(task eapi.VipTaskListData) bool {
-	return task.Status == 100 ||
-		strings.Contains(task.ButtonText, "已打卡") ||
-		strings.Contains(task.ButtonText, "已完成")
+	return task.Status == 100
 }
 
 func isVipAppListenTask(task eapi.VipTaskListData) bool {
@@ -109,8 +107,8 @@ func getVipSignState(ctx context.Context, request *eapi.Api, deviceId string) (v
 	if err != nil {
 		return vipSignState{}, err
 	}
-	if reply.Code != 200 {
-		return vipSignState{}, fmt.Errorf("code=%d msg=%s", reply.Code, reply.Message)
+	if reply == nil || reply.Code != 200 {
+		return vipSignState{}, fmt.Errorf("乐签记录查询未成功")
 	}
 	for _, info := range reply.Data {
 		if !info.Today {
@@ -133,15 +131,16 @@ func getVipGrowthState(ctx context.Context, request *eapi.Api, deviceId string) 
 	if err != nil {
 		return vipGrowthState{}, err
 	}
-	if reply.Code != 200 {
-		return vipGrowthState{}, fmt.Errorf("code=%d msg=%s", reply.Code, reply.Message)
+	if reply == nil || reply.Code != 200 {
+		return vipGrowthState{}, fmt.Errorf("成长值查询未成功")
 	}
 
 	state := vipGrowthState{
 		GrowthPoint:     reply.Data.UserLevel.GrowthPoint,
 		LatestVipStatus: reply.Data.UserLevel.LatestVipStatus,
 	}
-	if todayScore, monthScore, currentDay, ok := parseVipGrowthExt(reply.Data.UserLevel.ExtJson); ok {
+	now := time.Now().In(neteaseLocation)
+	if todayScore, monthScore, currentDay, ok := parseVipGrowthExt(reply.Data.UserLevel.ExtJson); ok && vipGrowthDayMatches(currentDay, now) {
 		state.TodayScore = todayScore
 		state.TodayScoreKnown = true
 		state.MonthTaskTotalScore = monthScore
@@ -149,23 +148,63 @@ func getVipGrowthState(ctx context.Context, request *eapi.Api, deviceId string) 
 		return state, nil
 	}
 
-	// extJson 是服务端内嵌字符串，缺失或损坏时才补查明细，正常路径不会增加请求。
-	details, err := request.VipGrowthDetails(ctx, &eapi.VipGrowthDetailsReq{
-		EApiReqCommon: types.EApiReqCommon{
-			DeviceId: deviceId,
-			OS:       "iOS",
-			VerifyId: 1,
-			Header:   struct{}{},
-			ER:       true,
-		},
-		Limit:  20,
-		Offset: 0,
-	})
-	if err == nil && details.Code == 200 {
-		state.TodayScore = vipGrowthOnDate(details.Data.Details, time.Now().In(neteaseLocation).Format("2006-01-02"))
-		state.TodayScoreKnown = true
+	// 旧日期、缺失日期或损坏的累计值不能当作今日收益；回退到带时间的明细。
+	var total, previousTime int64
+	for page := int64(0); page < 5; page++ {
+		details, err := request.VipGrowthDetails(ctx, &eapi.VipGrowthDetailsReq{
+			EApiReqCommon: types.EApiReqCommon{DeviceId: deviceId, OS: "iOS", VerifyId: 1, Header: struct{}{}, ER: true},
+			Limit:         20, Offset: page * 20,
+		})
+		if err != nil || details == nil || details.Code != 200 {
+			return state, nil
+		}
+		crossedDay := false
+		for _, detail := range details.Data.Details {
+			// 明细按时间倒序返回；出现无效时间或乱序时，不把部分明细声明为完整累计。
+			if detail.Time <= 0 || (previousTime > 0 && detail.Time > previousTime) {
+				return state, nil
+			}
+			previousTime = detail.Time
+			date := time.UnixMilli(detail.Time).In(neteaseLocation).Format("2006-01-02")
+			if date < now.Format("2006-01-02") {
+				crossedDay = true
+			}
+		}
+		total += vipGrowthOnDate(details.Data.Details, now.Format("2006-01-02"))
+		if crossedDay || !details.Data.HasMore {
+			state.TodayScore = total
+			state.TodayScoreKnown = true
+			return state, nil
+		}
+		if len(details.Data.Details) == 0 {
+			return state, nil
+		}
 	}
+	// 查询有界；五页仍未覆盖完整当天时保留未知。
 	return state, nil
+}
+
+func vipGrowthDayMatches(day string, now time.Time) bool {
+	day = strings.TrimSpace(day)
+	if day == now.Format("2006-01-02") || day == now.Format("20060102") {
+		return true
+	}
+	// 无补零的 YYYYMD 格式可能将 1 月 11 日与 11 月 1 日混淆，仅接受唯一有效拆分。
+	if len(day) < 6 || len(day) > 8 || !strings.HasPrefix(day, fmt.Sprint(now.Year())) {
+		return false
+	}
+	matches := 0
+	var matched time.Time
+	for month := 1; month <= 12; month++ {
+		for date := 1; date <= 31; date++ {
+			candidate := time.Date(now.Year(), time.Month(month), date, 0, 0, 0, 0, neteaseLocation)
+			if int(candidate.Month()) == month && candidate.Day() == date && fmt.Sprintf("%d%d%d", now.Year(), month, date) == day {
+				matches++
+				matched = candidate
+			}
+		}
+	}
+	return matches == 1 && matched.Month() == now.Month() && matched.Day() == now.Day()
 }
 
 func parseVipGrowthExt(raw string) (todayScore int64, monthScore int64, currentDay string, ok bool) {
@@ -201,8 +240,8 @@ func getVipMonthPrizeState(ctx context.Context, request *eapi.Api, deviceId stri
 	if err != nil {
 		return vipMonthPrizeState{}, err
 	}
-	if reply.Code != 200 {
-		return vipMonthPrizeState{}, fmt.Errorf("code=%d msg=%s", reply.Code, reply.Message)
+	if reply == nil || reply.Code != 200 {
+		return vipMonthPrizeState{}, fmt.Errorf("月签进度查询未成功")
 	}
 	return vipMonthPrizeState{
 		MonthCheckInTotalDay: reply.Data.MonthCheckInTotalDay,
@@ -226,7 +265,7 @@ func getVipSignCompleted(ctx context.Context, request *eapi.Api, deviceId string
 		}
 	} else {
 		taskList, taskErr := request.VipTaskList(ctx, newVipTaskListReq(deviceId))
-		if taskErr == nil && taskList != nil {
+		if taskErr == nil && taskList != nil && taskList.Code == 200 {
 			for _, task := range taskList.Data {
 				if !isVipSignTask(task) {
 					continue
@@ -259,15 +298,30 @@ func (c *SignIn) executeVipSign(ctx context.Context, request *eapi.Api, deviceId
 		ER:     true,
 	})
 	if err != nil {
-		c.cmd.Printf("  ❌ 黑胶 VIP 乐签失败: %v\n", err)
-		return false
+		c.cmd.Printf("  ⚠️ 黑胶 VIP 乐签请求未获确定回执（错误类型 %T），只查询状态，不自动重发\n", err)
+	} else if resp != nil {
+		c.cmd.Printf("  👉 黑胶 VIP 乐签回执: code=%d，accepted=%t；正在核对官方签到状态\n", resp.Code, resp.Code == 200 && resp.Data)
 	}
-	if resp.Code == 200 {
-		c.cmd.Println("  ✅ 黑胶 VIP 乐签成功")
+	if confirmed, reason := getVipSignCompleted(ctx, request, deviceId, nil); confirmed {
+		c.cmd.Printf("  ✅ 黑胶 VIP 乐签成功（%s）\n", reason)
 		return true
 	}
-	c.cmd.Printf("  ⚠️ 黑胶 VIP 乐签异常: code=%d msg=%s\n", resp.Code, resp.Message)
+	c.cmd.Println("  ⚠️ 黑胶 VIP 乐签未获官方状态确认，本轮不会自动重复提交")
 	return false
+}
+
+func vipManualTaskReason(task eapi.VipTaskListData) string {
+	if isVipAppStartupTask(task) || isVipAppListenTask(task) {
+		return "需 App 完成"
+	}
+	if isVipSignTask(task) || task.MissionCode == "HXSSG" || strings.Contains(task.MainTitle, "红心3首") || strings.Contains(task.MainTitle, "调音") || strings.Contains(task.MainTitle, "云贝") || strings.Contains(task.MainTitle, "分享") || task.MissionCode == "FLQ" || strings.Contains(task.MainTitle, "领福利") {
+		return ""
+	}
+	return "未支持自动执行，请手动完成"
+}
+
+func vipTaskExecutionKey(task eapi.VipTaskListData) string {
+	return fmt.Sprintf("%d/%s/%s", task.MissionId, task.MissionCode, task.MainTitle)
 }
 
 func (c *SignIn) executeSingleVipTask(ctx context.Context, cli *api.Client, request *weapi.Api, eapiRequest *eapi.Api, v eapi.VipTaskListData, deviceId string, userLevel int64, likedSongIds *[]string) {
@@ -322,7 +376,11 @@ func (c *SignIn) executeSingleVipTask(ctx context.Context, cli *api.Client, requ
 	}
 }
 
-func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *weapi.Api, userLevel int64) *vipGrowthState {
+func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *weapi.Api, userLevel int64, accounts ...string) *vipGrowthState {
+	account := "-"
+	if len(accounts) > 0 && accounts[0] != "" {
+		account = accounts[0]
+	}
 	enableVipTask := true
 	if c.root.Cfg.Sign != nil && c.root.Cfg.Sign.EnableVipTask != nil {
 		enableVipTask = *c.root.Cfg.Sign.EnableVipTask
@@ -331,16 +389,23 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 	if !enableVipTask {
 		// 原有的极简 WEAPI 黑胶签到与领取逻辑
 		vipSign, err := request.VipTaskSign(ctx, &weapi.VipTaskSignReq{IsNew: ""})
-		if err == nil && vipSign.Data {
-			c.cmd.Println("  ✅ 黑胶 VIP 乐签成功")
+		if err == nil && vipSign != nil && vipSign.Code == 200 && vipSign.Data {
+			c.cmd.Println("  👉 黑胶 VIP 乐签请求已接受，核对官方状态")
+		}
+		if confirmed, reason := getVipSignCompleted(ctx, eapi.New(cli), cli.GetDeviceId(), nil); confirmed {
+			c.cmd.Printf("  ✅ 黑胶 VIP 乐签成功（%s）\n", reason)
 		} else {
-			c.cmd.Println("  黑胶 VIP 今天已乐签过")
+			c.cmd.Println("  ⚠️ 黑胶 VIP 乐签结果未确认，不自动重发")
+			c.root.ReportUnconfirmed(account, "vip-sign", "乐签未获官方状态确认")
 		}
 
 		if c.isAutomatic() {
 			reward, err := request.VipRewardGetAll(ctx, &weapi.VipRewardGetAllReq{})
-			if err == nil && reward.Data.Result {
-				c.cmd.Println("  ✅ 黑胶成长值已一键领取成功")
+			if err == nil && reward != nil && reward.Code == 200 && reward.Data.Result {
+				c.cmd.Println("  👉 黑胶成长值领取请求已接受，实际到账以成长值与任务状态为准")
+			} else {
+				c.cmd.Println("  ⚠️ 黑胶成长值领取未确认，不自动重发")
+				c.root.ReportUnconfirmed(account, "vip-reward", "成长值领取未获确定回执")
 			}
 		}
 		return nil
@@ -352,30 +417,34 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 	deviceId := cli.GetDeviceId()
 
 	if deviceId != "" {
-		c.cmd.Printf("  👉 [deviceId] 使用本地已缓存的唯一设备 ID: %s\n", deviceId)
+		c.cmd.Println("  👉 [deviceId] 使用本地已缓存的设备 ID（不显示内容）")
 	} else {
 		c.cmd.Println("  👉 [deviceId] 缓存中无有效设备 ID，本次打卡将不传递设备 ID 字段以规避验证风险。")
 	}
 
 	// 0. 获取今日乐签状态作为真实现状。
 	var signedToday bool
-	beforeTodayScore := int64(-1)
+	var signAttempted bool
+	var rewardUnconfirmed bool
+	attemptedTasks := make(map[string]eapi.VipTaskListData)
+	var beforeGrowth *vipGrowthState
 	if growth, err := getVipGrowthState(ctx, eapiRequest, deviceId); err == nil {
+		beforeGrowth = &growth
 		if growth.TodayScoreKnown {
-			beforeTodayScore = growth.TodayScore
 			c.cmd.Printf("  👉 [执行前] 黑胶成长值现状: 今日已获得 %d，当前成长值 %d\n", growth.TodayScore, growth.GrowthPoint)
 		} else {
 			c.cmd.Printf("  👉 [执行前] 黑胶成长值现状: 今日累计未知，当前成长值 %d\n", growth.GrowthPoint)
 		}
 	} else {
-		c.cmd.Printf("  ⚠️ 获取黑胶成长值现状失败: %v\n", err)
+		c.cmd.Printf("  ⚠️ 获取黑胶成长值现状失败（错误类型 %T）\n", err)
 	}
 
 	for round := 1; round <= 3; round++ {
 		c.cmd.Printf("  👉 [黑胶任务第 %d/3 轮] 获取黑胶 VIP 任务列表...\n", round)
 		taskList, err := eapiRequest.VipTaskList(ctx, newVipTaskListReq(deviceId))
-		if err != nil || taskList.Code != 200 {
-			c.cmd.Printf("  ❌ 获取黑胶 VIP 任务列表失败: %v\n", err)
+		if err != nil || taskList == nil || taskList.Code != 200 {
+			c.cmd.Printf("  ❌ 获取黑胶 VIP 任务列表失败（错误类型 %T）\n", err)
+			c.root.ReportUnconfirmed(account, "vip-tasks", "无法读取黑胶任务状态")
 			return nil
 		}
 
@@ -401,7 +470,7 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 				}
 			}
 		} else {
-			c.cmd.Printf("  ⚠️ 获取成长中心任务列表失败: %v\n", err)
+			c.cmd.Printf("  ⚠️ 获取成长中心任务列表失败（错误类型 %T）\n", err)
 		}
 
 		var signVerifyReason string
@@ -418,7 +487,7 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 		for _, v := range allTasks {
 			if isVipSignTask(v) {
 				hasVipSignTask = true
-				if !signedToday {
+				if !signedToday && !signAttempted {
 					todoTasks = append(todoTasks, v)
 				}
 				continue
@@ -428,6 +497,7 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 				if isVipAppStartupTask(v) {
 					if round == 1 {
 						c.cmd.Println("  ℹ️ [设置开机启动图] 请在网易云音乐 App 内完成启动图设置，已跳过自动执行。")
+						c.root.ReportSkip(account, "vip:"+v.MainTitle, "需 App 完成")
 					}
 					continue
 				}
@@ -435,6 +505,14 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 				if isVipAppListenTask(v) {
 					if round == 1 {
 						c.cmd.Println("  ℹ️ [每日听3首VIP歌曲] 请在网易云音乐 App 内完成，已跳过自动播放。")
+						c.root.ReportSkip(account, "vip:"+v.MainTitle, "需 App 完成")
+					}
+					continue
+				}
+				if reason := vipManualTaskReason(v); reason != "" {
+					if round == 1 {
+						c.cmd.Printf("  ℹ️ [%s] %s，已跳过自动执行。\n", v.MainTitle, reason)
+						c.root.ReportSkip(account, "vip:"+v.MainTitle, reason)
 					}
 					continue
 				}
@@ -443,7 +521,7 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 		}
 
 		// 首轮仍需领取已完成任务的奖励；列表缺少乐签时保留后面的兜底签到。
-		if len(todoTasks) == 0 && signedToday && round > 1 {
+		if len(todoTasks) == 0 && (signedToday || signAttempted) && round > 1 {
 			c.cmd.Printf("  ℹ️ [黑胶任务第 %d/3 轮] 无待执行的未完成任务，退出循环\n", round)
 			break
 		}
@@ -464,17 +542,11 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 		for i, v := range todoTasks {
 			if isVipSignTask(v) {
 				c.cmd.Println("  👉 开始执行 [黑胶乐签打卡]...")
+				signAttempted = true
 				signedToday = c.executeVipSign(ctx, eapiRequest, deviceId)
-				if signedToday && beforeTodayScore >= 0 {
-					if growth, err := getVipGrowthState(ctx, eapiRequest, deviceId); err == nil && growth.TodayScore != beforeTodayScore {
-						c.cmd.Printf("  👉 黑胶今日成长值变化: %d -> %d\n", beforeTodayScore, growth.TodayScore)
-					}
-				}
-				if !signedToday {
-					c.cmd.Println("  ❌ 签到验证失败: 未找到今日有效的签到记录 (今日可能仍未成功打卡)")
-				}
 			} else {
 				// 其他常规任务
+				attemptedTasks[vipTaskExecutionKey(v)] = v
 				c.executeSingleVipTask(ctx, cli, request, eapiRequest, v, deviceId, userLevel, &likedSongIds)
 			}
 			if i < len(todoTasks)-1 {
@@ -483,17 +555,15 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 		}
 
 		// 兜底签到逻辑
-		if !hasVipSignTask && !signedToday {
-			c.cmd.Println("  ⚠️ 任务列表未返回黑胶乐签条目，但 sign/info 显示今日未落库，直接执行黑胶乐签打卡")
+		if !hasVipSignTask && !signedToday && !signAttempted {
+			c.cmd.Println("  👉 任务列表缺少乐签且未找到有效记录，执行一次乐签请求")
+			signAttempted = true
 			signedToday = c.executeVipSign(ctx, eapiRequest, deviceId)
-			if !signedToday {
-				c.cmd.Println("  ❌ 签到验证失败: 未找到今日有效的签到记录 (今日可能仍未成功打卡)")
-			}
 		}
 
 		// 一键领取所有已完成的成长值
-		if c.isAutomatic() {
-			c.cmd.Println("  👉 正在一键领取所有黑胶 VIP 成长值...")
+		if c.isAutomatic() && !rewardUnconfirmed {
+			c.cmd.Println("  👉 提交黑胶 VIP 成长值领取请求...")
 			eapiReward, err := eapiRequest.VipRewardGetAll(ctx, &eapi.VipRewardGetAllReq{
 				DeviceId: deviceId,
 				OS:       "iOS",
@@ -501,26 +571,24 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 				Header:   struct{}{},
 				ER:       true,
 			})
-			if err == nil && eapiReward.Code == 200 && eapiReward.Data.Result {
-				c.cmd.Println("  ✅ 成功领取所有黑胶 VIP 成长值 (EAPI)")
+			if err == nil && eapiReward != nil && eapiReward.Code == 200 && eapiReward.Data.Result {
+				c.cmd.Println("  👉 黑胶成长值领取请求已接受，实际到账以最终成长值和任务状态为准")
 			} else {
-				// EAPI 失败时，回退到 weapi 版
-				weapiReward, err := request.VipRewardGetAll(ctx, &weapi.VipRewardGetAllReq{})
-				if err == nil && weapiReward.Data.Result {
-					c.cmd.Println("  ✅ 成功领取所有黑胶 VIP 成长值 (WEAPI)")
-				} else {
-					c.cmd.Printf("  ⚠️ 一键领取成长值结果不明确，可能有部分已领取或需手动核对。EAPI: %v, WEAPI: %v\n", err, err)
-				}
+				rewardUnconfirmed = true
+				c.cmd.Printf("  ⚠️ 黑胶成长值领取未获确定回执（错误类型 %T），不切换接口重发\n", err)
+				c.root.ReportUnconfirmed(account, "vip-reward", "成长值领取未获确定回执")
 			}
 		}
-		if len(todoTasks) == 0 && signedToday {
+		if len(todoTasks) == 0 && (signedToday || signAttempted) {
 			break
 		}
 	}
 
 	// 最终状态拉取与比对展示
 	finalList, err := eapiRequest.VipTaskList(ctx, newVipTaskListReq(deviceId))
-	if err == nil && finalList.Code == 200 {
+	var finalSignTasks []eapi.VipTaskListData
+	if err == nil && finalList != nil && finalList.Code == 200 {
+		finalSignTasks = finalList.Data
 		c.cmd.Println("  👉 最终的黑胶 VIP 任务列表状态:")
 		allFinalTasks := finalList.Data
 		if progressList, err := getVipProgressTasks(ctx, request); err == nil {
@@ -545,18 +613,18 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 			}
 		}
 		for _, v := range allFinalTasks {
-			statusStr := "未完成"
+			key := vipTaskExecutionKey(v)
+			_, attempted := attemptedTasks[key]
+			delete(attemptedTasks, key)
+			statusStr := fmt.Sprintf("未确认（状态 %d）", v.Status)
 			if v.Status == 100 {
 				statusStr = "已完成"
-			} else if isVipAppListenTask(v) || isVipAppStartupTask(v) {
-				statusStr = "需 App 完成（已跳过）"
-			}
-			if isVipSignTask(v) {
-				if signedToday {
-					statusStr = "已完成"
-				} else {
-					statusStr = "未完成"
-				}
+			} else if reason := vipManualTaskReason(v); reason != "" {
+				statusStr = reason + "（已跳过）"
+			} else if !isVipSignTask(v) && attempted {
+				c.root.ReportUnconfirmed(account, "vip:"+v.MainTitle, fmt.Sprintf("官方任务状态仍为 %d", v.Status))
+			} else if !isVipSignTask(v) {
+				c.root.ReportSkip(account, "vip:"+v.MainTitle, "最终查询中出现，本轮未执行")
 			}
 			worth := v.Worth
 			if worth == 0 && isVipSignTask(v) {
@@ -564,8 +632,20 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 			}
 			c.cmd.Printf("    - 任务: %-15s | 状态: %-6s | 奖励: %d成长值\n", v.MainTitle, statusStr, worth)
 		}
+		for _, task := range attemptedTasks {
+			c.cmd.Printf("  ⚠️ [%s] 已尝试执行，但最终任务列表缺失，结果未确认\n", task.MainTitle)
+			c.root.ReportUnconfirmed(account, "vip:"+task.MainTitle, "已尝试执行，但最终任务列表缺失")
+		}
 	} else {
-		c.cmd.Printf("  ❌ 无法获取最终对照任务列表: %v\n", err)
+		c.cmd.Printf("  ❌ 无法获取最终对照任务列表（错误类型 %T）\n", err)
+		c.root.ReportUnconfirmed(account, "vip-tasks", "最终任务状态查询失败")
+	}
+	if signAttempted || signedToday {
+		if confirmed, reason := getVipSignCompleted(ctx, eapiRequest, deviceId, finalSignTasks); confirmed {
+			c.cmd.Printf("  ✅ 乐签最终状态已确认：%s\n", reason)
+		} else {
+			c.root.ReportUnconfirmed(account, "vip-sign", "乐签未获官方状态确认，请在 App 核对")
+		}
 	}
 
 	// 再次获取并展示今日乐签和成长值状态以作对比
@@ -578,15 +658,18 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 			c.cmd.Printf("  👉 [执行后] 黑胶成长值最终状态: 今日累计未知，当前成长值 %d\n", finalGrowth.GrowthPoint)
 		}
 		finalGrowthState = &finalGrowth
+		if beforeGrowth != nil {
+			c.cmd.Printf("  👉 本轮黑胶总成长值变化: %d -> %d，变化 %+d（与当日累计分开统计）\n", beforeGrowth.GrowthPoint, finalGrowth.GrowthPoint, finalGrowth.GrowthPoint-beforeGrowth.GrowthPoint)
+		}
 	} else {
-		c.cmd.Printf("  ⚠️ 获取黑胶成长值最终状态失败: %v\n", err)
+		c.cmd.Printf("  ⚠️ 获取黑胶成长值最终状态失败（错误类型 %T）\n", err)
 	}
 	if finalSignState, err := getVipSignState(ctx, eapiRequest, deviceId); err == nil {
 		if finalSignState.Today {
 			c.cmd.Printf("  👉 [执行后] 乐签最终记录: recordId=%d time=%d score=%d\n", finalSignState.RecordId, finalSignState.Time, finalSignState.Score)
 		}
 	} else {
-		c.cmd.Printf("  ⚠️ 获取黑胶乐签最终记录失败: %v\n", err)
+		c.cmd.Printf("  ⚠️ 获取黑胶乐签最终记录失败（错误类型 %T）\n", err)
 	}
 
 	// 统一取消红心，避免干扰用户歌单
