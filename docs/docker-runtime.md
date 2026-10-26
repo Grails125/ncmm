@@ -16,7 +16,7 @@
 
 ## 原生发布的升级要求
 
-仅识别本仓库 `v主.次.补丁-grails.修订` 版本、Grails125/ncmm 发布来源以及 Release 正文中的显式标记：
+仅识别本仓库 `v主.次.补丁-grails` 及历史 `v主.次.补丁-grails.修订` 版本、Grails125/ncmm 发布来源以及 Release 正文中的显式标记：
 
 ```text
 <!-- ncmm-force-upgrade -->

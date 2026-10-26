@@ -1,6 +1,6 @@
 # 配置文件说明
 
-完整字段、中文注释和当前默认值以 [config/config.yaml](../config/config.yaml) 为准；不要用旧版文档中的整份示例覆盖已有配置。程序版本保持 `1.2.3-grails`，配置兼容范围及迁移规则见 [兼容性说明](v129-compatibility.md)。
+完整字段、中文注释和当前默认值以 [config/config.yaml](../config/config.yaml) 为准；不要用旧版文档中的整份示例覆盖已有配置。程序版本保持 `1.2.4-grails`，配置兼容范围及迁移规则见 [兼容性说明](v129-compatibility.md)。
 
 ## 位置与保存
 
