@@ -86,6 +86,14 @@ func (c *Root) ReportSkip(account, task, reason string) {
 	c.Report.AddSkip(account, task, reason)
 }
 
+// ReportUnconfirmed 记录已执行但官方结果尚未确认的子任务。
+func (c *Root) ReportUnconfirmed(account, task, reason string) {
+	if c == nil || c.Report == nil {
+		return
+	}
+	c.Report.AddUnconfirmed(account, task, reason)
+}
+
 // FlushNotify sends aggregated failure/skip summary if needed.
 // Notification errors are logged only and never returned.
 func (c *Root) FlushNotify(command string) {
@@ -119,4 +127,3 @@ func (c *Root) FlushNotify(command string) {
 	}
 	log.Info("[notify] summary sent: %s", title)
 }
-

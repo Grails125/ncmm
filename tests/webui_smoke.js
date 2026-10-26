@@ -295,6 +295,14 @@ async function hasHorizontalScroll(locator, label) {
   assert(await page.locator('#config-block-musicPartner textarea[data-kind="array"]').count() === 7, 'partner per-score comments and independent recommendation templates were incomplete');
   assert(await page.locator('#config-block-task .task-card').count() === 9, 'task matrix did not render nine task cards');
   assert(await page.locator('#config-block-task .schema-segmented').count() === 1, 'task mode segmented control was missing');
+  const originalQueue = await page.locator('#task-queue-wrapper [data-task-item]').evaluateAll(items => items.map(item => [item.dataset.taskGroup, item.dataset.taskItem]));
+  for (const mode of ['单账号完整串行', '跨账号分组串行']) {
+    await page.locator('#config-block-task').getByRole('button', { name: mode, exact: true }).click();
+    assert(await page.locator('#task-queue-wrapper').isVisible(), `${mode} must expose the task queues`);
+    const queue = await page.locator('#task-queue-wrapper [data-task-item]').evaluateAll(items => items.map(item => [item.dataset.taskGroup, item.dataset.taskItem]));
+    assert(JSON.stringify(queue) === JSON.stringify(originalQueue), 'changing scheduling mode must preserve queue order and partner placement');
+    assert((await page.locator('#task-queue-wrapper').innerText()).includes('关闭「日常签到 → 分享歌曲」开关'), 'automatic queue repair must explain how to disable sharing');
+  }
   assert(await page.locator('.schema-fallback').count() === 0, 'registered task fields fell back to generic controls');
   const flowSize = await page.locator('#config-visual').evaluate(element => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight }));
   assert(flowSize.scrollHeight > flowSize.clientHeight, `configuration flow was not independently scrollable: ${JSON.stringify(flowSize)}`);

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -693,6 +694,13 @@ func (c *Config) Validate() error {
 		if len(c.Task.SlowTasks) == 0 {
 			c.Task.SlowTasks = []string{
 				"ListenIndie", "PlayDailyRecommend", "playids", "musician-vip", "music-partner",
+			}
+		}
+		if c.Sign != nil && c.Sign.YunbeiTask != nil && c.Sign.YunbeiTask.EnableShareSong {
+			isShareSong := func(task string) bool { return strings.EqualFold(strings.TrimSpace(task), "ShareSong") }
+			// 旧版非空队列可能缺少分享歌曲；以子开关决定启用，保留用户已有位置和顺序。
+			if !slices.ContainsFunc(c.Task.FastTasks, isShareSong) && !slices.ContainsFunc(c.Task.SlowTasks, isShareSong) {
+				c.Task.FastTasks = append(c.Task.FastTasks, "ShareSong")
 			}
 		}
 	}

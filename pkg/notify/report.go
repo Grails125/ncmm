@@ -15,8 +15,9 @@ import (
 type Kind string
 
 const (
-	KindFailure Kind = "failure"
-	KindSkip    Kind = "skip"
+	KindFailure     Kind = "failure"
+	KindSkip        Kind = "skip"
+	KindUnconfirmed Kind = "unconfirmed"
 )
 
 // Item is one failure or skip entry collected during a run.
@@ -53,6 +54,24 @@ func (r *Report) SetCommand(command string) {
 	r.Command = command
 }
 
+// Reset 开始一次新运行，保留通知器引用但清空上次结果。
+func (r *Report) Reset(command string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Command, r.StartedAt, r.items = command, time.Now(), nil
+}
+
+// AddUnconfirmed 记录已尝试但尚无官方终态确认的任务。
+func (r *Report) AddUnconfirmed(account, task, reason string) {
+	if r == nil || strings.TrimSpace(reason) == "" {
+		return
+	}
+	r.add(KindUnconfirmed, account, task, reason)
+}
+
 // AddFailure records a task/account failure.
 func (r *Report) AddFailure(account, task string, err error) {
 	if r == nil || err == nil {
@@ -83,12 +102,18 @@ func (r *Report) AddSkip(account, task, reason string) {
 func (r *Report) add(kind Kind, account, task, message string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.items = append(r.items, Item{
+	item := Item{
 		Kind:    kind,
 		Account: strings.TrimSpace(account),
 		Task:    strings.TrimSpace(task),
 		Message: strings.TrimSpace(message),
-	})
+	}
+	for _, previous := range r.items {
+		if previous == item {
+			return
+		}
+	}
+	r.items = append(r.items, item)
 }
 
 // Items returns a copy of collected items.
@@ -105,8 +130,14 @@ func (r *Report) Items() []Item {
 
 // Counts returns failure and skip counts.
 func (r *Report) Counts() (failures, skips int) {
+	failures, skips, _ = r.OutcomeCounts()
+	return
+}
+
+// OutcomeCounts 包含内部子任务的未确认结果，不能将其计为成功。
+func (r *Report) OutcomeCounts() (failures, skips, unconfirmed int) {
 	if r == nil {
-		return 0, 0
+		return 0, 0, 0
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -116,17 +147,19 @@ func (r *Report) Counts() (failures, skips int) {
 			failures++
 		case KindSkip:
 			skips++
+		case KindUnconfirmed:
+			unconfirmed++
 		}
 	}
-	return failures, skips
+	return failures, skips, unconfirmed
 }
 
 // NeedNotify reports whether a push should be sent.
 // Success never notifies. Failures always notify when present.
 // Skips notify only when onSkip is true.
 func (r *Report) NeedNotify(onSkip bool) bool {
-	failures, skips := r.Counts()
-	if failures > 0 {
+	failures, skips, unconfirmed := r.OutcomeCounts()
+	if failures > 0 || unconfirmed > 0 {
 		return true
 	}
 	return onSkip && skips > 0
@@ -143,11 +176,13 @@ func (r *Report) Summary(titlePrefix string, onSkip bool) (title, content string
 	}
 
 	items := r.Items()
-	var failures, skips []Item
+	var failures, skips, unconfirmed []Item
 	for _, it := range items {
 		switch it.Kind {
 		case KindFailure:
 			failures = append(failures, it)
+		case KindUnconfirmed:
+			unconfirmed = append(unconfirmed, it)
 		case KindSkip:
 			if onSkip {
 				skips = append(skips, it)
@@ -161,6 +196,9 @@ func (r *Report) Summary(titlePrefix string, onSkip bool) (title, content string
 	}
 	if len(skips) > 0 {
 		parts = append(parts, fmt.Sprintf("跳过 %d", len(skips)))
+	}
+	if len(unconfirmed) > 0 {
+		parts = append(parts, fmt.Sprintf("未确认 %d", len(unconfirmed)))
 	}
 	title = fmt.Sprintf("[%s] 运行异常 (%s)", prefix, strings.Join(parts, " · "))
 
@@ -178,7 +216,7 @@ func (r *Report) Summary(titlePrefix string, onSkip bool) (title, content string
 	fmt.Fprintf(&b, "命令: %s\n", cmd)
 	fmt.Fprintf(&b, "开始: %s\n", started.Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(&b, "结束: %s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(&b, "失败: %d  跳过: %d\n", len(failures), len(skips))
+	fmt.Fprintf(&b, "失败: %d  跳过: %d  未确认: %d\n", len(failures), len(skips), len(unconfirmed))
 
 	idx := 1
 	if len(failures) > 0 {
@@ -191,6 +229,13 @@ func (r *Report) Summary(titlePrefix string, onSkip bool) (title, content string
 	if len(skips) > 0 {
 		b.WriteString("\n【跳过】\n")
 		for _, it := range skips {
+			writeItem(&b, idx, it)
+			idx++
+		}
+	}
+	if len(unconfirmed) > 0 {
+		b.WriteString("\n【未确认】\n")
+		for _, it := range unconfirmed {
 			writeItem(&b, idx, it)
 			idx++
 		}

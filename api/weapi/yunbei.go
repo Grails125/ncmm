@@ -619,6 +619,9 @@ func (a *Api) YunBeiTaskFinish(ctx context.Context, req *YunBeiTaskFinishReq) (*
 		reply YunBeiTaskFinishResp
 		opts  = api.NewOptions()
 	)
+	// 领奖可能已入账，响应丢失时不得自动重发。
+	opts.NoRetry = true
+	opts.Sensitive = true
 
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {

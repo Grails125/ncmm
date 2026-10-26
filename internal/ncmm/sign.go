@@ -254,6 +254,7 @@ func sleepWithProgress(ctx context.Context, cmd *cobra.Command, prefix string, l
 }
 
 func (c *SignIn) execute(ctx context.Context) error {
+	c.root.yunbeiRewards = nil
 	if err := c.validate(); err != nil {
 		err = fmt.Errorf("validate: %w", err)
 		c.root.ReportFailure("-", "sign", err)
@@ -456,7 +457,11 @@ func (c *SignIn) runSignForCookie(
 		}
 		if hasYunbeiTasks {
 			c.handleYunbeiTasks(ctx, cli, request, userId, cookieFile, allowedTasks)
+		} else {
+			c.cmd.Println("  [云贝调度] 当前任务组没有云贝子任务，日推播放和分享歌曲本组不执行")
 		}
+	} else {
+		c.cmd.Println("  [云贝调度] 自动任务关闭（sign.automatic=false 且未指定 --automatic），日推播放和分享歌曲未执行")
 	}
 	if finalizeEarnings {
 		yunbeiEarnings := earningsReport.collectYunbei(func() yunbeiEarnings {
@@ -473,7 +478,7 @@ func (c *SignIn) runSignForCookie(
 			if vipPoint.Data.UserLevel.LatestVipStatus != 1 {
 				c.cmd.Printf("  暂无会员权益 (VIP 状态: %v)\n", vipPoint.Data.UserLevel.LatestVipStatus)
 			} else {
-				finalGrowth = c.handleVipTasks(ctx, cli, request, vipPoint.Data.UserLevel.Level)
+				finalGrowth = c.handleVipTasks(ctx, cli, request, vipPoint.Data.UserLevel.Level, cookieFile)
 			}
 		}
 		vipEarnings := earningsReport.collectVIP(func() vipEarnings {

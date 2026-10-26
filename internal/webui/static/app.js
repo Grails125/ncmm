@@ -1786,6 +1786,9 @@
     const root = activeDocument().data;
     const fastTasks = Array.isArray(root?.task?.fast_tasks) ? [...root.task.fast_tasks] : [...DEFAULT_FAST_TASKS];
     const slowTasks = Array.isArray(root?.task?.slow_tasks) ? [...root.task.slow_tasks] : [...DEFAULT_SLOW_TASKS];
+    if (root?.sign?.yunbeiTask?.enableShareSong === true && ![...fastTasks, ...slowTasks].some(id => String(id).trim().toLowerCase() === 'sharesong')) {
+      fastTasks.push('ShareSong');
+    }
     return { fastTasks, slowTasks };
   }
 
@@ -1917,16 +1920,14 @@
     }).join('');
     const queue = renderFlowCard('', renderFlowField('task.mode', { title: '任务队列调度模式 (task.mode)', description: '跨账号分组串行：全部账号先完成快任务，再集中执行慢任务，总耗时更短；单账号完整串行：每个账号依次执行完快任务和慢任务后，再轮到下一个账号。' }));
     
-    const root = activeDocument().data;
-    const mode = String(root?.task?.mode || 'by-task-group').trim();
-    const showQueue = mode === 'by-task-group';
     const { fastTasks, slowTasks } = getTaskQueueLists();
-    const kanbanHTML = showQueue ? renderFlowTaskKanban(fastTasks, slowTasks) : '';
+    const kanbanHTML = renderFlowTaskKanban(fastTasks, slowTasks);
 
     return `
       <div class="task-cards-grid">${cards}</div>
       <div class="config-cards-grid single flow-task-mode">${queue}</div>
-      <div class="task-queue-wrapper ${showQueue ? '' : 'hidden'}" id="task-queue-wrapper" style="display: ${showQueue ? 'block' : 'none'} !important;">
+      <div class="task-queue-wrapper" id="task-queue-wrapper">
+        <p class="form-row-desc">两种调度模式都使用以下队列，任务仍受对应总开关和账号、子任务开关控制。分享歌曲已启用但队列缺项时，会自动补到快任务末尾；如需停用，请关闭「日常签到 → 分享歌曲」开关。</p>
         ${kanbanHTML}
       </div>
     `;
@@ -2465,10 +2466,6 @@
   function setSchemaValue(path, value, rerender = true) {
     setByPath(activeDocument().data, path, value);
     markConfigDirty();
-    if (path.join('.') === 'task.mode') {
-      const queueWrapper = $('#task-queue-wrapper');
-      if (queueWrapper) queueWrapper.style.display = value === 'by-task-group' ? 'block' : 'none';
-    }
     if (rerender) {
       const scrollTop = $('#config-visual')?.scrollTop || 0;
       renderConfig();

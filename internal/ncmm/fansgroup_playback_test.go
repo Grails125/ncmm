@@ -16,6 +16,7 @@ import (
 	"github.com/3899/ncmm/api/weapi"
 	"github.com/3899/ncmm/config"
 	cookiepkg "github.com/3899/ncmm/pkg/cookie"
+	"github.com/3899/ncmm/pkg/notify"
 	"github.com/spf13/cobra"
 )
 
@@ -57,13 +58,63 @@ func TestFansGroupWebSessionOffStillRunsOtherTasks(t *testing.T) {
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(payload)), Request: r}, nil
 	})
-	c := &FansGroup{root: &Root{Cfg: &config.Config{FansGroup: &config.FansGroupConf{}}}, cmd: &cobra.Command{}, rng: rand.New(rand.NewSource(1))}
+	report := notify.NewReport("task")
+	c := &FansGroup{root: &Root{Cfg: &config.Config{FansGroup: &config.FansGroupConf{}}, Report: report}, cmd: &cobra.Command{}, rng: rand.New(rand.NewSource(1))}
 	c.cmd.SetOut(io.Discard)
 	if err := c.executeOneFansGroup(context.Background(), client, eapi.New(client), weapi.New(client), 123, "1", ""); err != nil {
 		t.Fatal(err)
 	}
 	if shares != 1 || reads != 2 {
 		t.Fatalf("shares=%d progress reads=%d", shares, reads)
+	}
+	if failures, skips, unconfirmed := report.OutcomeCounts(); failures != 0 || skips != 1 || unconfirmed != 1 {
+		t.Fatalf("应记录播放配置跳过、分享后官方进度未确认：%+v", report.Items())
+	}
+}
+
+func TestFansGroupMissingCommentTokenIsReportedAsSkip(t *testing.T) {
+	report := notify.NewReport("task")
+	c := &FansGroup{root: &Root{Cfg: &config.Config{}, Report: report}, cmd: &cobra.Command{}}
+	c.cmd.SetOut(io.Discard)
+	c.doAccelerateTask(context.Background(), nil, nil, 123, "", nil, eapi.FansGroupMissionOriginality{Title: "加速任务", Subtitle: "发布评论", MissionId: 7})
+	if _, skips, unconfirmed := report.OutcomeCounts(); skips != 1 || unconfirmed != 0 {
+		t.Fatalf("缺少令牌应为配置跳过：%+v", report.Items())
+	}
+}
+
+func TestFansGroupRejectedCommentIsNotAlsoCountedUnconfirmed(t *testing.T) {
+	client, err := api.NewClient(&api.Config{Cookie: cookiepkg.Config{Filepath: filepath.Join(t.TempDir(), "cookie.json")}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close(context.Background())
+	comments := 0
+	client.GetClient().Transport = fansTransport(func(r *http.Request) (*http.Response, error) {
+		payload := `{"code":200}`
+		switch r.URL.Path {
+		case "/eapi/social/fansgroup/bff/detail/get":
+			payload = `{"code":200,"data":{"fansGroupInfo":{"boardId":"1","fansGroupName":"测试"}}}`
+		case "/eapi/social/fansgroup/bff/user/group/detail/get":
+			payload = `{"code":200,"data":{"fansGroupMemberDetail":{"joined":true}}}`
+		case "/eapi/fans/group/mission/all":
+			payload = `{"code":200,"data":{"originality":{"success":true,"data":{"missionId":7,"title":"加速任务","subtitle":"发布评论","allProgress":1,"button":{"url":"{\"threadId\":\"R_VI_62_abcdef\"}"}}}}}`
+		case "/weapi/resource/comments/add":
+			comments++
+			payload = `{"code":405}`
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(payload)), Request: r}, nil
+	})
+	report := notify.NewReport("task")
+	c := NewFansGroup(&Root{Cfg: &config.Config{}, Report: report}, nil)
+	c.root.Opts.Home = t.TempDir()
+	c.cmd.SetOut(io.Discard)
+	if err := c.executeOneFansGroup(context.Background(), client, eapi.New(client), weapi.New(client), 123, "1", "fixture-token", "account"); err != nil {
+		t.Fatal(err)
+	}
+	if failures, skips, unconfirmed := report.OutcomeCounts(); comments != 1 || failures != 1 || skips != 0 || unconfirmed != 0 {
+		t.Fatalf("同一次明确评论失败不能统计两遍：comments=%d items=%+v", comments, report.Items())
 	}
 }
 

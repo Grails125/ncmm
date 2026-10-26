@@ -583,7 +583,7 @@ func (c *Musician) RunVipForCookie(ctx context.Context, cookieFile string) error
 // doVipPhase 执行第二阶段：音乐人 VIP 进阶任务
 func (c *Musician) doVipPhase(ctx context.Context, mctx *musicianContext, cookieFile string) {
 	if mctx.resp == nil || mctx.resp.Data.FurtherTask == nil {
-		c.cmd.Println("  👉 [第二阶段] 提示: 没有音乐人 VIP 进阶任务 (跳过)")
+		c.cmd.Println("  👉 [第二阶段] 未取得音乐人 VIP 进阶任务详情，跳过执行；第三阶段将重新查询领取条件")
 		return
 	}
 
@@ -607,6 +607,7 @@ func (c *Musician) doVipPhase(ctx context.Context, mctx *musicianContext, cookie
 		case "mission_code_musician_notebook_publish":
 			if c.root.Cfg.Musician.EnableVipNote != nil && !*c.root.Cfg.Musician.EnableVipNote {
 				c.cmd.Println("    ℹ️ 笔记任务已在配置中关闭 (enableVipNote = false)，跳过")
+				c.root.ReportSkip(cookieFile, "musician-vip/笔记", "笔记任务已在配置中关闭")
 			} else if sub.ProgressRate >= sub.TotalCompleteNum {
 				c.cmd.Println("    ℹ️ 笔记任务已完成，无需发布")
 			} else {
@@ -616,19 +617,23 @@ func (c *Musician) doVipPhase(ctx context.Context, mctx *musicianContext, cookie
 				if err != nil {
 					log.Error("    ❌ 笔记任务执行失败: %s", err)
 					c.cmd.Printf("    ❌ 笔记任务失败: %s\n", err)
+					c.root.ReportFailure(cookieFile, "musician-vip/笔记", err)
 				}
 			}
 
 		case musicianPlayCountCode, musicianPlayPercentCode:
 			if c.root.Cfg.Musician.EnableVipPlay != nil && !*c.root.Cfg.Musician.EnableVipPlay {
 				c.cmd.Println("    ℹ️ 播放任务已在配置中关闭 (enableVipPlay = false)，跳过")
+				c.root.ReportSkip(cookieFile, "musician-vip/播放", "播放任务已在配置中关闭")
 			} else if err := c.handlePlayTask(ctx, mctx.db, sub, mctx.resp.Data.RecentPlayCount30); err != nil {
 				log.Error("    ❌ 播放任务执行失败: %s", err)
 				c.cmd.Printf("    ❌ 播放任务失败: %s\n", err)
+				c.root.ReportFailure(cookieFile, "musician-vip/播放", err)
 			}
 
 		default:
 			c.cmd.Printf("    ⚠️ 未知任务类型: %s\n", sub.MissionCode)
+			c.root.ReportSkip(cookieFile, "musician-vip/"+sub.MissionCode, "未支持的进阶任务，需在 App 完成")
 		}
 	}
 }
@@ -850,6 +855,7 @@ func (c *Musician) doVipClaimPhase(ctx context.Context, mctx *musicianContext, c
 		mctx.userID, err = c.resolveMusicianUserID(ctx, mctx.weapiCli)
 		if err != nil {
 			c.cmd.Printf("    ⚠️ %s，已跳过 VIP 领取\n", err)
+			c.root.ReportSkip(cookieFile, "musician-vip/领取", "未取得有效音乐人账号，跳过领取")
 			return
 		}
 	}
@@ -857,11 +863,18 @@ func (c *Musician) doVipClaimPhase(ctx context.Context, mctx *musicianContext, c
 	// 1. 查询最新的音乐人 VIP 权益与任务状态 (WEAPI)
 	info, err := mctx.weapiCli.MusicianVipInfo(ctx, &weapi.MusicianVipInfoReq{})
 	if err != nil {
-		c.cmd.Printf("    ⚠️ 查询音乐人 VIP 领取状态失败: %v\n", err)
+		c.cmd.Printf("    ⚠️ 查询音乐人 VIP 领取状态失败（错误类型 %T）\n", err)
+		c.root.ReportFailureMsg(cookieFile, "musician-vip/状态", "查询音乐人 VIP 领取状态失败")
+		return
+	}
+	if info == nil {
+		c.cmd.Println("    ⚠️ 查询音乐人 VIP 状态未返回响应")
+		c.root.ReportUnconfirmed(cookieFile, "musician-vip/状态", "未取得音乐人 VIP 状态响应")
 		return
 	}
 	if info.Code != 200 {
 		c.cmd.Printf("    ⚠️ 查询音乐人 VIP 状态失败: code=%d\n", info.Code)
+		c.root.ReportFailureMsg(cookieFile, "musician-vip/状态", fmt.Sprintf("查询音乐人 VIP 状态失败（code=%d）", info.Code))
 		return
 	}
 
@@ -891,18 +904,32 @@ func (c *Musician) doVipClaimPhase(ctx context.Context, mctx *musicianContext, c
 	}
 
 	if !taskFinished {
-		c.cmd.Println("    ℹ️ 音乐人进阶任务（笔记/播放量）尚未全部达成，暂不可领取 VIP")
+		c.cmd.Printf("    ℹ️ 音乐人 VIP 状态：hasFurtherTask=%t，hasDetails=%t，taskStatus=%t，canOpen=%t，cycle=%d\n", data.HasFurtherTask, data.FurtherTask != nil, data.TaskStatus, data.CanOpen, data.FurtherVipGetTime)
+		if data.FurtherTask == nil {
+			if data.HasFurtherTask {
+				c.cmd.Println("    ⚠️ 官方未返回进阶任务详情，无法确认具体达标条件，暂不提交领取")
+				c.root.ReportUnconfirmed(cookieFile, "musician-vip/条件", "官方未返回进阶任务详情，无法确认具体达标条件")
+			} else {
+				c.cmd.Println("    ℹ️ 官方未提供可执行的进阶任务，无法据此判断缺少哪项条件，跳过领取")
+				c.root.ReportSkip(cookieFile, "musician-vip/领取", "官方未提供可执行的进阶任务")
+			}
+		} else {
+			c.cmd.Printf("    ℹ️ 官方进阶任务尚未达标（missionStatus=%d，进度=%d%%），暂不可领取 VIP\n", data.FurtherTask.MissionStatus, data.FurtherTask.ProgressRate)
+			c.root.ReportSkip(cookieFile, "musician-vip/领取", "官方进阶任务尚未达标")
+		}
 		return
 	}
 
 	// 3. 预约状态不等于已领取，只有实际成功的领取请求才能写入缓存。
 	if data.FurtherVipGetTime > nowMs {
 		c.cmd.Printf("    ℹ️ 进阶任务已全部达标！本期 VIP 将于 %s 开放领取，到达时间后由后续任务运行自动领取\n", getTimeStr)
+		c.root.ReportSkip(cookieFile, "musician-vip/领取", "进阶任务已达标，尚未到官方领取时间")
 		return
 	}
 
 	if !data.CanOpen {
 		c.cmd.Println("    ℹ️ 当前账号暂不可领取 VIP (canOpen = false)，未记录领取成功")
+		c.root.ReportSkip(cookieFile, "musician-vip/领取", "当前官方状态暂不可领取 VIP（canOpen=false）")
 		return
 	}
 
@@ -910,6 +937,7 @@ func (c *Musician) doVipClaimPhase(ctx context.Context, mctx *musicianContext, c
 	antiCheatToken := c.root.Cfg.Accounts.AntiCheatTokenFor(cookieFile)
 	if strings.TrimSpace(antiCheatToken) == "" {
 		c.cmd.Println("    ⚠️ 当前已满足音乐人 VIP 领取条件，但 accounts.antiCheatTokens 中未配置该账号的 token，已跳过领取")
+		c.root.ReportSkip(cookieFile, "musician-vip/领取", "未配置该账号的领取令牌")
 		return
 	}
 	if cacheKey == "" {
@@ -922,7 +950,13 @@ func (c *Musician) doVipClaimPhase(ctx context.Context, mctx *musicianContext, c
 		CheckToken: antiCheatToken,
 	}, antiCheatToken)
 	if err != nil {
-		c.cmd.Printf("    ❌ 领取音乐人黑胶 VIP 请求异常: %v\n", err)
+		c.cmd.Printf("    ⚠️ 领取音乐人黑胶 VIP 请求未获确认（错误类型 %T），未记录成功\n", err)
+		c.root.ReportUnconfirmed(cookieFile, "musician-vip/领取", "领取请求未获确认，未记录成功")
+		return
+	}
+	if claimResp == nil {
+		c.cmd.Println("    ⚠️ 领取音乐人黑胶 VIP 未返回响应，未记录成功")
+		c.root.ReportUnconfirmed(cookieFile, "musician-vip/领取", "领取未返回响应，未记录成功")
 		return
 	}
 	if claimResp.Code == 200 && claimResp.Data {
@@ -934,5 +968,6 @@ func (c *Musician) doVipClaimPhase(ctx context.Context, mctx *musicianContext, c
 		}
 	} else {
 		c.cmd.Printf("    ❌ 领取音乐人黑胶 VIP 未确认成功: code=%d result=%t，未保存成功记录\n", claimResp.Code, claimResp.Data)
+		c.root.ReportUnconfirmed(cookieFile, "musician-vip/领取", fmt.Sprintf("领取未确认成功（code=%d result=%t），未保存成功记录", claimResp.Code, claimResp.Data))
 	}
 }

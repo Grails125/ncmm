@@ -5,9 +5,12 @@ package ncmm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
+	"net"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,7 +21,7 @@ import (
 )
 
 func (c *SignIn) isPlayDailyRecommendTask(taskName string) bool {
-	switch taskName {
+	switch strings.TrimSpace(taskName) {
 	case "听歌30分钟", "听歌", "每日推荐", "听推荐歌曲", "听推荐歌单中的歌", "听音乐30分钟":
 		return true
 	}
@@ -26,35 +29,60 @@ func (c *SignIn) isPlayDailyRecommendTask(taskName string) bool {
 }
 
 func (c *SignIn) isYunbeiTaskEnabled(taskName string, allowedTasks map[string]bool) bool {
+	key, enabled := c.yunbeiTaskOption(taskName)
+	return key != "" && enabled && allowedTasks[key]
+}
+
+func (c *SignIn) yunbeiTaskOption(taskName string) (string, bool) {
+	if c.root == nil || c.root.Cfg == nil || c.root.Cfg.Sign == nil || c.root.Cfg.Sign.YunbeiTask == nil {
+		return "", false
+	}
 	cfg := c.root.Cfg.Sign.YunbeiTask
-	if cfg == nil {
-		return false
-	}
-	switch taskName {
+	switch strings.TrimSpace(taskName) {
 	case "浏览会员中心":
-		return allowedTasks["ViewVipCenter"] && cfg.EnableViewVipCenter
+		return "ViewVipCenter", cfg.EnableViewVipCenter
 	case "点赞评论、动态", "点赞":
-		return allowedTasks["LikeComment"] && cfg.EnableLikeComment
+		return "LikeComment", cfg.EnableLikeComment
 	case "探索小众歌曲":
-		return allowedTasks["ListenIndie"] && cfg.EnableListenIndie
+		return "ListenIndie", cfg.EnableListenIndie
 	case "关注歌手":
-		return allowedTasks["FollowArtist"] && cfg.EnableFollowArtist
+		return "FollowArtist", cfg.EnableFollowArtist
 	case "收藏":
-		return allowedTasks["CollectSong"] && cfg.EnableCollectSong
+		return "CollectSong", cfg.EnableCollectSong
 	case "红心歌曲", "红心":
-		return allowedTasks["LikeSong"] && cfg.EnableLikeSong
+		return "LikeSong", cfg.EnableLikeSong
 	case "发布动态", "分享动态", "发布图文", "发布图文动态", "发布笔记", "分享图文", "发布图文笔记":
-		return allowedTasks["PublishNote"] && cfg.EnablePublishNote
+		return "PublishNote", cfg.EnablePublishNote
 	case "分享歌曲", "分享单曲", "分享歌单":
-		return allowedTasks["ShareSong"] && cfg.EnableShareSong
+		return "ShareSong", cfg.EnableShareSong
 	case "听歌30分钟", "听歌", "每日推荐", "听推荐歌曲", "听推荐歌单中的歌", "听音乐30分钟":
-		return allowedTasks["PlayDailyRecommend"] && cfg.EnablePlayDailyRecommend
+		return "PlayDailyRecommend", cfg.EnablePlayDailyRecommend
 	}
-	return false
+	return "", false
+}
+
+func (c *SignIn) yunbeiTaskFilterReason(task weapi.YunBeiTaskListRespData, allowed map[string]bool) string {
+	if task.Completed {
+		return "服务端标记已完成"
+	}
+	if c.root == nil || c.root.Cfg == nil || c.root.Cfg.Sign == nil || c.root.Cfg.Sign.YunbeiTask == nil {
+		return "云贝子任务配置缺失"
+	}
+	key, enabled := c.yunbeiTaskOption(task.TaskName)
+	if key == "" {
+		return "当前没有自动执行实现，需在 App 手动完成"
+	}
+	if !allowed[key] {
+		return "不在当前任务组队列（" + key + "）"
+	}
+	if !enabled {
+		return "子任务开关关闭（" + key + "）"
+	}
+	return ""
 }
 
 func (c *SignIn) executeSingleYunbeiTask(ctx context.Context, eapiRequest *eapi.Api, request *weapi.Api, v eapi.YunBeiTaskTodoRespData, allowedTasks map[string]bool, cookieFile string, userId int64) {
-	switch v.TaskName {
+	switch strings.TrimSpace(v.TaskName) {
 	case "浏览会员中心":
 		c.cmd.Println("  👉 开始执行 [浏览会员中心] 任务...")
 		c.doViewVipCenter(ctx, eapiRequest, v.TaskId)
@@ -92,8 +120,115 @@ func (c *SignIn) sleepBetweenSubtasks(ctx context.Context, taskName string) {
 	}
 }
 
+func yunbeiRequestFailure(err error) string {
+	if errors.Is(err, context.Canceled) {
+		return "请求已取消"
+	}
+	var networkError net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &networkError) && networkError.Timeout() {
+		return "网络请求超时"
+	}
+	if err != nil {
+		return fmt.Sprintf("请求失败（错误类型 %T）", err)
+	}
+	return "未取得有效响应"
+}
+
+func yunbeiExecutedTaskKey(taskID, period int64, name string) string {
+	if taskID > 0 {
+		return yunbeiTaskPeriodKey(taskID, period)
+	}
+	return "name/" + strings.TrimSpace(name)
+}
+
+func (c *SignIn) claimYunbeiRewards(ctx context.Context, request *weapi.Api, account string, state *yunbeiRewardAccountState, todo []eapi.YunBeiTaskTodoRespData, full []weapi.YunBeiTaskListRespData) {
+	candidates := yunbeiRewardTasks(todo, full, state.incomplete)
+	eligible := make(map[string]bool)
+	claimed, unconfirmed, rejected, skipped := 0, 0, 0, 0
+	for _, task := range candidates {
+		key := fmt.Sprintf("%d/%d", task.UserTaskId, task.Period)
+		eligible[key] = true
+		if previous := state.attempted[key]; previous != "" {
+			skipped++
+			if !state.diagnosed["repeat/"+key] {
+				c.cmd.Printf("  ℹ️ 云贝领奖去重：任务=%q，userTaskId=%d，period=%d，%s，本次运行不再提交\n", task.TaskName, task.UserTaskId, task.Period, previous)
+				state.diagnosed["repeat/"+key] = true
+			}
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		// 提交前记账，超时或丢失响应也不会在后续轮次及任务组重复领取。
+		state.attempted[key] = "已提交，结果未确认"
+		reply, err := request.YunBeiTaskFinish(ctx, &weapi.YunBeiTaskFinishReq{Period: fmt.Sprint(task.Period), UserTaskId: fmt.Sprint(task.UserTaskId), DepositCode: fmt.Sprint(task.DepositCode)})
+		var code int64
+		if reply != nil {
+			code = reply.Code
+		}
+		label := fmt.Sprintf("云贝领奖/%d/%d", task.UserTaskId, task.Period)
+		detail := ""
+		switch {
+		case err != nil || reply == nil:
+			unconfirmed++
+			detail = yunbeiRequestFailure(err) + "；领奖结果未确认"
+			c.root.ReportUnconfirmed(account, label, fmt.Sprintf("%s：%s", task.TaskName, detail))
+		case code != 200:
+			rejected++
+			detail = fmt.Sprintf("服务端拒绝领取（服务码 %d）", code)
+			c.root.ReportFailureMsg(account, label, fmt.Sprintf("%s：%s", task.TaskName, detail))
+		case !reply.Data:
+			unconfirmed++
+			detail = "业务返回 false，未确认新增奖励（可能已领取或暂不可领取）"
+			c.root.ReportUnconfirmed(account, label, fmt.Sprintf("%s：%s", task.TaskName, detail))
+		default:
+			claimed++
+			state.attempted[key] = "已确认领取成功"
+			c.cmd.Printf("  🎉 成功领取云贝 [%s] 任务奖励，获得云贝: %d（taskId=%d，userTaskId=%d，period=%d）\n", task.TaskName, task.TaskPoint, task.TaskId, task.UserTaskId, task.Period)
+			continue
+		}
+		state.attempted[key] = detail
+		c.cmd.Printf("  ℹ️ 云贝领奖：任务=%q，taskId=%d，userTaskId=%d，period=%d，服务码=%d，%s\n", task.TaskName, task.TaskId, task.UserTaskId, task.Period, code, detail)
+	}
+	for _, task := range full {
+		if !task.Completed {
+			continue
+		}
+		key := fmt.Sprintf("%d/%d", task.UserTaskId, task.Period)
+		historyKey := "history/" + yunbeiTaskPeriodKey(task.TaskId, task.Period) + "/" + key
+		if eligible[key] || state.attempted[key] != "" || state.diagnosed[historyKey] {
+			continue
+		}
+		state.diagnosed[historyKey] = true
+		c.cmd.Printf("  ℹ️ 云贝历史任务：任务=%q，taskId=%d，userTaskId=%d，period=%d，status=%d，任务已完成但领奖状态未知；缺少待领奖或本轮完成变化证据，不重复领取\n", task.TaskName, task.TaskId, task.UserTaskId, task.Period, task.Status)
+	}
+	c.cmd.Printf("  ℹ️ 云贝领奖汇总：候选 %d，新增成功 %d，服务拒绝 %d，未确认 %d，本次已尝试 %d；任务完成不等于奖励已领取\n", len(candidates), claimed, rejected, unconfirmed, skipped)
+}
+
 func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request *weapi.Api, userId int64, cookieFile string, allowedTasks map[string]bool) {
 	eapiRequest := eapi.New(cli)
+	state := c.yunbeiRewardState(cookieFile)
+	var queue []string
+	for key, enabled := range allowedTasks {
+		if enabled {
+			queue = append(queue, key)
+		}
+	}
+	sort.Strings(queue)
+	_, dailyEnabled := c.yunbeiTaskOption("听音乐30分钟")
+	_, shareEnabled := c.yunbeiTaskOption("分享歌曲")
+	c.cmd.Printf("  [云贝调度] 当前队列=%s；日推开关=%t、日推入队=%t；分享开关=%t、分享入队=%t\n", strings.Join(queue, ","), dailyEnabled, allowedTasks["PlayDailyRecommend"], shareEnabled, allowedTasks["ShareSong"])
+	attemptedTasks := make(map[string]string)
+	confirmTask := func(taskID, period int64, name string, completed bool) {
+		key := yunbeiExecutedTaskKey(taskID, period, name)
+		if attemptedTasks[key] == "" {
+			return
+		}
+		delete(attemptedTasks, key)
+		if !completed {
+			c.root.ReportUnconfirmed(cookieFile, "云贝/"+strings.TrimSpace(name)+"/"+key, "本轮已尝试执行，最终任务列表仍显示未完成")
+		}
+	}
 
 	// 1. 预约领云贝 (特殊板块，独立于日常任务列表，运行一次即可)
 	if allowedTasks["Reserve"] {
@@ -101,7 +236,6 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 	}
 
 	// 2. 多轮循环执行任务并领奖 (最多3轮)
-	claimedRewards := make(map[string]bool)
 	for round := 1; round <= 3; round++ {
 		if ctx.Err() != nil {
 			return
@@ -110,28 +244,47 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 		// todo/query 会遗漏分享、关注等任务，调度必须使用完整列表；旧接口仅用于领奖。
 		task, err := request.YunBeiTaskList(ctx, &weapi.YunBeiTaskListReq{})
 		if err != nil || task == nil || task.Code != 200 {
-			c.cmd.Printf("  ❌ 获取云贝任务列表失败: %v\n", err)
+			var code int64
+			if task != nil {
+				code = task.Code
+			}
+			c.cmd.Printf("  ❌ 获取云贝任务列表失败：服务码=%d，%s；无法判断本轮日推是否可执行\n", code, yunbeiRequestFailure(err))
+			c.root.ReportFailureMsg(cookieFile, "云贝任务列表", fmt.Sprintf("获取任务列表失败，服务码=%d", code))
 			return
 		}
 
 		// 筛选待做且启用的任务
 		var todoTasks []eapi.YunBeiTaskTodoRespData
 		var playDailyRecommendTaskName string
+		var playDailyRecommendTaskKey string
+		dailySeen := false
 		for _, v := range task.Data {
-			if v.Completed {
-				continue
+			if !v.Completed && v.TaskId > 0 {
+				state.incomplete[yunbeiTaskPeriodKey(v.TaskId, v.Period)] = true
 			}
-			if !c.isYunbeiTaskEnabled(v.TaskName, allowedTasks) {
+			if c.isPlayDailyRecommendTask(v.TaskName) {
+				dailySeen = true
+			}
+			if reason := c.yunbeiTaskFilterReason(v, allowedTasks); reason != "" {
+				c.cmd.Printf("  [云贝筛选] taskId=%d，period=%d，名称=%q：%s\n", v.TaskId, v.Period, v.TaskName, reason)
+				key, enabled := c.yunbeiTaskOption(v.TaskName)
+				if !v.Completed && (key == "" || allowedTasks[key] && !enabled) {
+					c.root.ReportSkip(cookieFile, "云贝/"+strings.TrimSpace(v.TaskName), reason)
+				}
 				continue
 			}
 			if c.isPlayDailyRecommendTask(v.TaskName) {
 				playDailyRecommendTaskName = v.TaskName
+				playDailyRecommendTaskKey = yunbeiExecutedTaskKey(v.TaskId, v.Period, v.TaskName)
 				continue
 			}
 			todoTasks = append(todoTasks, eapi.YunBeiTaskTodoRespData{
 				TaskId: v.TaskId, TaskName: v.TaskName, TaskPoint: v.TaskPoint,
 				UserTaskId: v.UserTaskId, Period: v.Period, Link: v.Link,
 			})
+		}
+		if !dailySeen {
+			c.cmd.Printf("  [云贝日推] 本轮完整列表未返回可识别的日推播放任务（开关=%t，当前队列=%t）；未调用播放接口，请结合返回任务名排查\n", dailyEnabled, allowedTasks["PlayDailyRecommend"])
 		}
 
 		// 没有待做任务时仍检查一次未领取奖励。
@@ -153,6 +306,7 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 				return
 			}
 			c.executeSingleYunbeiTask(ctx, eapiRequest, request, v, allowedTasks, cookieFile, userId)
+			attemptedTasks[yunbeiExecutedTaskKey(v.TaskId, v.Period, v.TaskName)] = v.TaskName
 			if ctx.Err() != nil {
 				return
 			}
@@ -165,6 +319,7 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 		if playDailyRecommendTaskName != "" {
 			c.cmd.Printf("  👉 开始执行 [%s] 任务 (使用 [播放日推] 开关控制)...\n", playDailyRecommendTaskName)
 			c.doPlayDailyRecommend(ctx, cookieFile, playDailyRecommendTaskName)
+			attemptedTasks[playDailyRecommendTaskKey] = playDailyRecommendTaskName
 		}
 
 		// 重新拉取任务列表，对本轮已完成的任务进行领奖
@@ -181,36 +336,26 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 		if fullOK {
 			fullRewards = fullTask.Data
 		}
-		if todoOK || fullOK {
-			var claimedCount int
-			for _, v := range yunbeiRewardTasks(todoRewards, fullRewards) {
-				if ctx.Err() != nil {
-					return
-				}
-				rewardKey := fmt.Sprintf("%d/%d", v.UserTaskId, v.Period)
-				if claimedRewards[rewardKey] {
-					continue
-				}
-				reply, err := request.YunBeiTaskFinish(ctx, &weapi.YunBeiTaskFinishReq{
-					Period:      fmt.Sprintf("%d", v.Period),
-					UserTaskId:  fmt.Sprintf("%d", v.UserTaskId),
-					DepositCode: fmt.Sprintf("%d", v.DepositCode),
-				})
-				if err == nil && reply != nil && reply.Code == 200 && reply.Data {
-					// 完整列表会保留已完成条目，仅跳过本次运行中明确领取成功的凭据。
-					claimedRewards[rewardKey] = true
-					c.cmd.Printf("  🎉 成功领取云贝 [%s] 任务奖励，获得云贝: %v\n", v.TaskName, v.TaskPoint)
-					claimedCount++
-				} else {
-					c.cmd.Printf("  ℹ️ [%s] 奖励领取未获确认，可能已领取或暂不可领取\n", v.TaskName)
-				}
+		if !todoOK {
+			var code int64
+			if refreshedTask != nil {
+				code = refreshedTask.Code
 			}
-			if claimedCount == 0 {
-				c.cmd.Println("  ℹ️ 没有可领取的任务奖励")
-			}
-		} else {
-			c.cmd.Printf("  ❌ 重新拉取任务列表失败: %v\n", err)
+			c.cmd.Printf("  [云贝领奖查询] 待办接口不可用：服务码=%d，%s；仅根据完整列表的本轮完成变化补齐候选\n", code, yunbeiRequestFailure(err))
 		}
+		if !fullOK {
+			var code int64
+			if fullTask != nil {
+				code = fullTask.Code
+			}
+			c.cmd.Printf("  [云贝领奖查询] 完整列表不可用：服务码=%d，%s；仅使用待办接口的候选\n", code, yunbeiRequestFailure(fullErr))
+		}
+		if todoOK || fullOK {
+			c.claimYunbeiRewards(ctx, request, cookieFile, state, todoRewards, fullRewards)
+		} else {
+			c.root.ReportFailureMsg(cookieFile, "云贝领奖查询", "待办和完整任务列表均获取失败，未提交领奖请求")
+		}
+
 		if len(todoTasks) == 0 && playDailyRecommendTaskName == "" {
 			break
 		}
@@ -218,24 +363,27 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 
 	// 最终状态展示
 	c.cmd.Println("  👉 最终的云贝任务列表状态:")
-	if taskList, err := request.YunBeiTaskList(ctx, &weapi.YunBeiTaskListReq{}); err == nil && taskList.Code == 200 && len(taskList.Data) > 0 {
+	if taskList, err := request.YunBeiTaskList(ctx, &weapi.YunBeiTaskListReq{}); err == nil && taskList != nil && taskList.Code == 200 && len(taskList.Data) > 0 {
 		for _, v := range taskList.Data {
+			confirmTask(v.TaskId, v.Period, v.TaskName, v.Completed)
 			statusStr := "未完成"
 			if v.Completed {
 				statusStr = "已完成"
 			}
 			c.cmd.Printf("    - 任务: %-15s | 状态: %-6s | 奖励: %d 云贝\n", v.TaskName, statusStr, v.TaskPoint)
 		}
-	} else if v3List, errV3 := request.YunBeiTaskListV3(ctx, &weapi.YunBeiTaskListV3Req{}); errV3 == nil && v3List.Code == 200 && len(v3List.Data.Normal.List) > 0 {
+	} else if v3List, errV3 := request.YunBeiTaskListV3(ctx, &weapi.YunBeiTaskListV3Req{}); errV3 == nil && v3List != nil && v3List.Code == 200 && len(v3List.Data.Normal.List) > 0 {
 		for _, v := range v3List.Data.Normal.List {
+			confirmTask(v.TaskId, v.Period, v.TaskName, v.Completed)
 			statusStr := "未完成"
 			if v.Completed {
 				statusStr = "已完成"
 			}
 			c.cmd.Printf("    - 任务: %-15s | 状态: %-6s | 奖励: %d 云贝\n", v.TaskName, statusStr, v.TaskPoint)
 		}
-	} else if finalTask, errTodo := eapiRequest.YunBeiTaskTodo(ctx, &eapi.YunBeiTaskTodoReq{}); errTodo == nil && finalTask.Code == 200 {
+	} else if finalTask, errTodo := eapiRequest.YunBeiTaskTodo(ctx, &eapi.YunBeiTaskTodoReq{}); errTodo == nil && finalTask != nil && finalTask.Code == 200 {
 		for _, v := range finalTask.Data {
+			confirmTask(v.TaskId, v.Period, v.TaskName, v.Completed)
 			statusStr := "未完成"
 			if v.Completed {
 				statusStr = "已完成"
@@ -244,6 +392,11 @@ func (c *SignIn) handleYunbeiTasks(ctx context.Context, cli *api.Client, request
 		}
 	} else {
 		c.cmd.Println("  ❌ 获取最终任务状态列表失败")
+	}
+	if ctx.Err() == nil {
+		for key, name := range attemptedTasks {
+			c.root.ReportUnconfirmed(cookieFile, "云贝/"+name+"/"+key, "本轮已尝试执行，但未取得该任务的最终状态")
+		}
 	}
 }
 
