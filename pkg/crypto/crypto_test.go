@@ -48,6 +48,40 @@ func TestReverseString(t *testing.T) {
 	}
 }
 
+func TestRsaEncryptFixedWidth(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "完整长度向量兼容",
+			input: "0123456789abcdef",
+			want:  "ac744caab466f1fd5a75228365d15df7add288e8982a2c8f80da5f8f22d54834b5e1eab04dde9dac7341851a98de37463d8ba01d9e9c4d2c546c0f948e3163c667785a1b9c4f160305b0fb1ec3b698de0c704719b2fbc469582654b9c2595317dc40c3ecee32baa6d9753970b66667c01bde9ad34048fa8b2b0f628e56a5bf49",
+		},
+		{
+			name:  "保留前导零字节",
+			input: "0000000000000115",
+			want:  "00b8dc27daf2a6600285277504f7c39cacad3f0240fdb6371dfba07c2f72fd8a012af97b3cf86ed31a3254411eabd5f2911f2b9d5200dd24a4d9acba89b022c9face11f2927bbd07dc274395ed16b97298a3a1d9f8706f0ee40ad42fc6fb616fdaf5039ed46551377f7ead7b8671db1787fb5fd6c542d9d99475b24bbf25fd76",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 固定公开样例覆盖随机 WEAPI 密钥可能产生的前导零密文。
+			got, err := RsaEncrypt(tt.input, publicKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 256 {
+				t.Fatalf("RSA 密文长度 = %d，期望 256", len(got))
+			}
+			if got != tt.want {
+				t.Fatalf("RSA 密文 = %s，期望 %s", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWeApiEncrypt(t *testing.T) {
 	type args struct {
 		object interface{}

@@ -195,7 +195,8 @@ func RsaEncrypt(ciphertext, key string) (string, error) {
 
 	// 使用noPadding方式填充
 	c := new(big.Int).SetBytes([]byte(ciphertext))
-	encryptedBytes := c.Exp(c, big.NewInt(int64(pubKey.E)), pubKey.N).Bytes()
+	// 按公钥模数长度保留前导零，保证 WEAPI 密文始终为固定长度。
+	encryptedBytes := c.Exp(c, big.NewInt(int64(pubKey.E)), pubKey.N).FillBytes(make([]byte, pubKey.Size()))
 	return hex.EncodeToString(encryptedBytes), nil
 }
 

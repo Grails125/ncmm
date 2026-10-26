@@ -67,6 +67,10 @@ func (c *SignIn) isAutomatic() bool {
 	return false
 }
 
+func (c *SignIn) isKoiWishEnabled(allowedTasks map[string]bool) bool {
+	return c.root != nil && c.root.Cfg != nil && c.root.Cfg.Sign != nil && c.root.Cfg.Sign.EnableKoiWish && c.isAutomatic() && allowedTasks["KoiWish"]
+}
+
 func (c *SignIn) Add(command ...*cobra.Command) {
 	c.cmd.AddCommand(command...)
 }
@@ -307,24 +311,40 @@ func (c *SignIn) execute(ctx context.Context) error {
 		return nil
 	}
 
+	earningsReports := make(map[string]*accountEarningsReport)
 	for i, acc := range activeAccounts {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		accountKey := accountPathKey(acc.Filepath, c.root.Opts.Home)
+		report := earningsReports[accountKey]
+		if report == nil {
+			report = &accountEarningsReport{Account: acc.Filepath}
+			earningsReports[accountKey] = report
+		}
 		if acc.IsMain {
 			c.cmd.Printf("[sign] >>>>>> 开始主账号签到 (%s) <<<<<<\n", acc.Filepath)
-			if err := c.RunSignForCookie(ctx, acc.Filepath, true, nil); err != nil {
+			if err := c.runSignForCookie(ctx, acc.Filepath, true, nil, report, true); err != nil {
 				c.cmd.Printf("[sign] ❌ 主账号签到失败: %s\n", err)
 				c.root.ReportFailure(acc.Filepath, "sign", err)
 			}
 		} else {
 			c.cmd.Printf("[sign] >>>>>> 开始辅助账号签到 (%s) <<<<<<\n", acc.Filepath)
-			if err := c.RunSignForCookie(ctx, acc.Filepath, false, nil); err != nil {
+			if err := c.runSignForCookie(ctx, acc.Filepath, false, nil, report, true); err != nil {
 				c.cmd.Printf("[sign] ❌ 辅助账号签到失败: %s\n", err)
 				c.root.ReportFailure(acc.Filepath, "sign", err)
 			}
 		}
 
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if i < len(activeAccounts)-1 {
 			c.sleepBetweenAccounts(ctx, acc.Filepath)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	c.cmd.Println("[sign] 所有日常签到及播放任务执行完毕！")
@@ -346,6 +366,7 @@ func (c *SignIn) runSignForCookie(
 ) error {
 	if len(allowedTasks) == 0 {
 		allowedTasks = map[string]bool{
+			"KoiWish": true,
 			"VipTask": true, "Reserve": true, "ViewVipCenter": true, "LikeComment": true,
 			"FollowArtist": true, "LikeSong": true, "CollectSong": true, "PublishNote": true,
 			"ListenIndie": true, "PlayDailyRecommend": true, "ShareSong": true,
@@ -468,6 +489,13 @@ func (c *SignIn) runSignForCookie(
 			return c.fetchYunbeiEarnings(ctx, cli, request, userId)
 		})
 		c.printYunbeiEarnings(earningsReport, yunbeiEarnings)
+	}
+
+	if c.isKoiWishEnabled(allowedTasks) {
+		c.cmd.Println("  --- 锦鲤免费许愿 ---")
+		if err := c.handleKoiWish(ctx, cli, cookieFile, earningsReport); err != nil {
+			return err
+		}
 	}
 
 	// 2. 黑胶 VIP 会员任务

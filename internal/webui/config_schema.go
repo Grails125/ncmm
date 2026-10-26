@@ -195,7 +195,8 @@ func mainConfigSchema() configTargetSchema {
 			f.Max = number(10)
 			return f
 		}(),
-		schemaField("network.user_agent.default", "默认 User-Agent", "其他协议 UA 留空时使用的兜底值。", "user-agent", "string", "textarea"),
+		schemaField("network.user_agent.auto_update", "自动更新内置 UA 版本", "默认关闭。运行期查询官方 Web/macOS/iOS 版本，最多等待 3 秒，失败沿用原值。自定义 UA、已有客户端身份会话、Android 和扫码登录身份保持原值；不回写下方配置。", "user-agent", "boolean", "switch"),
+		schemaField("network.user_agent.default", "默认 User-Agent", "其他协议 UA 留空时使用的兜底值；内置值为 macOS 官网下载渠道。", "user-agent", "string", "textarea"),
 		schemaField("network.user_agent.weapi", "Web / PC User-Agent", "WEAPI 协议请求使用。", "user-agent", "string", "textarea"),
 		schemaField("network.user_agent.eapi", "iOS User-Agent", "iPhone/iPad EAPI 请求使用。", "user-agent", "string", "textarea"),
 		schemaField("network.user_agent.xeapi", "Android User-Agent", "Android XEAPI/AEAPI 请求使用。", "user-agent", "string", "textarea"),
@@ -234,6 +235,7 @@ func mainConfigSchema() configTargetSchema {
 		schemaField("sign.enableMain", "主账号签到", "主账号执行云贝和 VIP 签到。", "sign-main", "boolean", "switch"),
 		schemaField("sign.enableSecondaries", "辅助账号签到", "全部辅助账号依次执行签到。", "sign-main", "boolean", "switch"),
 		schemaField("sign.enableVipTask", "黑胶 VIP 专属任务", "执行会员成长值相关任务。", "sign-main", "boolean", "switch"),
+		schemaField("sign.enableKoiWish", "锦鲤免费许愿", "默认关闭；需开启自动任务，沿用签到账号开关，独立于黑胶 VIP 任务。仅使用官方免费次数。", "sign-main", "boolean", "switch"),
 		schemaField("sign.yunbeiTask.enableViewVipCenter", "浏览会员中心", "等待 15 至 25 秒后提交浏览请求，完成状态以云贝列表为准。", "yunbei", "boolean", "switch"),
 		schemaField("sign.yunbeiTask.enableLikeComment", "点赞评论和动态", "完成互动类云贝任务。", "yunbei", "boolean", "switch"),
 		schemaField("sign.yunbeiTask.enableListenIndie", "探索小众歌曲", "听歌类慢任务，预计耗时较长。", "yunbei", "boolean", "switch"),

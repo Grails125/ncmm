@@ -131,6 +131,7 @@ type SignConf struct {
 	YunbeiTask        *YunbeiTaskConf `json:"yunbeiTask" yaml:"yunbeiTask"`
 	Automatic         bool            `json:"automatic" yaml:"automatic"`
 	EnableVipTask     *bool           `json:"enableVipTask" yaml:"enableVipTask"`
+	EnableKoiWish     bool            `json:"enableKoiWish" yaml:"enableKoiWish"`
 }
 
 type TaskConf struct {
@@ -701,6 +702,12 @@ func (c *Config) Validate() error {
 			// 旧版非空队列可能缺少分享歌曲；以子开关决定启用，保留用户已有位置和顺序。
 			if !slices.ContainsFunc(c.Task.FastTasks, isShareSong) && !slices.ContainsFunc(c.Task.SlowTasks, isShareSong) {
 				c.Task.FastTasks = append(c.Task.FastTasks, "ShareSong")
+			}
+		}
+		if c.Sign != nil && c.Sign.EnableKoiWish {
+			isKoiWish := func(task string) bool { return strings.EqualFold(task, "KoiWish") }
+			if !slices.ContainsFunc(c.Task.FastTasks, isKoiWish) && !slices.ContainsFunc(c.Task.SlowTasks, isKoiWish) {
+				c.Task.FastTasks = append(c.Task.FastTasks, "KoiWish")
 			}
 		}
 	}
