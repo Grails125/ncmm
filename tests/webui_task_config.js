@@ -54,6 +54,23 @@ async function saveConfig(page) {
     assert.equal(fansSaved.fansgroup.webSession, true);
     assert.deepEqual(fansSaved.fansgroup.commentCheckTokens, { 'test-account.json': 'test-web-check-token' });
 
+    await page.locator('#config-sections [data-section="sign"]').click();
+    assert.equal(await input(page, ['sign', 'enableKoiWish']).isChecked(), false);
+    await input(page, ['sign', 'enableKoiWish']).check();
+    const wishSaved = await saveConfig(page);
+    assert.equal(wishSaved.sign.enableKoiWish, true);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.locator('#config-sections [data-section="sign"]').click();
+    await input(page, ['sign', 'enableKoiWish']).waitFor({ state: 'visible' });
+    assert.equal(await input(page, ['sign', 'enableKoiWish']).isChecked(), true, 'koi wish switch was not persisted');
+    await input(page, ['sign', 'enableKoiWish']).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(outputDir, 'koi-wish-sign-config.png'), fullPage: true });
+    await page.locator('#config-sections [data-section="task"]').click();
+    assert.ok((await page.locator('#task-queue-wrapper').innerText()).includes('锦鲤免费许愿'), 'enabled wish was not added to the queue');
+    await page.locator('#config-sections [data-section="sign"]').click();
+    await input(page, ['sign', 'enableKoiWish']).uncheck();
+    assert.equal((await saveConfig(page)).sign.enableKoiWish, false);
+
     await page.locator('#config-sections [data-section="musicPartner"]').click();
     await input(page, ['musicPartner', 'scoreMin']).fill('2');
     await input(page, ['musicPartner', 'comments', '4']).fill('保留我的评分乐评\n第二条乐评');
@@ -131,7 +148,7 @@ async function saveConfig(page) {
     await page.screenshot({ path: path.join(outputDir, 'schedule-random-delay.png'), fullPage: true });
     assert.deepEqual(errors, []);
     assert.deepEqual(blockedRuns, []);
-    console.log(JSON.stringify({ passed: true, checks: ['fansgroup session default/save and masked independent comment credentials', 'safe defaults and four presets', 'partner configuration preserved', 'playlist and commented IDs save/reload', 'delay create/edit/reload', 'invalid delay form validation', 'toggle preserves delay'], screenshots: outputDir }));
+    console.log(JSON.stringify({ passed: true, checks: ['fansgroup session default/save and masked independent comment credentials', 'koi wish opt-in save/reload and queue display', 'safe defaults and four presets', 'partner configuration preserved', 'playlist and commented IDs save/reload', 'delay create/edit/reload', 'invalid delay form validation', 'toggle preserves delay'], screenshots: outputDir }));
   } catch (error) {
     await page.screenshot({ path: path.join(outputDir, 'failure.png'), fullPage: true }).catch(() => {});
     throw error;

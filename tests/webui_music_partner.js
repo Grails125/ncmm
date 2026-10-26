@@ -85,11 +85,21 @@ async function noOverflow(page) {
       assert.equal(await field(page, name).getAttribute('max'), '300');
     }
     assert.match(await recommendationOrder(page, '按列表顺序').getAttribute('class'), /active/);
-    for (const name of ['recommendNotes', 'recommendComments']) assert.equal(await recommendationTemplate(page, name).inputValue(), '');
+    const defaultTemplates = {};
+    for (const name of ['recommendNotes', 'recommendComments']) {
+      defaultTemplates[name] = await recommendationTemplate(page, name).inputValue();
+      assert(defaultTemplates[name].length > 0, `${name} must provide editable defaults`);
+      assert.match(defaultTemplates[name], /\{name\}/);
+      assert.match(defaultTemplates[name], /\{artist\}/);
+    }
     for (const score of [1, 2, 3, 4, 5]) {
-      assert(await commentField(page, score).inputValue() === '', `score ${score} comment pool must default empty`);
+      defaultTemplates[score] = await commentField(page, score).inputValue();
+      assert(defaultTemplates[score].length > 0, `score ${score} comment pool must provide editable defaults`);
       assert(await commentField(page, score).getAttribute('data-kind') === 'array', `score ${score} comment pool must be an array`);
     }
+    await page.locator('[data-partner-templates="partner-comments"]').click();
+    await page.locator('[data-partner-templates="partner-recommend"]').click();
+    assert(await page.locator('#config-dirty').isHidden(), 'nonempty templates must not be marked dirty');
     assert((await page.locator('#config-block-musicPartner').innerText()).includes('随机取整数分'), 'rule-based scoring explanation missing');
     assert((await page.locator('#config-block-musicPartner').innerText()).includes('奖励按平台结算'), 'recommendation reward explanation missing');
 
@@ -144,10 +154,38 @@ async function noOverflow(page) {
     for (const [name, lines] of Object.entries(recommendationTemplates)) assert.equal(await recommendationTemplate(page, name).inputValue(), lines.join('\n'), 'preset erased recommendation templates');
     assert.match(await recommendationOrder(page, '随机抽取').getAttribute('class'), /active/);
     await saveConfig(page);
+
+    for (const name of ['recommendCountMin', 'recommendCountMax']) await field(page, name).fill('0');
+    await recommendationTemplate(page, 'recommendNotes').fill('');
+    await saveConfig(page);
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.locator('#config-block-musicPartner').waitFor({ state: 'visible' });
+    assert.equal(await recommendationTemplate(page, 'recommendNotes').inputValue(), '', 'cleared recommendation template must remain empty');
+    assert.equal(await commentField(page, '2').inputValue(), '');
+    assert.equal(await commentField(page, '4').inputValue(), '');
+    await page.locator('[data-partner-templates="partner-comments"]').click();
+    for (const score of ['2', '4']) assert.equal(await commentField(page, score).inputValue(), defaultTemplates[score]);
+    for (const score of ['1', '3', '5']) assert.equal(await commentField(page, score).inputValue(), comments[score].join('\n'), 'fill button overwrote custom score comments');
+    assert.equal(await recommendationTemplate(page, 'recommendNotes').inputValue(), '', 'score button must not fill recommendation templates');
+    await page.locator('[data-partner-templates="partner-recommend"]').click();
+    assert.equal(await recommendationTemplate(page, 'recommendNotes').inputValue(), defaultTemplates.recommendNotes);
+    assert.equal(await recommendationTemplate(page, 'recommendComments').inputValue(), recommendationTemplates.recommendComments.join('\n'), 'fill button overwrote custom recommendation comments');
+    for (const name of ['recommendCountMin', 'recommendCountMax']) assert.equal(await field(page, name).inputValue(), '0', 'fill button enabled recommendation');
+    assert(await page.locator('#config-dirty').isVisible(), 'filled templates must wait for save');
+    const filled = await saveConfig(page);
+    assert.deepEqual(filled.musicPartner.recommendNotes, defaultTemplates.recommendNotes.split('\n'));
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.locator('#config-block-musicPartner').waitFor({ state: 'visible' });
+    assert.equal(await recommendationTemplate(page, 'recommendNotes').inputValue(), defaultTemplates.recommendNotes, 'filled templates did not survive save and reload');
+    for (const score of ['2', '4']) assert.equal(await commentField(page, score).inputValue(), defaultTemplates[score]);
     await page.locator('#config-sections [data-section="musicPartner"]').click();
     await page.waitForFunction(() => Math.abs(document.querySelector('#config-block-musicPartner').getBoundingClientRect().top - document.querySelector('#config-visual').getBoundingClientRect().top - 12) < 4);
     await noOverflow(page);
     await page.locator('#config-block-musicPartner').screenshot({ path: path.join(outputDir, 'music-partner-desktop.png') });
+    await page.locator('[data-partner-templates="partner-recommend"]').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(outputDir, 'music-partner-recommend-templates.png') });
+    await page.locator('[data-partner-templates="partner-comments"]').scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(outputDir, 'music-partner-score-templates.png') });
 
     await page.locator('.nav-item[data-page="schedules"]').click();
     await page.locator('#schedule-add').click();
@@ -193,7 +231,7 @@ async function noOverflow(page) {
     await page.screenshot({ path: path.join(outputDir, 'music-partner-mobile.png'), fullPage: true });
     assert(errors.length === 0, `browser errors: ${errors.join('; ')}`);
     assert(blockedRuns.length === 0, 'test attempted to run a real task');
-    console.log(JSON.stringify({ passed: true, checks: ['native batch toggle', 'config defaults', 'five paired ranges', 'five score pools and independent recommendation templates', 'uncapped recommendation count and random order', 'preset preserves comments and recommendation', 'save/reload and clear', 'invalid ranges', 'schedule argument validation', 'disabled native schedule', 'failure display', 'desktop/mobile layout'], screenshots: outputDir }));
+    console.log(JSON.stringify({ passed: true, checks: ['native batch toggle', 'config defaults', 'five paired ranges', 'five score pools and independent recommendation templates', 'fill defaults preserves custom text and zero targets', 'filled templates wait for save and survive reload', 'uncapped recommendation count and random order', 'preset preserves comments and recommendation', 'save/reload and clear', 'invalid ranges', 'schedule argument validation', 'disabled native schedule', 'failure display', 'desktop/mobile layout'], screenshots: outputDir }));
   } finally {
     await browser.close();
   }

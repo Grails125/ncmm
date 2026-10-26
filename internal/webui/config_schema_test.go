@@ -208,8 +208,9 @@ func TestMusicPartnerSchemaRangesAndCommentPools(t *testing.T) {
 			t.Fatalf("missing editable comment pool for score %s: %+v", score, field)
 		}
 		encoded, err := json.Marshal(field.Default)
-		if err != nil || string(encoded) != "[]" {
-			t.Fatalf("score %s comment default = %s, want empty array; error = %v", score, encoded, err)
+		want, _ := json.Marshal(config.GetDefault().MusicPartner.Comments[score])
+		if err != nil || string(encoded) == "[]" || string(encoded) != string(want) {
+			t.Fatalf("score %s comment default = %s, want configured templates %s; error = %v", score, encoded, want, err)
 		}
 	}
 	if fields["musicPartner.syncYunCircle"].Default != false {
@@ -221,8 +222,9 @@ func TestMusicPartnerSchemaRangesAndCommentPools(t *testing.T) {
 			t.Fatalf("missing recommendation pool: %+v", field)
 		}
 		encoded, err := json.Marshal(field.Default)
-		if err != nil || string(encoded) != "[]" {
-			t.Fatalf("recommendation pool must start empty: %s", encoded)
+		var values []string
+		if err != nil || json.Unmarshal(encoded, &values) != nil || len(values) == 0 {
+			t.Fatalf("recommendation pool must provide editable default templates: %s", encoded)
 		}
 	}
 }

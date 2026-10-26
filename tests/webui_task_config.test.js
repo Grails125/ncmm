@@ -48,6 +48,33 @@ test('启用分享歌曲的旧队列展示自动补齐结果，保留自定义�
   assert.deepEqual(Array.from(ui.getTaskQueueLists().slowTasks), ['music-partner', 'sharesong']);
 });
 
+test('锦鲤免费许愿仅在开启且队列缺失时追加，保留原有位置和开关', () => {
+  const ui = harness();
+  ui.state.config = { data: {
+    task: { fast_tasks: ['VipTask', 'custom-extension'], slow_tasks: ['ListenIndie'] },
+    sign: { enableKoiWish: false },
+  } };
+  assert.equal(ui.getTaskSubtaskInfo('KoiWish').name, '锦鲤免费许愿');
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().fastTasks), ['VipTask', 'custom-extension']);
+  ui.state.config.data.sign.enableKoiWish = true;
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().fastTasks), ['VipTask', 'custom-extension', 'KoiWish']);
+  assert.deepEqual(ui.state.config.data.task.fast_tasks, ['VipTask', 'custom-extension']);
+  ui.state.config.data.task.slow_tasks.unshift('koiwish');
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().fastTasks), ['VipTask', 'custom-extension']);
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().slowTasks), ['koiwish', 'ListenIndie']);
+  assert.equal(ui.addTaskToQueue('KoiWish', 'fast'), false);
+  assert.equal(ui.state.config.data.sign.enableKoiWish, true);
+});
+
+test('锦鲤免费许愿可主动加入队列但不会开启许愿或自动任务', () => {
+  const ui = harness();
+  ui.state.config = { data: { task: { fast_tasks: ['VipTask'], slow_tasks: ['ListenIndie'] }, sign: { automatic: false, enableKoiWish: false } } };
+  assert.equal(ui.addTaskToQueue('koiwish', 'slow'), true);
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().slowTasks), ['ListenIndie', 'KoiWish']);
+  assert.deepEqual(ui.state.config.data.sign, { automatic: false, enableKoiWish: false });
+  assert.equal(ui.state.configDirty, true);
+});
+
 test('两种调度模式均展示任务队列，切换为单账号模式不会隐藏队列', () => {
   const ui = harness();
   ui.state.config = { data: { task: {} } };

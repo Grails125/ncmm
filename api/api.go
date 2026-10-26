@@ -35,10 +35,11 @@ const (
 )
 
 type UserAgentConfig struct {
-	Default string `json:"default" yaml:"default"`
-	WEAPI   string `json:"weapi" yaml:"weapi"`
-	EAPI    string `json:"eapi" yaml:"eapi"`
-	XEAPI   string `json:"xeapi" yaml:"xeapi"`
+	AutoUpdate bool   `json:"auto_update" yaml:"auto_update"`
+	Default    string `json:"default" yaml:"default"`
+	WEAPI      string `json:"weapi" yaml:"weapi"`
+	EAPI       string `json:"eapi" yaml:"eapi"`
+	XEAPI      string `json:"xeapi" yaml:"xeapi"`
 }
 
 type Config struct {
@@ -81,6 +82,9 @@ func NewClient(cfg *Config, l *log.Logger) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate: %w", err)
 	}
+	// 运行期 UA 更新不回写调用方配置，也不改变其他账号的客户端身份。
+	cfgCopy := *cfg
+	cfg = &cfgCopy
 
 	var opts = []cookie.Option{
 		cookie.WithSyncInterval(cfg.Cookie.Interval),
@@ -120,6 +124,7 @@ func NewClient(cfg *Config, l *log.Logger) (*Client, error) {
 		xeapi:  xeapipkg.NewManager(xeapipkg.ManagerOptions{HTTPClient: cli.GetClient()}),
 		// agent:  NewAgent(),
 	}
+	c.refreshBuiltinUserAgents()
 	return &c, nil
 }
 

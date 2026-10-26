@@ -87,7 +87,7 @@
   const fieldLabels = {
     main: '主账号', primary: '旧版主账号', secondary: '辅助账号', antiCheatTokens: '反作弊令牌',
     enabled: '启用', enableMain: '启用主账号', enableSecondaries: '启用辅助账号', automatic: '自动执行',
-    enableVipTask: '黑胶 VIP 任务', mode: '执行模式', fast_tasks: '快速任务', slow_tasks: '慢速任务',
+    enableVipTask: '黑胶 VIP 任务', enableKoiWish: '锦鲤免费许愿', mode: '执行模式', fast_tasks: '快速任务', slow_tasks: '慢速任务',
     scoreMin: '评分下限', scoreMax: '评分上限', extraTasks: '执行额外评分', fullExtraTasks: '完成当前全部额外任务', extraLimitMin: '每日额外评分目标下限', extraLimitMax: '每日额外评分目标上限', waitMin: '评分等待下限', waitMax: '评分等待上限', syncYunCircle: '同步评分到云圈', comments: '按分值配置乐评',
     timeout: '超时时间', retry: '重试次数', debug: '调试模式', user_agent: 'User-Agent',
     daily_min: '每日最小数量', daily_max: '每日最大数量', run_min: '单次最小数量', run_max: '单次最大数量',
@@ -1486,8 +1486,12 @@
           if (!accountBalanceRequestCurrent(account, entry)) return;
           if (!data || data.account !== account.path) throw new Error('返回的数据账号不匹配');
           entry.balance = !data.errors?.yunbei && typeof data.yunbeiBalance === 'number' && Number.isFinite(data.yunbeiBalance) ? data.yunbeiBalance : null;
+          entry.growthTotal = typeof data.growthTotal === 'number' && Number.isFinite(data.growthTotal) ? data.growthTotal : null;
         } catch {
-          if (accountBalanceRequestCurrent(account, entry)) entry.balance = null;
+          if (accountBalanceRequestCurrent(account, entry)) {
+            entry.balance = null;
+            entry.growthTotal = null;
+          }
         } finally {
           if (accountBalanceRequestCurrent(account, entry)) {
             entry.loading = false;
@@ -1502,7 +1506,7 @@
     }
   }
 
-  // 账号表只缓存当前凭据的只读查询，历史任务余额不能用于填补实时余额。
+  // 账号表只缓存当前凭据的只读查询，历史任务数值不能用于填补实时余额和成长总值。
   async function refreshAccountBalances(force = false) {
     if (!state.authenticated || state.currentPage !== 'accounts') return;
     const accounts = configuredAccounts();
@@ -1517,7 +1521,7 @@
         continue;
       }
       if (entry && Date.now() - entry.updatedAt < 60000) continue;
-      entry = { version: accountBalanceVersion(account), balance: null, loading: true, updatedAt: 0, controller: new AbortController() };
+      entry = { version: accountBalanceVersion(account), balance: null, growthTotal: null, loading: true, updatedAt: 0, controller: new AbortController() };
       entry.promise = new Promise(resolve => { entry.resolve = resolve; });
       state.accountBalances.set(account.path, entry);
       accountBalanceQueue.push({ account, entry });
@@ -1561,7 +1565,7 @@
         : '<span class="badge-pill gray">未知</span>';
       const balance = state.accountBalances.get(account.path);
       const yunbei = `${reward?.yunbeiKnown ? `+${reward.yunbei}` : '--'} / ${balance?.loading ? '查询中' : musicPartnerPointNumber(balance?.balance)}`;
-      const growth = reward?.growthKnown ? `${reward.growthToday} / ${reward.growthTotal}` : '-- / --';
+      const growth = `${reward?.growthKnown ? reward.growthToday : '--'} / ${balance?.loading ? '查询中' : musicPartnerPointNumber(balance?.growthTotal)}`;
       const signStatus = reward?.signKnown
         ? `<span class="badge-pill ${reward.signed ? 'success' : 'primary'}">${reward.signed ? '已打卡' : '失败'}</span>`
         : '<span class="badge-pill gray">未同步</span>';
@@ -1667,7 +1671,7 @@
     const keys = path.split('.');
     const located = valueAtPath(activeDocument().data, keys);
     if (!located.exists && !Object.prototype.hasOwnProperty.call(field, 'default')) return null;
-    return { field, keys, value: located.exists ? located.value : field.default };
+    return { field, keys, value: located.exists ? located.value : field.group === 'partner-comments' ? [] : field.default };
   }
 
   function renderFlowField(path, options = {}) {
@@ -1733,13 +1737,14 @@
 
   function renderFlowNetwork() {
     const networkCard = renderFlowCard('网络通信参数', `${renderFlowField('network.debug', { title: '开启 HTTP 调试日志 (debug)', description: '输出详细网络报文，排查接口故障时开启。' })}${renderFlowDuration('network.timeout', '全局请求超时 (timeout)')}${renderFlowField('network.retry', { title: '网络失败重试 (retry)', description: '' })}`);
-    const uaCard = renderFlowCard('多端 User-Agent 伪装', renderFlowFields(['network.user_agent.weapi', 'network.user_agent.eapi', 'network.user_agent.xeapi']));
+    const uaCard = renderFlowCard('多端 User-Agent 伪装', renderFlowFields(['network.user_agent.auto_update', 'network.user_agent.default', 'network.user_agent.weapi', 'network.user_agent.eapi', 'network.user_agent.xeapi']));
     return `<div class="config-cards-grid">${networkCard}${uaCard}</div>`;
   }
 
   const ALL_TASK_SUBTASKS = [
     { id: 'daily-song-share', name: '每日推歌与抽奖', duration: '', badge: 'cyan' },
     { id: 'VipTask', name: '黑胶 VIP 日常任务', duration: '', badge: 'success' },
+    { id: 'KoiWish', name: '锦鲤免费许愿', duration: '', badge: 'success' },
     { id: 'Reserve', name: '预约新歌领云贝', duration: '', badge: 'success' },
     { id: 'ViewVipCenter', name: '浏览会员中心', duration: '', badge: 'success' },
     { id: 'LikeComment', name: '点赞评论与动态', duration: '', badge: 'success' },
@@ -1788,6 +1793,9 @@
     const slowTasks = Array.isArray(root?.task?.slow_tasks) ? [...root.task.slow_tasks] : [...DEFAULT_SLOW_TASKS];
     if (root?.sign?.yunbeiTask?.enableShareSong === true && ![...fastTasks, ...slowTasks].some(id => String(id).trim().toLowerCase() === 'sharesong')) {
       fastTasks.push('ShareSong');
+    }
+    if (root?.sign?.enableKoiWish === true && ![...fastTasks, ...slowTasks].some(id => String(id).toLowerCase() === 'koiwish')) {
+      fastTasks.push('KoiWish');
     }
     return { fastTasks, slowTasks };
   }
@@ -1927,14 +1935,14 @@
       <div class="task-cards-grid">${cards}</div>
       <div class="config-cards-grid single flow-task-mode">${queue}</div>
       <div class="task-queue-wrapper" id="task-queue-wrapper">
-        <p class="form-row-desc">两种调度模式都使用以下队列，任务仍受对应总开关和账号、子任务开关控制。分享歌曲已启用但队列缺项时，会自动补到快任务末尾；如需停用，请关闭「日常签到 → 分享歌曲」开关。</p>
+        <p class="form-row-desc">两种调度模式都使用以下队列，任务仍受对应总开关和账号、子任务开关控制。分享歌曲或锦鲤免费许愿已启用但队列缺项时，会自动补到快任务末尾；如需停用，请关闭「日常签到」中对应的分享歌曲或锦鲤免费许愿开关。锦鲤免费许愿还需开启自动任务。</p>
         ${kanbanHTML}
       </div>
     `;
   }
 
   function renderFlowSign() {
-    const main = renderFlowCard('签到控制', renderFlowFields(['sign.automatic', 'sign.enableMain', 'sign.enableSecondaries', 'sign.enableVipTask']), '日常必备', 'success');
+    const main = renderFlowCard('签到控制', renderFlowFields(['sign.automatic', 'sign.enableMain', 'sign.enableSecondaries', 'sign.enableVipTask', 'sign.enableKoiWish']), '日常必备', 'success');
     const subtaskPaths = ['sign.yunbeiTask.enableViewVipCenter', 'sign.yunbeiTask.enableLikeComment', 'sign.yunbeiTask.enableListenIndie', 'sign.yunbeiTask.enableReserve', 'sign.yunbeiTask.enableFollowArtist', 'sign.yunbeiTask.enableLikeSong', 'sign.yunbeiTask.enableCollectSong', 'sign.yunbeiTask.enablePublishNote', 'sign.yunbeiTask.enableShareSong', 'sign.yunbeiTask.enablePlayDailyRecommend'];
     const subtasks = subtaskPaths.map(path => {
       const info = flowFieldInfo(path);
@@ -2011,8 +2019,8 @@
     const main = renderFlowCard('账号与评分策略', `${renderFlowFields(['musicPartner.enableMain', 'musicPartner.enableSecondaries'])}${renderFlowRange('评分范围', 'musicPartner.scoreMin', 'musicPartner.scoreMax', '分', '每首歌曲在 1–5 分的配置区间内随机取整数分；上下限相同则固定评分。')}${renderFlowField('musicPartner.syncYunCircle')}`, '合伙人专属', 'cyan');
     const extra = renderFlowCard('额外评分与等待', `${renderFlowFields(['musicPartner.extraTasks', 'musicPartner.fullExtraTasks'])}${renderFlowRange('每日额外评分目标', 'musicPartner.extraLimitMin', 'musicPartner.extraLimitMax', '首', '从 0–15 首的配置区间内选取当日目标，目标为 0 时跳过额外评分；已完成数量计入目标，选择全部任务时忽略此项。')}${renderFlowRange('评分等待时间', 'musicPartner.waitMin', 'musicPartner.waitMax', '秒', '每次评分请求前随机等待 1–300 秒的配置时长。')}`);
     const pools = [1, 2, 3, 4, 5].map(score => renderFlowField(`musicPartner.comments.${score}`, { title: `${score} 分乐评`, description: '每行一条，按此分值随机选取；留空不填写乐评。' })).join('');
-    const comments = renderFlowCard('按分值配置乐评', `<p class="form-row-desc">每个分值最多 50 条，每条最多 500 个字符。</p><div class="partner-comment-pools">${pools}</div>`, '选填 · 每行一条', 'gray', 'partner-comments-card');
-    const recommend = renderFlowCard('今日歌曲推荐', `${renderFlowRange('每日推荐目标', 'musicPartner.recommendCountMin', 'musicPartner.recommendCountMax', '首', '每天从范围内选取目标，日内保持不变；上下限均为 0 时关闭，当日目标为 0 时跳过发布。按平台可用歌曲执行，奖励按平台结算。')}${renderFlowField('musicPartner.recommendOrder')}${renderFlowRange('推荐等待时间', 'musicPartner.recommendWaitMin', 'musicPartner.recommendWaitMax', '秒', '每首推荐前从 16–300 秒的配置区间随机等待；实际完成情况以服务器返回的笔记、乐评状态和积分变化为准。')}${renderFlowFields(['musicPartner.recommendNotes', 'musicPartner.recommendComments'])}`, '默认关闭 · 公开发布', 'amber');
+    const comments = renderFlowCard('按分值配置乐评', `<p class="form-row-desc">每个分值最多 50 条，每条最多 500 个字符。默认文案可编辑；按钮只补空白评分档位，保存后生效。</p><button type="button" class="btn btn-glass btn-sm" data-partner-templates="partner-comments" aria-label="填入默认评分乐评模板">填入默认模板</button><div class="partner-comment-pools">${pools}</div>`, '选填 · 每行一条', 'gray', 'partner-comments-card');
+    const recommend = renderFlowCard('今日歌曲推荐', `${renderFlowRange('每日推荐目标', 'musicPartner.recommendCountMin', 'musicPartner.recommendCountMax', '首', '每天从范围内选取目标，日内保持不变；上下限均为 0 时关闭，当日目标为 0 时跳过发布。按平台可用歌曲执行，奖励按平台结算。')}${renderFlowField('musicPartner.recommendOrder')}${renderFlowRange('推荐等待时间', 'musicPartner.recommendWaitMin', 'musicPartner.recommendWaitMax', '秒', '每首推荐前从 16–300 秒的配置区间随机等待；实际完成情况以服务器返回的笔记、乐评状态和积分变化为准。')}<p class="form-row-desc">默认文案可编辑；按钮只补空白笔记和乐评模板，保存后生效，不改变推荐目标。</p><button type="button" class="btn btn-glass btn-sm" data-partner-templates="partner-recommend" aria-label="填入默认推荐笔记和乐评模板">填入默认模板</button>${renderFlowFields(['musicPartner.recommendNotes', 'musicPartner.recommendComments'])}`, '默认关闭 · 公开发布', 'amber');
     return `<div class="config-cards-grid">${main}${extra}${recommend}${comments}</div>`;
   }
 
@@ -2368,6 +2376,29 @@
     state.configDirty = true;
     state.configDirtyMode = 'visual';
     updateConfigDirtyUI();
+  }
+
+  function fillMusicPartnerTemplates(group) {
+    if (state.configTarget !== 'config' || !['partner-comments', 'partner-recommend'].includes(group)) return;
+    const root = activeDocument()?.data;
+    if (!root) return;
+    let filled = 0;
+    for (const field of activeConfigSchema()?.fields || []) {
+      if (field.group !== group || !/^musicPartner\.(comments\.[1-5]|recommendNotes|recommendComments)$/.test(field.path)) continue;
+      if (!Array.isArray(field.default) || field.default.length === 0) continue;
+      const path = field.path.split('.');
+      const { value } = valueAtPath(root, path);
+      if (value != null && (!Array.isArray(value) || value.some(line => String(line).trim() !== ''))) continue;
+      setByPath(root, path, [...field.default]);
+      filled++;
+    }
+    if (filled === 0) {
+      toast('没有需要填入的空白模板，已有文案保持不变');
+      return;
+    }
+    markConfigDirty();
+    renderConfig();
+    toast(`已填入 ${filled} 项空白模板，点击保存配置后生效`);
   }
 
   function updateConfigDirtyUI() {
@@ -2841,12 +2872,12 @@
   const SCHEDULE_COMMAND_HELP = {
     task: {
       description: '留空时按“策略配置 → 批量任务”中启用的任务和快慢队列执行。',
-      parameters: '可用 --only-fast 仅运行快任务，或 --only-slow 仅运行慢任务，两者不能同时填写。指定 --sign、--playids、--musician-sign、--musician-vip、--music-partner、--note、--daily-song-share、--vip-member-gift、--fansgroup 后，仅执行显式选择的任务；账号和子任务规则仍使用策略配置。',
+      parameters: '可用 --only-fast 仅运行快任务，或 --only-slow 仅运行慢任务，两者不能同时填写。指定 --sign、--playids、--musician-sign、--musician-vip、--music-partner、--note、--daily-song-share、--vip-member-gift、--fansgroup 后，仅执行显式选择的任务；账号和子任务规则仍使用策略配置。锦鲤免费许愿属于 --sign，由签到中的专属开关、自动任务开关及 KoiWish 队列项共同控制。',
       example: '--only-fast',
     },
     sign: {
       description: '留空时使用“策略配置 → 日常签到”的账号和任务开关。',
-      parameters: '可填写 --automatic（简写 -a）开启云贝自动任务和连续签到奖励领取；未填写时沿用配置中的自动领取设置。',
+      parameters: '可填写 --automatic（简写 -a）开启云贝自动任务和连续签到奖励领取；未填写时沿用配置中的自动领取设置。锦鲤免费许愿默认关闭，需另行开启专属开关；直接签到不受快慢队列限制，且不依赖黑胶 VIP 任务开关。',
       example: '--automatic',
     },
     playids: {
@@ -3793,6 +3824,11 @@
       addSchemaTag(event.target.closest('.schema-tags'), event.target.value);
     });
     $('#config-form').addEventListener('click', event => {
+      const templateButton = event.target.closest('[data-partner-templates]');
+      if (templateButton) {
+        fillMusicPartnerTemplates(templateButton.dataset.partnerTemplates);
+        return;
+      }
       const valueButton = event.target.closest('[data-schema-value]');
       if (valueButton) {
         setSchemaValue(JSON.parse(valueButton.dataset.schemaPath), JSON.parse(valueButton.dataset.schemaValue));

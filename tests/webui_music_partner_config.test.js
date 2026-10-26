@@ -7,9 +7,10 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../internal/webui/static/app.js'), 'utf8');
 const boot = /\r?\n  boot\(\);\r?\n\}\)\(\);\s*$/;
 assert(boot.test(source), 'WebUI entry point changed; update the isolated test harness');
-const context = vm.createContext({});
-vm.runInContext(source.replace(boot, '\n  globalThis.form = { state, completeMusicPartnerRanges, renderFlowRange, renderFlowMusicPartner };\n})();'), context);
-const { state, completeMusicPartnerRanges, renderFlowRange, renderFlowMusicPartner } = context.form;
+const effects = [];
+const context = vm.createContext({ structuredClone, effects });
+vm.runInContext(source.replace(boot, '\n  markConfigDirty = () => { state.configDirty = true; state.configDirtyMode = "visual"; }; renderConfig = () => effects.push("render"); toast = message => effects.push(message);\n  globalThis.form = { state, completeMusicPartnerRanges, renderFlowRange, renderFlowMusicPartner, fillMusicPartnerTemplates };\n})();'), context);
+const { state, completeMusicPartnerRanges, renderFlowRange, renderFlowMusicPartner, fillMusicPartnerTemplates } = context.form;
 
 test('旧策略和固定目标在表单中展开，其他配置保持原值', () => {
   for (const [score, min, max] of [[1, 1, 2], [2, 2, 3], [3, 3, 4], [4, 4, 4]]) {
@@ -155,4 +156,72 @@ test('旧推荐数量只在完整新范围缺省时迁移，显式关闭和不�
   state.config = { data: { musicPartner: { ...base, recommendCount: 3, recommendCountMin: 0 } } };
   const html = renderFlowMusicPartner();
   assert.match(html, /value="" aria-label="每日推荐目标上限"/);
+});
+
+function templateDefaultsSchema() {
+  return { targets: { config: { fields: [
+    ...[1, 2, 3, 4, 5].map(score => ({ path: `musicPartner.comments.${score}`, title: `${score} 分乐评`, widget: 'textarea-list', group: 'partner-comments', default: [`默认${score}分乐评`] })),
+    { path: 'musicPartner.recommendNotes', group: 'partner-recommend', default: ['默认笔记 {name}', '{artist} 的作品'] },
+    { path: 'musicPartner.recommendComments', group: 'partner-recommend', default: ['默认推荐乐评'] },
+    { path: 'musicPartner.recommendCountMax', group: 'partner-recommend', default: 0 },
+  ] } } };
+}
+
+test('旧配置缺失的评分档位继续显示空白，默认模板需主动填入', () => {
+  state.configTarget = 'config';
+  state.configSchema = templateDefaultsSchema();
+  state.config = { data: { musicPartner: { scoreMin: 3, scoreMax: 4, extraLimitMin: 5, extraLimitMax: 15, comments: { '4': ['  保留评分乐评  '] } } } };
+  const before = structuredClone(state.config.data);
+  const html = renderFlowMusicPartner();
+  assert.doesNotMatch(html, /默认[1-5]分乐评/);
+  assert.match(html, /aria-label="1 分乐评"><\/textarea>/);
+  assert.match(html, /aria-label="4 分乐评">  保留评分乐评  <\/textarea>/);
+  assert.match(html, /data-partner-templates="partner-comments"/);
+  assert.match(html, /data-partner-templates="partner-recommend"/);
+  assert.deepEqual(state.config.data, before);
+});
+
+test('填入默认模板分别补空池，保留自定义原文与任务范围并等待保存', () => {
+  state.configTarget = 'config';
+  state.configSchema = templateDefaultsSchema();
+  state.configDirty = false;
+  state.configDirtyMode = '';
+  const partner = {
+    scoreMin: 2, scoreMax: 4, recommendCountMin: 0, recommendCountMax: 0,
+    enableMain: false, syncYunCircle: false,
+    comments: { '1': [], '2': ['  保留评分乐评  '], '4': ['\t'] },
+    recommendNotes: [], recommendComments: ['  保留推荐乐评  '],
+  };
+  state.config = { data: { task: { 'music-partner': false }, musicPartner: structuredClone(partner) } };
+  effects.length = 0;
+  fillMusicPartnerTemplates('partner-comments');
+  const expected = { ...partner, comments: { '1': ['默认1分乐评'], '2': partner.comments['2'], '3': ['默认3分乐评'], '4': ['默认4分乐评'], '5': ['默认5分乐评'] } };
+  assert.deepEqual(JSON.parse(JSON.stringify(state.config.data.musicPartner)), expected);
+  assert.equal(state.configDirty, true);
+  assert.equal(state.configDirtyMode, 'visual');
+  assert.match(effects.at(-1), /4.*保存/);
+  fillMusicPartnerTemplates('partner-recommend');
+  expected.recommendNotes = ['默认笔记 {name}', '{artist} 的作品'];
+  assert.deepEqual(JSON.parse(JSON.stringify(state.config.data.musicPartner)), expected);
+  assert.equal(state.config.data.task['music-partner'], false);
+  assert.match(effects.at(-1), /1.*保存/);
+  state.config.data.musicPartner.recommendNotes.push('新自定义模板');
+  assert.equal(state.configSchema.targets.config.fields[5].default.length, 2, '填写后编辑不能污染 schema 默认值');
+});
+
+test('没有空模板时不标记修改，也不处理通知配置或未知模板组', () => {
+  state.configTarget = 'config';
+  state.configSchema = templateDefaultsSchema();
+  state.config = { data: { musicPartner: { recommendNotes: ['已有笔记'], recommendComments: ['已有乐评'] } } };
+  state.configDirty = false;
+  effects.length = 0;
+  fillMusicPartnerTemplates('partner-recommend');
+  assert.equal(state.configDirty, false);
+  assert.match(effects.at(-1), /没有.*空白/);
+  fillMusicPartnerTemplates('unknown');
+  assert.equal(state.configDirty, false);
+  state.configTarget = 'notify';
+  fillMusicPartnerTemplates('partner-comments');
+  assert.equal(state.configDirty, false);
+  state.configTarget = 'config';
 });

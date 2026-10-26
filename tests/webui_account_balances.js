@@ -21,6 +21,15 @@ async function expectYunbei(page, label, expected) {
   assert.match((await cell.innerText()).trim(), expected, `${label} must use its current balance while preserving today's income`);
 }
 
+async function expectGrowth(page, label, expected) {
+  await page.waitForFunction(({ label, pattern }) => {
+    const row = [...document.querySelectorAll('#accounts-table tr')].find(row => row.textContent.includes(label));
+    return row && new RegExp(pattern).test(row.cells[5]?.textContent.trim() || '');
+  }, { label, pattern: expected.source }, { timeout: 15000 });
+  const cell = page.locator('#accounts-table tr').filter({ hasText: label }).locator('td').nth(5);
+  assert.match((await cell.innerText()).trim(), expected, `${label} must separate current growth total from today's income`);
+}
+
 (async () => {
   const browser = await chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}) });
   let releaseOld;
@@ -46,8 +55,8 @@ async function expectYunbei(page, label, expected) {
       id: 'historic-balances', command: 'sign', jobName: '历史收益样例', status: 'success', startedAt: now, triggeredAt: now, finishedAt: now,
       rewards: [
         { account: main, yunbeiKnown: true, yunbei: 50, yunbeiBalanceKnown: true, yunbeiBalance: 0 },
-        { account: secondary, yunbeiKnown: true, yunbei: 7, yunbeiBalanceKnown: true, yunbeiBalance: 999 },
-        { account: unavailable, yunbeiKnown: true, yunbei: 9, yunbeiBalanceKnown: true, yunbeiBalance: 8888 },
+        { account: secondary, yunbeiKnown: true, yunbei: 7, yunbeiBalanceKnown: true, yunbeiBalance: 999, growthKnown: true, growthToday: 6, growthTotal: 7777 },
+        { account: unavailable, yunbeiKnown: true, yunbei: 9, yunbeiBalanceKnown: true, yunbeiBalance: 8888, growthKnown: true, growthToday: 2, growthTotal: 99999 },
       ],
     }] }));
     await page.route('**/api/v1/accounts/data**', async route => {
@@ -59,19 +68,24 @@ async function expectYunbei(page, label, expected) {
       const counted = accountPage && currentPhase === 'initial';
       if (counted) { active++; peak = Math.max(peak, active); }
       try {
-        const result = { account, partner: null, growthTotal: null, vipLevel: null, yunbeiBalance: account === main ? 9876 : account === secondary ? 0 : null, updatedAt: now, errors: account === unavailable ? { yunbei: '模拟余额查询失败' } : {} };
+        const result = { account, partner: null, growthTotal: account === main ? 8224 : account === secondary ? 0 : null, vipLevel: null, yunbeiBalance: account === main ? 9876 : account === secondary ? 0 : null, updatedAt: now, errors: account === unavailable ? { yunbei: '模拟余额查询失败', growth: '模拟成长总值查询失败' } : { growth: '模拟等级缺失' } };
         if (counted) await new Promise(resolve => setTimeout(resolve, 30));
-        if (currentPhase === 'missing' && account === main) result.yunbeiBalance = null;
+        if (currentPhase === 'missing' && account === main) {
+          result.yunbeiBalance = null;
+          result.growthTotal = null;
+        }
         if (currentPhase === 'failed' && account === main) {
           await route.fulfill({ status: 503, json: { error: '模拟临时失败' } });
           return;
         }
         if (currentPhase === 'old-request' && account === main) {
           result.yunbeiBalance = 33333;
+          result.growthTotal = 11111;
           signalOld?.();
           await new Promise(resolve => { releaseOld = resolve; });
         } else if (currentPhase === 'new-credentials' && account === main) {
           result.yunbeiBalance = 44444;
+          result.growthTotal = 22222;
         }
         await route.fulfill({ json: result }).catch(() => {});
       } finally {
@@ -101,6 +115,9 @@ async function expectYunbei(page, label, expected) {
     await expectYunbei(page, names[main], /^\+50\s*\/\s*9876$/);
     await expectYunbei(page, names[secondary], /^\+7\s*\/\s*0$/);
     await expectYunbei(page, names[unavailable], /^\+9\s*\/\s*(?:未知|--)$/);
+    await expectGrowth(page, names[main], /^--\s*\/\s*8224$/);
+    await expectGrowth(page, names[secondary], /^6\s*\/\s*0$/);
+    await expectGrowth(page, names[unavailable], /^2\s*\/\s*未知$/);
     assert(peak > 0 && peak <= 2, `account balance requests must use at most two concurrent readers, saw ${peak}`);
     for (const account of Object.keys(names)) assert(requests.some(request => request.account === account), `account not queried: ${account}`);
     await page.screenshot({ path: path.join(outputDir, 'account-current-balances.png'), fullPage: true });
@@ -108,11 +125,13 @@ async function expectYunbei(page, label, expected) {
     phase = 'missing';
     await page.locator('#refresh-button').click();
     await expectYunbei(page, names[main], /^\+50\s*\/\s*(?:未知|--)$/);
+    await expectGrowth(page, names[main], /^--\s*\/\s*未知$/);
     await page.waitForFunction(() => !document.querySelector('#refresh-button').disabled);
     phase = 'failed';
     await page.locator('#refresh-button').click();
     await page.waitForFunction(() => !document.querySelector('#refresh-button').disabled);
     await expectYunbei(page, names[main], /^\+50\s*\/\s*(?:未知|--)$/);
+    await expectGrowth(page, names[main], /^--\s*\/\s*未知$/);
     assert(requests.some(request => request.account === main && request.phase === 'failed'), 'explicit refresh must not reuse cached balance');
 
     phase = 'old-request';
@@ -124,15 +143,18 @@ async function expectYunbei(page, label, expected) {
     await page.locator('#cookie-content').fill('MUSIC_U=isolated-balance-fixture');
     await page.locator('#account-submit').click();
     await expectYunbei(page, names[main], /^\+50\s*\/\s*44444$/);
+    await expectGrowth(page, names[main], /^--\s*\/\s*22222$/);
     releaseOld();
     releaseOld = undefined;
     await page.waitForLoadState('networkidle');
     await expectYunbei(page, names[main], /^\+50\s*\/\s*44444$/);
     await expectYunbei(page, names[secondary], /^\+7\s*\/\s*0$/);
+    await expectGrowth(page, names[main], /^--\s*\/\s*22222$/);
+    await expectGrowth(page, names[secondary], /^6\s*\/\s*0$/);
     assert.equal(cookieImports, 1, 'only one mocked credential change is expected');
     assert.deepEqual(errors, [], 'browser errors');
     assert.deepEqual(writes, [], 'balance checks must not run tasks');
-    console.log('Account balances: current nonzero/zero, unknown without history fallback, full-path isolation, bounded concurrency and stale credential response rejection passed');
+    console.log('Account balances and growth totals: current nonzero/zero, no task prerequisite, unknown without history fallback, full-path isolation, bounded concurrency and stale credential response rejection passed');
   } finally {
     releaseOld?.();
     await browser.close();

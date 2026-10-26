@@ -109,7 +109,7 @@ func (c *Task) getAccounts() []Account {
 
 func (c *Task) standardizeActionKey(action string) string {
 	keys := []string{
-		"VipTask", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
+		"VipTask", "KoiWish", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
 		"LikeSong", "CollectSong", "PublishNote", "ShareSong", "ListenIndie", "PlayDailyRecommend",
 		"musician-sign", "note", "daily-song-share", "vip-member-gift", "fansgroup", "playids", "musician-vip", "music-partner",
 	}
@@ -122,6 +122,9 @@ func (c *Task) standardizeActionKey(action string) string {
 }
 
 func (c *Task) isActionActive(stdAction string, activeTasks map[string]bool) bool {
+	if stdAction == "KoiWish" {
+		return activeTasks["sign"] && c.root != nil && c.root.Cfg != nil && c.root.Cfg.Sign != nil && c.root.Cfg.Sign.EnableKoiWish && c.root.Cfg.Sign.Automatic
+	}
 	signSubtasks := []string{
 		"VipTask", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
 		"LikeSong", "CollectSong", "PublishNote", "ShareSong", "ListenIndie", "PlayDailyRecommend",
@@ -150,7 +153,7 @@ func (c *Task) isActionEnabledForAccount(stdAction string, isMain bool) bool {
 
 	isSignSubtask := false
 	signSubtasks := []string{
-		"viptask", "reserve", "viewvipcenter", "likecomment", "followartist",
+		"viptask", "koiwish", "reserve", "viewvipcenter", "likecomment", "followartist",
 		"likesong", "collectsong", "publishnote", "sharesong", "listenindie", "playdailyrecommend",
 	}
 	for _, sub := range signSubtasks {
@@ -318,7 +321,7 @@ func (c *Task) executeAction(
 	}
 	isSignSubtask := false
 	signSubtasks := []string{
-		"VipTask", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
+		"VipTask", "KoiWish", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
 		"LikeSong", "CollectSong", "PublishNote", "ShareSong", "ListenIndie", "PlayDailyRecommend",
 	}
 	for _, sub := range signSubtasks {
@@ -342,10 +345,11 @@ func (c *Task) executeAction(
 			if len(allowedTasks) > 0 {
 				c.cmd.Printf("[task] >>> 账号 (%s) 开始执行 [日常签到] 子任务组 <<<\n", account.Filepath)
 				s := NewSign(c.root, c.l)
-				report := earningsReports[account.Filepath]
+				accountKey := accountPathKey(account.Filepath, c.root.Opts.Home)
+				report := earningsReports[accountKey]
 				if report == nil {
 					report = &accountEarningsReport{Account: account.Filepath}
-					earningsReports[account.Filepath] = report
+					earningsReports[accountKey] = report
 				}
 				if err := s.runSignForCookie(ctx, account.Filepath, account.IsMain, allowedTasks, report, finalizeSignEarnings); err != nil {
 					c.cmd.Printf("[task] ❌ 账号 (%s) [日常签到] 执行失败: %s\n", account.Filepath, err)
@@ -498,9 +502,9 @@ func (c *Task) executeAction(
 func (c *Task) queueHasActiveSignTasks(queue []string, activeTasks map[string]bool) bool {
 	for _, action := range queue {
 		switch c.standardizeActionKey(action) {
-		case "VipTask", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
+		case "VipTask", "KoiWish", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
 			"LikeSong", "CollectSong", "PublishNote", "ShareSong", "ListenIndie", "PlayDailyRecommend":
-			if activeTasks["sign"] {
+			if c.isActionActive(c.standardizeActionKey(action), activeTasks) {
 				return true
 			}
 		}

@@ -32,6 +32,27 @@
 
 `musicPartner` 的评分、额外目标与等待均支持范围；上下限相同表示固定值。分值乐评和积分展示详见 [音乐合伙人说明](music-partner.md)。应用预设不清空已有范围和乐评。
 
+## User-Agent 自动更新
+
+`network.user_agent.auto_update` 默认关闭，可在 WebUI“网络与 UA”开启。每次构造业务客户端时仅识别本项目原始内置模板，在运行内存中替换可验证的版本号，不回写 YAML、Cookie 或 Token；下方文本框始终显示保存的原值。查询整体最多等待 3 秒，不重试；失败继续使用原 UA，已获取的成功结果也不会被清空。同一进程共用版本缓存与并发查询，成功缓存 24 小时，失败退避 15 分钟；新任务子进程会重新建立缓存。
+
+| UA | 自动更新范围与来源 |
+|---|---|
+| `weapi` 内置 Chrome | [Google VersionHistory](https://developer.chrome.com/docs/web-platform/versionhistory/reference) 的 Windows 64 位当前稳定发布，只更新 Chrome 主版本，保留简化 UA 的 `.0.0.0` 格式 |
+| `default` / 旧 `weapi` 内置 macOS | [网易官网 Mac 下载入口](https://music.163.com/api/osx/download/latest) 的 HEAD 跳转文件名，必须包含完整四段版本；仅代表官网直发渠道，不拼接 Mac App Store 的展示版本 |
+| `eapi` 内置无 build iOS 模板 | [中国区 App Store](https://apps.apple.com/cn/app/id590338362) 公开查询返回的展示版本；不用于带内部 build 的 UA |
+| 自定义 UA、Android `xeapi`、Windows 扫码登录 | 保持原值。Android APK 文件名中的打包数字不能当作内部 build；Windows 扫码登录使用独立、固定的协议身份 |
+
+加载的 Cookie 已含 `os`、`osver`、`appver` 或 `buildver` 任一客户端身份字段时，macOS 和 iOS UA 也保持原值，避免改变配套身份。移动端 Cookie、UA 与 antiCheatToken 仍须匹配，App Store 展示版本不能证明某个内部 build 或设备系统版本；查询成功不代表登录、评论或发布接口已经完成线上验证。
+
+## 锦鲤免费许愿
+
+`sign.enableKoiWish` 默认 `false`，可在 WebUI“策略配置 → 日常签到”开启。它沿用 `sign.enableMain`、`sign.enableSecondaries` 账号开关，并要求 `sign.automatic: true`；直接运行 `ncmm sign --automatic` 也可满足自动任务条件，但不会覆盖许愿开关。该功能独立于 `sign.enableVipTask`，仅使用官方免费次数，不参与付费许愿。
+
+使用 `ncmm task` 时还需启用 `task.sign`（或显式传 `--sign`），并在本次运行的快／慢队列中包含 `KoiWish`。开启许愿后，若两个队列都缺少该项，会追加到快队列末尾；已有顺序和位置保持不变。`--only-fast`、`--only-slow` 继续限制执行范围；如需停用，请关闭许愿开关。直接 `ncmm sign` 不依赖任务队列。
+
+实际提交需要当前账号配套的移动端 Cookie、UA 与 Token；Token 复用 `accounts.antiCheatTokens` 的按账号映射，不能使用网页评论的 `checkToken` 替代。官方状态已显示今日免费次数用过时直接跳过，不购买或消耗付费次数。每次先查询实时活动，最多提交一次，再读取状态确认；提交或确认结果未知时记为“未确认”，不自动重试写请求。协议来源、状态证据与验收边界见 [锦鲤免费许愿说明](koi-wish.md)。
+
 ## 歌曲与音乐人歌单
 
 `playids.ids`、`idsFile`、`playlistIds` 合并去重。歌曲文本支持中英文逗号、分号、空白和 `#` / `//` 注释；歌单支持ID及官方分享链接，由每个实际听歌账号独立读取，权限不足的来源不保证可用。
