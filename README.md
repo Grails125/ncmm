@@ -2,7 +2,7 @@
 
 基于 Go 的网易云音乐多账号自动化工具，提供 WebUI 与命令行。**音乐合伙人评分、今日推荐歌曲的试听上报、图文笔记与乐评均原生集成**，共用账号、配置、定时任务、日志和通知，无需评分插件或 Python 桌面程序。
 
-当前已发布 **[v1.2.5-grails](https://github.com/Grails125/ncmm/releases/tag/v1.2.5-grails)**，提供 Windows / Linux 程序包和 Docker 镜像 `ghcr.io/grails125/ncmm:1.2.5-grails`。
+当前已发布 **[v1.2.6-grails](https://github.com/Grails125/ncmm/releases/tag/v1.2.6-grails)**，提供 Windows / Linux 程序包和 Docker 镜像 `ghcr.io/grails125/ncmm:1.2.6-grails`。
 
 ## 核心功能
 
@@ -24,7 +24,7 @@
 ```yaml
 services:
   ncmm:
-    image: ghcr.io/grails125/ncmm:1.2.5-grails
+    image: ghcr.io/grails125/ncmm:1.2.6-grails
     restart: unless-stopped
     ports:
       - "127.0.0.1:3899:3899"
@@ -47,17 +47,17 @@ docker compose -f compose.release.yaml logs -f ncmm
 
 ### Windows / Linux：下载程序包
 
-从 [v1.2.5-grails 发布页](https://github.com/Grails125/ncmm/releases/tag/v1.2.5-grails) 选择对应架构并完整解压：
+从 [v1.2.6-grails 发布页](https://github.com/Grails125/ncmm/releases/tag/v1.2.6-grails) 选择对应架构并完整解压：
 
 | 平台 | 下载 |
 | --- | --- |
-| Windows x64 | [ncmm_Windows_x86_64.zip](https://github.com/Grails125/ncmm/releases/download/v1.2.5-grails/ncmm_Windows_x86_64.zip) |
-| Windows ARM64 | [ncmm_Windows_arm64.zip](https://github.com/Grails125/ncmm/releases/download/v1.2.5-grails/ncmm_Windows_arm64.zip) |
-| Linux x64 | [ncmm_Linux_x86_64.tar.gz](https://github.com/Grails125/ncmm/releases/download/v1.2.5-grails/ncmm_Linux_x86_64.tar.gz) |
-| Linux ARM64 | [ncmm_Linux_arm64.tar.gz](https://github.com/Grails125/ncmm/releases/download/v1.2.5-grails/ncmm_Linux_arm64.tar.gz) |
-| Linux ARMv6 | [ncmm_Linux_armv6.tar.gz](https://github.com/Grails125/ncmm/releases/download/v1.2.5-grails/ncmm_Linux_armv6.tar.gz) |
+| Windows x64 | [ncmm_Windows_x86_64.zip](https://github.com/Grails125/ncmm/releases/download/v1.2.6-grails/ncmm_Windows_x86_64.zip) |
+| Windows ARM64 | [ncmm_Windows_arm64.zip](https://github.com/Grails125/ncmm/releases/download/v1.2.6-grails/ncmm_Windows_arm64.zip) |
+| Linux x64 | [ncmm_Linux_x86_64.tar.gz](https://github.com/Grails125/ncmm/releases/download/v1.2.6-grails/ncmm_Linux_x86_64.tar.gz) |
+| Linux ARM64 | [ncmm_Linux_arm64.tar.gz](https://github.com/Grails125/ncmm/releases/download/v1.2.6-grails/ncmm_Linux_arm64.tar.gz) |
+| Linux ARMv6 | [ncmm_Linux_armv6.tar.gz](https://github.com/Grails125/ncmm/releases/download/v1.2.6-grails/ncmm_Linux_armv6.tar.gz) |
 
-发布页提供 [SHA256SUMS](https://github.com/Grails125/ncmm/releases/download/v1.2.5-grails/SHA256SUMS) 用于核对下载文件。
+发布页提供 [SHA256SUMS](https://github.com/Grails125/ncmm/releases/download/v1.2.6-grails/SHA256SUMS) 用于核对下载文件。
 
 Windows 双击 `一键启动.bat`，启动后自动打开 WebUI；停止时使用同目录的 `一键停止.bat`。它们以解压目录保存数据，详见 [Windows 运行指南](docs/windows.md)。
 
