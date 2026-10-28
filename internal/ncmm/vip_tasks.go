@@ -516,6 +516,10 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 					}
 					continue
 				}
+				if _, attempted := attemptedTasks[vipTaskExecutionKey(v)]; attempted {
+					c.cmd.Printf("  ℹ️ [%s] 本轮已执行，官方状态=%d；仅复查，不重复提交\n", musicPartnerSafeText(v.MainTitle), v.Status)
+					continue
+				}
 				todoTasks = append(todoTasks, v)
 			}
 		}
@@ -1056,7 +1060,7 @@ func (c *SignIn) doVipWelfareClaim(ctx context.Context, request *weapi.Api, eapi
 			} else if getResp.Code != 200 || !getResp.Result.BenefitGet {
 				c.cmd.Printf("  ❌ 领取福利券 [%s] 失败: code=%d, msg=%s\n", targetBenefitName, getResp.Code, getResp.Message)
 			} else {
-				c.cmd.Printf("  🎉 成功领券打卡日常福利任务: [%s]\n", targetBenefitName)
+				c.cmd.Printf("  👉 商家券接口确认领取: [%s]；福利券成长任务以最终官方状态为准\n", musicPartnerSafeText(targetBenefitName))
 			}
 		} else {
 			c.cmd.Println("  ℹ️ 所有商家福利券都已领过，继续后续福利打卡")

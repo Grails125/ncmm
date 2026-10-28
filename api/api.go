@@ -388,6 +388,12 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 	if opts.CryptoMode == CryptoModeXEAPI || (opts.CryptoMode == CryptoModeEAPI && !strings.EqualFold(request.Header.Get("x-os"), "pc")) {
 		c.applyXEAPIHeaders(request)
 	}
+	// 显式空头表示不发送；身份适配器可据此阻止默认补全混入其他平台的 Cookie 元数据。
+	for key, value := range opts.Headers {
+		if value == "" {
+			request.Header.Del(key)
+		}
+	}
 
 	switch opts.CryptoMode {
 	case CryptoModeEAPI:

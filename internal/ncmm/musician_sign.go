@@ -43,27 +43,39 @@ func (c *Musician) doSignPhase(ctx context.Context, mctx *musicianContext, cooki
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	after, err := c.fetchMusicianRewardTasks(ctx, mctx)
-	if err != nil {
-		return fmt.Errorf("音乐人签到状态未确认：%w", err)
-	}
+	var after []eapi.MusicianMissionTask
 	var sign *eapi.MusicianMissionTask
-	for i := range after {
-		if !isMusicianDailySignTask(after[i]) {
-			continue
+	for attempt := 0; attempt < 3; attempt++ {
+		var err error
+		after, err = c.fetchMusicianRewardTasks(ctx, mctx)
+		if err != nil {
+			return fmt.Errorf("音乐人签到状态未确认：%w", err)
 		}
-		if original != nil && (after[i].UserMissionId != original.UserMissionId || after[i].Period != original.Period) {
-			continue
+		sign = musicianSignAfterAccess(after, original)
+		if sign != nil && sign.UserMissionId > 0 {
+			break
 		}
-		sign = &after[i]
-		break
+		if attempt < 2 {
+			c.cmd.Println("    ℹ️ 签到任务尚未分配或状态未同步，仅等待后复查，不重复打点")
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(750 * time.Millisecond):
+			}
+		}
 	}
 	if sign == nil || sign.UserMissionId <= 0 {
+		c.cmd.Println("    👉 签到复查任务（仅显示任务标识与状态）...")
+		c.printMusicianTaskList(after)
 		return fmt.Errorf("音乐人签到状态未确认：未取得同一周期的音乐人中心签到任务")
+	}
+	if original != nil && original.UserMissionId <= 0 {
+		c.cmd.Printf("    ℹ️ 签到任务已分配：missionId=%d，userMissionId=%d，period=%d\n", sign.MissionId, sign.UserMissionId, sign.Period)
 	}
 	attempted := c.claimMusicianRewards(ctx, mctx, after)
 	final := after
 	if len(attempted) > 0 {
+		var err error
 		final, err = c.fetchMusicianRewardTasks(ctx, mctx)
 		if err != nil {
 			return fmt.Errorf("云豆领奖结果未确认，仅复查任务状态，不自动重发：%w", err)
@@ -91,6 +103,31 @@ func (c *Musician) doSignPhase(ctx context.Context, mctx *musicianContext, cooki
 		failures = append(failures, ctx.Err())
 	}
 	return errors.Join(failures...)
+}
+
+// 首次签到前 userMissionId 可以为 0；仅接受同一任务和周期唯一的新分配记录。
+// 已分配的 ID 不允许替换，领奖后的确认仍必须严格匹配该 ID。
+func musicianSignAfterAccess(tasks []eapi.MusicianMissionTask, original *eapi.MusicianMissionTask) *eapi.MusicianMissionTask {
+	var found *eapi.MusicianMissionTask
+	for i := range tasks {
+		task := &tasks[i]
+		if !isMusicianDailySignTask(*task) || task.UserMissionId <= 0 {
+			continue
+		}
+		if original != nil {
+			if task.Period != original.Period || task.MissionId != original.MissionId || original.MissionId <= 0 {
+				continue
+			}
+			if original.UserMissionId > 0 && task.UserMissionId != original.UserMissionId {
+				continue
+			}
+		}
+		if found != nil {
+			return nil
+		}
+		found = task
+	}
+	return found
 }
 
 func isMusicianDailySignTask(task eapi.MusicianMissionTask) bool {
@@ -248,7 +285,7 @@ func (c *Musician) printMusicianTaskList(tasks []eapi.MusicianMissionTask) {
 		return
 	}
 	for _, task := range tasks {
-		c.cmd.Printf("    - 任务: %-20s | %s | 进度: %d/%d | 云豆: %s\n", musicianTaskDisplayName(task), musicianTaskStatusText(task), task.ProgressRate, task.TargetCount, musicianTaskRewardWorth(task))
+		c.cmd.Printf("    - 任务: %-20s | %s | 进度: %d/%d | 云豆: %s | missionId=%d userMissionId=%d period=%d\n", musicianTaskDisplayName(task), musicianTaskStatusText(task), task.ProgressRate, task.TargetCount, musicianTaskRewardWorth(task), task.MissionId, task.UserMissionId, task.Period)
 	}
 }
 

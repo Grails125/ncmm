@@ -19,7 +19,7 @@ type partnerIOSPublishHeader struct {
 	OS         string `json:"os"`
 	OSVersion  string `json:"osver"`
 	AppVersion string `json:"appver"`
-	Build      string `json:"buildver"`
+	Build      string `json:"buildver,omitempty"`
 	DeviceID   string `json:"deviceId"`
 	MusicU     string `json:"MUSIC_U,omitempty"`
 	CSRF       string `json:"__csrf,omitempty"`
@@ -84,7 +84,7 @@ func (a *Api) partnerPublishHeaders(opts *api.Options, mode api.CryptoMode, payl
 			}
 		}
 	}
-	if identity.os == "" || identity.osVersion == "" || identity.appVersion == "" || identity.buildVersion == "" {
+	if identity.os == "" || identity.osVersion == "" || identity.appVersion == "" {
 		// 不推测缺失版本，也不让全局头补全重新引入 PC Cookie 的版本。
 		return false
 	}

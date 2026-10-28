@@ -1313,6 +1313,8 @@ func (a *Api) VipWelfareClaim(ctx context.Context, req *VipWelfareClaimReq) (*Vi
 		reply VipWelfareClaimResp
 		opts  = api.NewOptions()
 	)
+	opts.NoRetry = true
+	opts.Sensitive = true
 
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {

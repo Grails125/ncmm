@@ -34,6 +34,29 @@ func yunbeiTaskPeriodKey(taskID, period int64) string {
 	return fmt.Sprintf("%d/%d", taskID, period)
 }
 
+// 完成变化可作为尝试领奖的证据，但不能证明奖励尚未领取；只记录来源和非敏感状态。
+func yunbeiRewardEvidence(task eapi.YunBeiTaskTodoRespData, todo []eapi.YunBeiTaskTodoRespData, full []weapi.YunBeiTaskListRespData) string {
+	source := "本轮完成变化"
+	for _, item := range todo {
+		if item.UserTaskId == task.UserTaskId && item.Period == task.Period && item.Completed {
+			source = "待办接口"
+			break
+		}
+	}
+	status := "未知"
+	for _, item := range full {
+		if item.UserTaskId == task.UserTaskId && item.Period == task.Period && item.TaskId == task.TaskId {
+			status = fmt.Sprint(item.Status)
+			break
+		}
+	}
+	deposit := "无"
+	if task.DepositCode != 0 {
+		deposit = "有"
+	}
+	return fmt.Sprintf("领奖来源=%s，depositCode=%s，完整列表status=%s", source, deposit, status)
+}
+
 // completed 仅证明任务已完成，不能证明仍待领奖。完整列表只补齐本次观察到的完成变化，旧待办接口的有效凭据优先。
 func yunbeiRewardTasks(todo []eapi.YunBeiTaskTodoRespData, full []weapi.YunBeiTaskListRespData, observedIncomplete ...map[string]bool) []eapi.YunBeiTaskTodoRespData {
 	var tasks []eapi.YunBeiTaskTodoRespData

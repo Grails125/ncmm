@@ -179,7 +179,7 @@ func (c *SignIn) claimYunbeiRewards(ctx context.Context, request *weapi.Api, acc
 			c.root.ReportFailureMsg(account, label, fmt.Sprintf("%s：%s", task.TaskName, detail))
 		case !reply.Data:
 			unconfirmed++
-			detail = "业务返回 false，未确认新增奖励（可能已领取或暂不可领取）"
+			detail = "业务返回 false，未确认新增奖励（可能已领取或暂不可领取）；" + yunbeiRewardEvidence(task, todo, full)
 			c.root.ReportUnconfirmed(account, label, fmt.Sprintf("%s：%s", task.TaskName, detail))
 		default:
 			claimed++

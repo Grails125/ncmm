@@ -2,6 +2,7 @@ package eapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -118,11 +119,54 @@ func TestPartnerPublishOnlyFallsBackToIOSCookieMetadata(t *testing.T) {
 			opts := api.NewOptions()
 			var payloadHeader interface{}
 			ok := New(client).partnerPublishHeaders(opts, api.CryptoModeEAPI, &payloadHeader)
-			if ok != (cookieOS == "iPad") {
-				t.Fatal("缺少 UA 字段时只能继承 iOS Cookie 身份")
+			if !ok {
+				t.Fatal("有效 iOS UA 缺少可选 build 号不能阻止发布")
 			}
-			if ok && (opts.Headers["x-os"] != "iPad" || opts.Headers["x-buildver"] != "6806") {
+			wantBuild := ""
+			if cookieOS == "iPad" {
+				wantBuild = "6806"
+			}
+			if opts.Headers["x-os"] != "iPad" || opts.Headers["x-buildver"] != wantBuild {
 				t.Fatal("未使用匹配的 iOS 补充字段")
+			}
+		})
+	}
+}
+
+func TestPartnerDefaultIOSUAPublishesWithoutBorrowingPCBuild(t *testing.T) {
+	for _, note := range []bool{false, true} {
+		t.Run(fmt.Sprint(note), func(t *testing.T) {
+			cfg := &api.Config{UserAgent: api.UserAgentConfig{EAPI: "neteasemusic/9.6.05 (iPhone; iOS 16.6.1; Scale/2.00)"}}
+			cfg.Cookie.Filepath = filepath.Join(t.TempDir(), "cookie.json")
+			client, err := api.NewClient(cfg, log.Default)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = client.Close(context.Background()) })
+			origin, _ := url.Parse("https://music.163.com/")
+			client.SetCookies(origin, []*http.Cookie{{Name: "os", Value: "pc", Path: "/"}, {Name: "buildver", Value: "1034", Path: "/"}})
+			calls := 0
+			client.GetClient().Transport = nosTestTransport(func(r *http.Request) (*http.Response, error) {
+				calls++
+				var payload struct {
+					Header map[string]any `json:"header"`
+				}
+				nosTestEAPIPayload(t, r, &payload)
+				if _, exists := payload.Header["buildver"]; exists || r.Header.Get("x-buildver") != "" {
+					t.Fatal("缺失的 iOS build 号不得伪造或借用 PC Cookie")
+				}
+				if r.Header.Get("x-os") != "iPhone OS" || r.Header.Get("x-appver") != "9.6.05" {
+					t.Fatal("移动身份不匹配")
+				}
+				return nosTestResponse(r, 200, `{"code":200,"id":901,"comment":{"commentId":456}}`), nil
+			})
+			if note {
+				_, err = New(client).PartnerNotePublish(t.Context(), partnerNoteTestRequest())
+			} else {
+				_, err = New(client).PartnerCommentAdd(t.Context(), &PartnerCommentReq{ResourceID: 123, Content: "乐评", CryptoMode: api.CryptoModeEAPI})
+			}
+			if err != nil || calls != 1 {
+				t.Fatalf("默认 UA 应能发送且只发送一次：calls=%d err=%v", calls, err)
 			}
 		})
 	}
