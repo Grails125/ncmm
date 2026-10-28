@@ -2,10 +2,13 @@ package ncmm
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -101,18 +104,67 @@ func (c *partnerRecommendClient) mediaGet(ctx context.Context, raw string) (*htt
 	if err != nil {
 		return nil, fmt.Errorf("无法创建媒体请求")
 	}
-	response, err := c.media.Do(req)
-	if err != nil {
-		return nil, partnerRecommendRequestError(ctx, "获取媒体", err)
-	}
-	if response.StatusCode != http.StatusOK {
-		response.Body.Close()
-		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusTooManyRequests {
-			return nil, musicPartnerHTTPError("获取媒体", &api.HTTPStatusError{StatusCode: response.StatusCode})
+	for attempt := 1; attempt <= 2; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
-		return nil, fmt.Errorf("媒体服务器返回 HTTP %d", response.StatusCode)
+		response, err := c.media.Do(req)
+		if err == nil && response.StatusCode == http.StatusOK {
+			return response, nil
+		}
+		status := 0
+		if response != nil {
+			status = response.StatusCode
+			response.Body.Close()
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		kind, retry := partnerMediaFailureKind(err, status)
+		if retry && attempt < 2 {
+			// 只重试无账号凭据的只读 CDN GET；发布和互动上报不走此路径。
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(250 * time.Millisecond):
+				continue
+			}
+		}
+		failure := fmt.Errorf("获取媒体失败（CDN=%s，分类=%s，HTTP=%d，尝试=%d/2）", u.Hostname(), kind, status, attempt)
+		if status == http.StatusUnauthorized || status == http.StatusForbidden || status == http.StatusTooManyRequests {
+			return nil, errors.Join(failure, musicPartnerHTTPError("获取媒体", &api.HTTPStatusError{StatusCode: status}))
+		}
+		return nil, failure
 	}
-	return response, nil
+	return nil, fmt.Errorf("获取媒体失败")
+}
+
+// 原始网络错误通常带有签名 URL；只输出受控分类和已验证的 CDN 域名。
+func partnerMediaFailureKind(err error, status int) (string, bool) {
+	var dns *net.DNSError
+	var network net.Error
+	var connection *net.OpError
+	var certificate *tls.CertificateVerificationError
+	var authority x509.UnknownAuthorityError
+	var invalid x509.CertificateInvalidError
+	var hostname x509.HostnameError
+	var record tls.RecordHeaderError
+	switch {
+	case errors.As(err, &dns):
+		return "域名解析失败", dns.Timeout() || dns.Temporary()
+	case errors.As(err, &certificate), errors.As(err, &authority), errors.As(err, &invalid), errors.As(err, &hostname), errors.As(err, &record):
+		return "TLS 证书或握手失败", false
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &network) && network.Timeout():
+		return "网络请求超时", true
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.As(err, &connection):
+		return "连接中断", true
+	case status >= 500 && status <= 599:
+		return "CDN 暂时不可用", true
+	case status > 0:
+		return "HTTP 拒绝或资源不可用", false
+	default:
+		return "请求或重定向失败", false
+	}
 }
 
 func (c *partnerRecommendClient) PrepareAudio(ctx context.Context, work weapi.PartnerWork) error {

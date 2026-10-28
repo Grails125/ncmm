@@ -449,6 +449,8 @@ func (a *Api) VipBenefitGet(ctx context.Context, req *VipBenefitGetReq) (*VipBen
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.NoRetry = true
+	opts.Sensitive = true
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {
 		return nil, fmt.Errorf("Request: %w", err)

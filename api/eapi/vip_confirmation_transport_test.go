@@ -13,7 +13,7 @@ import (
 )
 
 func TestVipConfirmationWritesDoNotRetryOrExposeTransportError(t *testing.T) {
-	for _, task := range []string{"sign", "reward", "legacy-sign", "legacy-reward"} {
+	for _, task := range []string{"sign", "reward", "legacy-sign", "legacy-reward", "benefit", "welfare"} {
 		t.Run(task, func(t *testing.T) {
 			cfg := &api.Config{Retry: 2}
 			cfg.Cookie.Filepath = filepath.Join(t.TempDir(), "cookie.json")
@@ -33,6 +33,10 @@ func TestVipConfirmationWritesDoNotRetryOrExposeTransportError(t *testing.T) {
 				_, err = weapi.New(client).VipRewardGetAll(t.Context(), &weapi.VipRewardGetAllReq{})
 			} else if task == "sign" {
 				_, err = New(client).VipTaskSign(t.Context(), &VipTaskSignReq{})
+			} else if task == "benefit" {
+				_, err = New(client).VipBenefitGet(t.Context(), &VipBenefitGetReq{Id: "10"})
+			} else if task == "welfare" {
+				_, err = weapi.New(client).VipWelfareClaim(t.Context(), &weapi.VipWelfareClaimReq{WelfareId: 10})
 			} else {
 				_, err = New(client).VipRewardGetAll(t.Context(), &VipRewardGetAllReq{})
 			}

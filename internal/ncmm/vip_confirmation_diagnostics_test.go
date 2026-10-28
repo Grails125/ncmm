@@ -161,6 +161,51 @@ func TestVipUnsupportedTasksDoNotRepeatOrClaimCompletion(t *testing.T) {
 	}
 }
 
+func TestVipPendingWelfareDoesNotRepeatClaims(t *testing.T) {
+	claims, rewards := 0, 0
+	client := newVipConfirmationClient(t, func(path string) string {
+		switch path {
+		case "/eapi/vip-center-bff/task/list":
+			return `{"code":200,"data":[{"missionCode":"FLQ","mainTitle":"福利券","status":50}]}`
+		case "/eapi/vipnewcenter/app/user/sign/info":
+			return `{"code":200,"data":[{"today":true,"recordId":123}]}`
+		case "/eapi/vipnewcenter/app/level/growhpoint/basic":
+			return `{"code":200,"data":{"userLevel":{"growthPoint":8224}}}`
+		case "/eapi/vipnewcenter/app/level/growth/details":
+			return `{"code":200,"data":{"details":[]}}`
+		case "/weapi/middle/vip/mission/user/progress/list":
+			return `{"code":200,"data":[]}`
+		case "/eapi/vipnewcenter/app/level/task/reward/getall":
+			rewards++
+			return `{"code":200,"data":{"result":true}}`
+		case "/eapi/vipnewcenter/app/benefitcenter/benefits/category/list":
+			return `{"code":200,"data":[{"id":10,"name":"免费券","benefitGet":false}]}`
+		case "/eapi/vipcenter/benefits/get":
+			claims++
+			return `{"code":200,"result":{"benefitGet":true}}`
+		case "/eapi/vipnewcenter/app/level/welfare/new/list":
+			return `{"code":200,"data":{}}`
+		case "/weapi/vipnewcenter/app/level/welfare/new/list":
+			return `{"code":200,"data":{}}`
+		default:
+			t.Fatalf("意外请求：%s", path)
+			return ""
+		}
+	})
+	root := &Root{Cfg: &config.Config{Sign: &config.SignConf{Automatic: true}}, Report: notify.NewReport("test")}
+	c := NewSign(root, nil)
+	var output bytes.Buffer
+	c.cmd.SetOut(&output)
+	c.handleVipTasks(t.Context(), client, weapi.New(client), 4, "fixture")
+	if claims != 1 || rewards != 1 || strings.Contains(output.String(), "成功领券打卡日常福利任务") {
+		t.Fatalf("不能反复领奖或将商家券回执等同成长任务完成：claims=%d rewards=%d 日志=%s", claims, rewards, output.String())
+	}
+	_, _, unknown := root.Report.OutcomeCounts()
+	if unknown != 1 {
+		t.Fatalf("状态50仍须保留未确认：%+v", root.Report.Items())
+	}
+}
+
 func TestVipFinalSignUsesOneConfirmedOutcomeWithoutOverwritingList(t *testing.T) {
 	for _, confirmed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("confirmed-%t", confirmed), func(t *testing.T) {

@@ -149,6 +149,9 @@ func TestYunbeiClaimsTodoCandidateWithoutReportingRejectedReward(t *testing.T) {
 			if strings.Contains(output.String(), "成功领取云贝") != accepted {
 				t.Fatalf("领奖确认不准确: %s", output.String())
 			}
+			if !accepted && !strings.Contains(output.String(), "领奖来源=待办接口，depositCode=无，完整列表status=0") {
+				t.Fatalf("业务 false 应展示领奖证据，不能误报到账: %s", output.String())
+			}
 		})
 	}
 }

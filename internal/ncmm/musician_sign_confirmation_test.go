@@ -36,6 +36,7 @@ type musicianSignConfirmationFixture struct {
 	stageReadFailure         bool
 	compatReadFailure        bool
 	conflictingSources       bool
+	assignedAfterAccess      int64
 	cycles, accesses, claims int
 }
 
@@ -70,6 +71,10 @@ func newMusicianSignConfirmationFixture(t *testing.T) *musicianSignConfirmationF
 				return giftJSONResponse(request, `{"code":500}`), nil
 			}
 			current := f.task
+			if f.accesses > 0 && f.assignedAfterAccess > 0 {
+				current.UserMissionId = f.assignedAfterAccess
+				current.Status = 20
+			}
 			if f.conflictingSources && f.cycles%2 == 0 {
 				current.Status = 100
 			}
@@ -112,6 +117,50 @@ func newMusicianSignConfirmationFixture(t *testing.T) *musicianSignConfirmationF
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(body)), Request: request}, nil
 	})
 	return f
+}
+
+func TestMusicianSignAcceptsNewlyAssignedTask(t *testing.T) {
+	f := newMusicianSignConfirmationFixture(t)
+	f.task.UserMissionId, f.task.Status = 0, 0
+	f.assignedAfterAccess = 99
+	if err := f.command.doSignPhase(t.Context(), f.ctx, "account.json"); err != nil || f.accesses != 1 || f.claims != 1 {
+		t.Fatalf("首次打点分配用户任务 ID 后应继续领奖：err=%v access=%d claims=%d 日志=%s", err, f.accesses, f.claims, f.output.String())
+	}
+}
+
+func TestMusicianSignNeverSubstitutesAssignedTask(t *testing.T) {
+	f := newMusicianSignConfirmationFixture(t)
+	f.task.Status = 0
+	f.assignedAfterAccess = 99
+	if err := f.command.doSignPhase(t.Context(), f.ctx, "account.json"); err == nil || f.claims != 0 {
+		t.Fatalf("已有有效用户任务 ID 时不能接受另一任务：err=%v claims=%d", err, f.claims)
+	}
+}
+
+func TestMusicianSignAssignmentRequiresSameUniqueMissionAndPeriod(t *testing.T) {
+	original := eapi.MusicianMissionTask{MissionId: 3611300, ActionType: 102, Description: "音乐人中心签到", Period: 1}
+	assigned := original
+	assigned.UserMissionId, assigned.Status = 99, 20
+	for _, scenario := range []string{"周期变化", "任务变化", "多条分配", "仍未分配"} {
+		t.Run(scenario, func(t *testing.T) {
+			candidate := assigned
+			tasks := []eapi.MusicianMissionTask{candidate}
+			switch scenario {
+			case "周期变化":
+				tasks[0].Period++
+			case "任务变化":
+				tasks[0].MissionId++
+			case "多条分配":
+				candidate.UserMissionId++
+				tasks = append(tasks, candidate)
+			case "仍未分配":
+				tasks[0].UserMissionId = 0
+			}
+			if musicianSignAfterAccess(tasks, &original) != nil {
+				t.Fatal("不能将不同周期、不同任务或不确定分配结果用于领奖")
+			}
+		})
+	}
 }
 
 func TestMusicianSignConfirmsOnlyFreshClaimedTask(t *testing.T) {
