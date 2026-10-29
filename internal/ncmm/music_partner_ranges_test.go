@@ -12,6 +12,7 @@ import (
 	"github.com/3899/ncmm/api/types"
 	"github.com/3899/ncmm/api/weapi"
 	"github.com/3899/ncmm/config"
+	"github.com/3899/ncmm/pkg/notify"
 )
 
 func TestMusicPartnerScoreRangeAndPerScoreComments(t *testing.T) {
@@ -73,7 +74,7 @@ func TestMusicPartnerRangeRunOnlyFillsRemainingDailyTarget(t *testing.T) {
 		},
 	}
 	for i := 0; i < 2; i++ {
-		if err := command.run(context.Background(), fake, cfg); err != nil {
+		if err := command.run(context.Background(), fake, cfg, "account.json"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -86,20 +87,24 @@ func TestMusicPartnerRangeRunOnlyFillsRemainingDailyTarget(t *testing.T) {
 func TestMusicPartnerInsufficientCandidatesDoNotCompleteTarget(t *testing.T) {
 	for _, available := range []int{0, 3} {
 		command, cfg := partnerTestCommand(t)
+		command.root.Report = notify.NewReport("music-partner")
 		cfg.ExtraTasks = true
 		fake := &partnerFake{
 			daily: func(context.Context) (*weapi.PartnerTaskResp, error) { return partnerTestDaily(true), nil },
 			extra: func(context.Context) (*weapi.PartnerExtraTaskResp, error) { return partnerTestExtra(available, 0), nil },
 		}
-		err := command.run(context.Background(), fake, cfg)
-		if err == nil || !strings.Contains(err.Error(), "额外评分目标未完成") {
-			t.Fatalf("insufficient candidates reported completion: available=%d error=%v", available, err)
+		err := command.run(context.Background(), fake, cfg, "account.json")
+		if err != nil {
+			t.Fatalf("insufficient candidates should skip the remaining target: available=%d error=%v", available, err)
+		}
+		if failed, skipped, unknown := command.root.Report.OutcomeCounts(); failed != 0 || skipped != 1 || unknown != 0 {
+			t.Fatalf("insufficient candidates must remain a skip: %+v", command.root.Report.Items())
 		}
 		if len(fake.evaluations) != available {
 			t.Fatal("must score only the available candidates")
 		}
 		cfg.FullExtraTasks = true
-		if err := command.run(context.Background(), fake, cfg); err != nil {
+		if err := command.run(context.Background(), fake, cfg, "account.json"); err != nil {
 			t.Fatalf("full-list mode should use available candidates as target: %v", err)
 		}
 	}
@@ -107,6 +112,7 @@ func TestMusicPartnerInsufficientCandidatesDoNotCompleteTarget(t *testing.T) {
 
 func TestMusicPartnerDailyQuotaIsNotAccountBlock(t *testing.T) {
 	command, cfg := partnerTestCommand(t)
+	command.root.Report = notify.NewReport("music-partner")
 	var output bytes.Buffer
 	command.Command().SetOut(&output)
 	cfg.Comments = map[string][]string{"3": {"三分乐评"}}
@@ -125,9 +131,12 @@ func TestMusicPartnerDailyQuotaIsNotAccountBlock(t *testing.T) {
 		}
 		return &response, nil
 	}}
-	err := command.run(context.Background(), fake, cfg)
-	if err == nil || !strings.Contains(err.Error(), "今日没有更多可评定歌曲") {
-		t.Fatalf("quota failure lost: %v", err)
+	err := command.run(context.Background(), fake, cfg, "account.json")
+	if err != nil {
+		t.Fatalf("daily quota should stop normally: %v", err)
+	}
+	if failed, skipped, unknown := command.root.Report.OutcomeCounts(); failed != 0 || skipped != 1 || unknown != 0 {
+		t.Fatalf("daily quota must be reported as a skip: %+v", command.root.Report.Items())
 	}
 	if len(fake.evaluations) != 1 || len(fake.reports) != 1 {
 		t.Fatal("daily quota triggered more submissions")

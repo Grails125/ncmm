@@ -145,8 +145,14 @@ func TestTaskBlockedAccountReportsSkippedActionsAndContinuesOtherAccount(t *test
 	if failures, skips := report.Counts(); failures != 1 || skips != 4 {
 		t.Fatalf("blocked account skips were lost or next account did not run: %+v; output=%s", report.Items(), output.String())
 	}
-	if task.musicPartnerErr == nil {
-		t.Fatal("blocked scoring was reported as completed")
+	blockedScoringSkipped := false
+	for _, item := range report.Items() {
+		if item.Account == main && item.Task == "music-partner" && item.Kind == notify.KindSkip {
+			blockedScoringSkipped = true
+		}
+	}
+	if !blockedScoringSkipped {
+		t.Fatalf("blocked scoring was not recorded as skipped: %+v", report.Items())
 	}
 	if len(task.failures) != 1 || !strings.Contains(task.failures[0].Error(), secondary) {
 		t.Fatalf("next account failure missing from aggregate: %v", task.failures)
