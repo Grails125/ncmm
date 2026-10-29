@@ -311,6 +311,9 @@ func (c *SignIn) executeVipSign(ctx context.Context, request *eapi.Api, deviceId
 }
 
 func vipManualTaskReason(task eapi.VipTaskListData) string {
+	if vipNativeWelfareNeedsApp(task) {
+		return "需在 App 原生领券，官方入口未提供自动打卡参数"
+	}
 	if isVipAppStartupTask(task) || isVipAppListenTask(task) {
 		return "需 App 完成"
 	}
@@ -320,11 +323,27 @@ func vipManualTaskReason(task eapi.VipTaskListData) string {
 	return "未支持自动执行，请手动完成"
 }
 
+func vipNativeWelfareNeedsApp(task eapi.VipTaskListData) bool {
+	if task.MissionCode != "FLQ" && task.MainTitle != "福利券" {
+		return false
+	}
+	u, err := url.Parse(task.JumpUrl)
+	if err != nil || u.Scheme != "orpheus" {
+		return false
+	}
+	query := u.Query()
+	return query.Get("component") == "ReactNativeVip" && query.Get("route") == "welfarecenter" && query.Get("view_task_id") == ""
+}
+
 func vipTaskExecutionKey(task eapi.VipTaskListData) string {
 	return fmt.Sprintf("%d/%s/%s", task.MissionId, task.MissionCode, task.MainTitle)
 }
 
 func (c *SignIn) executeSingleVipTask(ctx context.Context, cli *api.Client, request *weapi.Api, eapiRequest *eapi.Api, v eapi.VipTaskListData, deviceId string, userLevel int64, likedSongIds *[]string) {
+	if vipNativeWelfareNeedsApp(v) {
+		c.cmd.Println("  ℹ️ [福利券] 需在 App 原生领券，官方入口未提供自动打卡参数，已跳过")
+		return
+	}
 	if isVipAppStartupTask(v) {
 		c.cmd.Println("  ℹ️ [设置开机启动图] 请在网易云音乐 App 内完成启动图设置，已跳过自动执行。")
 		return

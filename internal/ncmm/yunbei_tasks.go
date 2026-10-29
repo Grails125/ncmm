@@ -194,6 +194,14 @@ func (c *SignIn) claimYunbeiRewards(ctx context.Context, request *weapi.Api, acc
 		if !task.Completed {
 			continue
 		}
+		if len(task.TaskPointDetail) > 0 {
+			key := "parent/" + yunbeiTaskPeriodKey(task.TaskId, task.Period)
+			if !state.diagnosed[key] {
+				state.diagnosed[key] = true
+				c.cmd.Printf("  ℹ️ 云贝奖励映射：任务=%q，taskId=%d，父任务ID=%d，奖励子项=%d；父任务仅展示，按待办奖励子任务凭据领取和去重\n", task.TaskName, task.TaskId, task.UserTaskId, len(task.TaskPointDetail))
+			}
+			continue
+		}
 		key := fmt.Sprintf("%d/%d", task.UserTaskId, task.Period)
 		historyKey := "history/" + yunbeiTaskPeriodKey(task.TaskId, task.Period) + "/" + key
 		if eligible[key] || state.attempted[key] != "" || state.diagnosed[historyKey] {

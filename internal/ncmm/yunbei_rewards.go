@@ -57,7 +57,28 @@ func yunbeiRewardEvidence(task eapi.YunBeiTaskTodoRespData, todo []eapi.YunBeiTa
 	return fmt.Sprintf("领奖来源=%s，depositCode=%s，完整列表status=%s", source, deposit, status)
 }
 
-// completed 仅证明任务已完成，不能证明仍待领奖。完整列表只补齐本次观察到的完成变化，旧待办接口的有效凭据优先。
+// 待办 userTaskId 对应 taskPointDetail.userMissionId；完整列表的父任务 ID 不能用于领取子奖励。
+func yunbeiRewardParent(task eapi.YunBeiTaskTodoRespData, full []weapi.YunBeiTaskListRespData) *weapi.YunBeiTaskListRespData {
+	var parent *weapi.YunBeiTaskListRespData
+	for i := range full {
+		item := &full[i]
+		if item.Period != task.Period || task.UserTaskId <= 0 || item.TaskId <= 0 || task.TaskId > 0 && task.TaskId != item.TaskId {
+			continue
+		}
+		for _, reward := range item.TaskPointDetail {
+			if reward.UserMissionId != task.UserTaskId {
+				continue
+			}
+			if parent != nil && parent.TaskId != item.TaskId {
+				return nil
+			}
+			parent = item
+		}
+	}
+	return parent
+}
+
+// completed 仅证明任务已完成。只有没有奖励子项的旧版平面任务，才用本轮完成变化补齐候选。
 func yunbeiRewardTasks(todo []eapi.YunBeiTaskTodoRespData, full []weapi.YunBeiTaskListRespData, observedIncomplete ...map[string]bool) []eapi.YunBeiTaskTodoRespData {
 	var tasks []eapi.YunBeiTaskTodoRespData
 	seen := make(map[string]bool)
@@ -73,10 +94,16 @@ func yunbeiRewardTasks(todo []eapi.YunBeiTaskTodoRespData, full []weapi.YunBeiTa
 		tasks = append(tasks, task)
 	}
 	for _, task := range todo {
+		if parent := yunbeiRewardParent(task, full); parent != nil {
+			task.TaskId = parent.TaskId
+			if parent.TaskName != "" {
+				task.TaskName = parent.TaskName
+			}
+		}
 		appendTask(task)
 	}
 	for _, task := range full {
-		if task.TaskId <= 0 || len(observedIncomplete) == 0 || !observedIncomplete[0][yunbeiTaskPeriodKey(task.TaskId, task.Period)] {
+		if len(task.TaskPointDetail) > 0 || task.TaskId <= 0 || len(observedIncomplete) == 0 || !observedIncomplete[0][yunbeiTaskPeriodKey(task.TaskId, task.Period)] {
 			continue
 		}
 		appendTask(eapi.YunBeiTaskTodoRespData{Completed: task.Completed, UserTaskId: task.UserTaskId, Period: task.Period, TaskId: task.TaskId, TaskName: task.TaskName, TaskPoint: task.TaskPoint})

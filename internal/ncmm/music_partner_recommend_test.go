@@ -217,13 +217,13 @@ func TestPartnerRecommendDisabledAndTextLimits(t *testing.T) {
 func TestPartnerRecommendMediaURLPolicy(t *testing.T) {
 	for _, raw := range []string{"https://127.0.0.1/a", "https://p1.music.126.net.evil.test/a", "https://user:pass@p1.music.126.net/a", "http://p1.music.126.net/a", "https://p1.music.126.net:9000/a"} {
 		u, _ := url.Parse(raw)
-		if partnerMediaURL(u) {
+		if neteaseMediaURL(u) {
 			t.Fatalf("unsafe media URL accepted: %s", raw)
 		}
 	}
 	for _, raw := range []string{"https://p1.music.126.net/a", "https://m801.music.126.net/a", "https://music.163.com/a"} {
 		u, _ := url.Parse(raw)
-		if !partnerMediaURL(u) {
+		if !neteaseMediaURL(u) {
 			t.Fatal("NetEase media rejected")
 		}
 	}

@@ -76,9 +76,12 @@ func TestMusicianInheritedPlaylistsUseEachListeningSessionAndCountOnlyCandidates
 				case "/weapi/v3/discovery/recommend/songs":
 					body = `{"code":200,"data":{"dailySongs":[{"id":20,"name":"mixed recommendation","dt":1000,"ar":[{"id":500}]}]}}`
 				case "/weapi/song/enhance/player/url/v1":
-					body = `{"code":200,"data":[{"url":"https://m7.music.126.net/fixture.mp3"}]}`
+					body = fmt.Sprintf(`{"code":200,"data":[{"id":10,"url":"https://m7.music.126.net/fixture.mp3"},{"id":20,"url":"https://m7.music.126.net/fixture.mp3"},{"id":%d,"url":"https://m7.music.126.net/fixture.mp3"}]}`, accountID)
 				case "/fixture.mp3":
-					body = "fixture audio"
+					if request.URL.Scheme != "https" || request.Header.Get("Cookie") != "" {
+						t.Fatal("音频请求只能使用无会话凭据的 HTTPS CDN")
+					}
+					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"audio/mpeg"}}, ContentLength: -1, Body: io.NopCloser(strings.NewReader("fixture audio")), Request: request}, nil
 				case "/weapi/feedback/weblog":
 					reports++
 					body = `{"code":200}`
