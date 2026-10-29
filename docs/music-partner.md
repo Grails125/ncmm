@@ -1,6 +1,6 @@
 # 音乐合伙人原生评分
 
-当前版本 `1.2.7-grails` 基于可公开获得的 NCMM v1.2.2 完整源码。评分运行在同一个 Go 主程序中，使用原有账号 Cookie、网络客户端、WebUI、批量任务、调度器和失败通知。无需安装评分插件或 Python 桌面程序。源码来源和版本限制见 [source-baseline.md](source-baseline.md)，许可见 [第三方说明](../THIRD_PARTY_NOTICES.md)。
+当前版本 `1.2.8-grails` 基于可公开获得的 NCMM v1.2.2 完整源码。评分运行在同一个 Go 主程序中，使用原有账号 Cookie、网络客户端、WebUI、批量任务、调度器和失败通知。无需安装评分插件或 Python 桌面程序。源码来源和版本限制见 [source-baseline.md](source-baseline.md)，许可见 [第三方说明](../THIRD_PARTY_NOTICES.md)。
 
 ## Docker 启用
 
