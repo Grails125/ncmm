@@ -191,7 +191,7 @@ func (c *MusicPartner) executeAccount(ctx context.Context, account, cookieFile s
 	return c.runWithPoints(ctx, account, func(ctx context.Context) (*partnerpoints.Snapshot, error) {
 		return partnerpoints.Read(ctx, partner)
 	}, func(ctx context.Context) error {
-		scoreErr := c.run(ctx, partner, cfg)
+		scoreErr := c.run(ctx, partner, cfg, account)
 		if ctx.Err() != nil || errors.Is(scoreErr, context.Canceled) || errors.Is(scoreErr, context.DeadlineExceeded) || errors.Is(scoreErr, errMusicPartnerAccountBlocked) {
 			return scoreErr
 		}
@@ -320,7 +320,7 @@ func musicPartnerNetworkConfig(original *api.Config, cookieFile string) (*api.Co
 	return &copy, nil
 }
 
-func (c *MusicPartner) run(ctx context.Context, client musicPartnerAPI, cfg *config.MusicPartnerConf) error {
+func (c *MusicPartner) run(ctx context.Context, client musicPartnerAPI, cfg *config.MusicPartnerConf, account string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -328,7 +328,13 @@ func (c *MusicPartner) run(ctx context.Context, client musicPartnerAPI, cfg *con
 	ctx, cancel := musicPartnerDayContext(ctx, time.Now())
 	defer cancel()
 	daily, err := c.daily(ctx, client)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if err != nil {
+		if c.recordSkippedResponse(account, "", err) {
+			return nil
+		}
 		return err
 	}
 	var failures []error
@@ -338,10 +344,12 @@ func (c *MusicPartner) run(ctx context.Context, client musicPartnerAPI, cfg *con
 			continue
 		}
 		if err := c.score(ctx, client, cfg, daily.Data.Id, task.Work, false); err != nil {
-			failures = append(failures, err)
-			c.printf("%s 未完成：%v", musicPartnerWorkLabel(task.Work), err)
+			if !c.recordSkippedResponse(account, musicPartnerWorkLabel(task.Work), err) {
+				failures = append(failures, err)
+				c.printf("%s 未完成：%v", musicPartnerWorkLabel(task.Work), err)
+			}
 			if musicPartnerMustStop(ctx, err) {
-				return errors.Join(failures...)
+				return errors.Join(append(failures, ctx.Err())...)
 			}
 			continue
 		}
@@ -349,7 +357,7 @@ func (c *MusicPartner) run(ctx context.Context, client musicPartnerAPI, cfg *con
 	}
 	c.printf("基础任务：本次成功 %d 首，已有完成 %d/%d 首", completed, daily.Data.CompletedCount, daily.Data.Count)
 	if cfg.ExtraTasks {
-		if err := c.extra(ctx, client, cfg, daily.Data.Id); err != nil {
+		if err := c.extra(ctx, client, cfg, daily.Data.Id, account); err != nil {
 			failures = append(failures, err)
 		}
 	}
@@ -359,7 +367,7 @@ func (c *MusicPartner) run(ctx context.Context, client musicPartnerAPI, cfg *con
 	if len(failures) > 0 {
 		return fmt.Errorf("音乐合伙人任务未全部完成：%w", errors.Join(failures...))
 	}
-	c.printf("音乐合伙人任务执行完成")
+	c.printf("音乐合伙人本轮可执行评分已处理")
 	return nil
 }
 
@@ -424,7 +432,7 @@ func (c *MusicPartner) extraList(ctx context.Context, client musicPartnerAPI) (*
 	return response, nil
 }
 
-func (c *MusicPartner) extra(ctx context.Context, client musicPartnerAPI, cfg *config.MusicPartnerConf, taskID int64) error {
+func (c *MusicPartner) extra(ctx context.Context, client musicPartnerAPI, cfg *config.MusicPartnerConf, taskID int64, account string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -434,7 +442,13 @@ func (c *MusicPartner) extra(ctx context.Context, client musicPartnerAPI, cfg *c
 		return nil
 	}
 	list, err := c.extraList(ctx, client)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if err != nil {
+		if c.recordSkippedResponse(account, "", err) {
+			return nil
+		}
 		return err
 	}
 	completed := 0
@@ -462,6 +476,9 @@ func (c *MusicPartner) extra(ctx context.Context, client musicPartnerAPI, cfg *c
 			return errors.Join(append(failures, err)...)
 		}
 		report, err := client.PartnerExtraReport(ctx, &weapi.PartnerExtraReportReq{WorkId: strconv.FormatInt(task.Work.Id, 10), ResourceId: strconv.FormatInt(task.Work.ResourceId, 10), InteractType: "PLAY_END"})
+		if ctx.Err() != nil {
+			return errors.Join(append(failures, ctx.Err())...)
+		}
 		if err != nil {
 			// 上报结果未知时停止本账号；不能重复写入或继续提交该作品评分。
 			return errors.Join(append(failures, c.transportFailure(ctx, "上报额外任务播放结束", err))...)
@@ -484,18 +501,22 @@ func (c *MusicPartner) extra(ctx context.Context, client musicPartnerAPI, cfg *c
 			reportErr = fmt.Errorf("作品 %d 播放结束上报未成功", task.Work.Id)
 		}
 		if reportErr != nil {
-			failures = append(failures, reportErr)
-			c.printf("%s 未完成：%v", musicPartnerWorkLabel(task.Work), reportErr)
+			if !c.recordSkippedResponse(account, musicPartnerWorkLabel(task.Work), reportErr) {
+				failures = append(failures, reportErr)
+				c.printf("%s 未完成：%v", musicPartnerWorkLabel(task.Work), reportErr)
+			}
 			if musicPartnerMustStop(ctx, reportErr) {
-				return errors.Join(failures...)
+				return errors.Join(append(failures, ctx.Err())...)
 			}
 			continue
 		}
 		if err := c.score(ctx, client, cfg, taskID, task.Work, true); err != nil {
-			failures = append(failures, err)
-			c.printf("%s 未完成：%v", musicPartnerWorkLabel(task.Work), err)
+			if !c.recordSkippedResponse(account, musicPartnerWorkLabel(task.Work), err) {
+				failures = append(failures, err)
+				c.printf("%s 未完成：%v", musicPartnerWorkLabel(task.Work), err)
+			}
 			if musicPartnerMustStop(ctx, err) {
-				return errors.Join(failures...)
+				return errors.Join(append(failures, ctx.Err())...)
 			}
 			continue
 		}
@@ -507,9 +528,26 @@ func (c *MusicPartner) extra(ctx context.Context, client musicPartnerAPI, cfg *c
 	}
 	// 服务端当前没有足够候选时如实记录，不伪造完成数量。
 	if succeeded < remaining {
-		return fmt.Errorf("额外评分目标未完成：当前共 %d/%d 首，可用作品不足，等待服务端提供后续作品", completed+succeeded, target)
+		reason := fmt.Sprintf("额外评分当前共 %d/%d 首，可用作品不足，跳过剩余目标，等待服务端提供后续作品", completed+succeeded, target)
+		c.printf("跳过：%s", reason)
+		c.root.ReportSkip(account, "music-partner", reason)
 	}
 	return nil
+}
+
+// 只处理当前接口的明确跳过结果，先前的真实错误仍由调用方保留。
+func (c *MusicPartner) recordSkippedResponse(account, label string, err error) bool {
+	var failure *musicPartnerFailure
+	if !errors.As(err, &failure) || !failure.skipped {
+		return false
+	}
+	reason := failure.Error()
+	if label != "" {
+		reason = label + " " + reason
+	}
+	c.printf("跳过：%s", reason)
+	c.root.ReportSkip(account, "music-partner", reason)
+	return true
 }
 
 func (c *MusicPartner) score(ctx context.Context, client musicPartnerAPI, cfg *config.MusicPartnerConf, taskID int64, work weapi.PartnerWork, extra bool) error {
@@ -663,6 +701,7 @@ type musicPartnerFailure struct {
 	message        string
 	stop           bool
 	accountBlocked bool
+	skipped        bool
 }
 
 func (e *musicPartnerFailure) Error() string { return e.message }
@@ -681,10 +720,10 @@ func musicPartnerMustStop(ctx context.Context, err error) bool {
 func musicPartnerResponseError(operation string, code int64, message string) error {
 	prefix := fmt.Sprintf("%s失败（服务码 %d，分类=%s）：", operation, code, musicPartnerResponseClass(code, message))
 	if code == 405 && strings.Contains(message, "今日没有更多可评定歌曲") {
-		return &musicPartnerFailure{message: prefix + "今日没有更多可评定歌曲啦；本次目标未完成，停止评分且不重试", stop: true}
+		return &musicPartnerFailure{message: fmt.Sprintf("%s跳过（服务码 %d，分类=当日可评歌曲已用尽）：今日没有更多可评定歌曲啦；已达当日可评上限，停止评分且不重试，保留实际完成进度", operation, code), stop: true, skipped: true}
 	}
 	if code == 405 && strings.Contains(message, "资源状态异常") {
-		return &musicPartnerFailure{message: prefix + "作品资源不可用，已跳过且未计为成功"}
+		return &musicPartnerFailure{message: fmt.Sprintf("%s跳过（服务码 %d，分类=资源不可用）：作品资源不可用，已跳过且未计为成功", operation, code), skipped: true}
 	}
 	if code == 703 {
 		return &musicPartnerFailure{message: prefix + "当前账号没有音乐合伙人参与资格", stop: true}

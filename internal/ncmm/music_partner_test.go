@@ -18,6 +18,7 @@ import (
 	"github.com/3899/ncmm/api/weapi"
 	"github.com/3899/ncmm/config"
 	"github.com/3899/ncmm/pkg/log"
+	"github.com/3899/ncmm/pkg/notify"
 )
 
 type partnerFake struct {
@@ -191,7 +192,7 @@ func TestMusicPartnerConfiguredCookiePathsUseHome(t *testing.T) {
 func TestMusicPartnerSkipsCompletedDailyAndUsesNativeRequest(t *testing.T) {
 	command, cfg := partnerTestCommand(t)
 	fake := &partnerFake{daily: func(context.Context) (*weapi.PartnerTaskResp, error) { return partnerTestDaily(true, false), nil }}
-	if err := command.run(context.Background(), fake, cfg); err != nil {
+	if err := command.run(context.Background(), fake, cfg, "account.json"); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.evaluations) != 1 {
@@ -222,7 +223,7 @@ func TestMusicPartnerExtraLimitAndFullList(t *testing.T) {
 				}
 				return &weapi.PartnerEvaluateResp{RespCommon: types.RespCommon[weapi.PartnerEvaluateRespData]{Code: 200, Data: weapi.PartnerEvaluateRespData{EvaluateRes: true}}}, nil
 			}
-			if err := command.run(context.Background(), fake, cfg); err != nil {
+			if err := command.run(context.Background(), fake, cfg, "account.json"); err != nil {
 				t.Fatal(err)
 			}
 			if len(fake.evaluations) != tt.want || len(fake.reports) != tt.want {
@@ -256,7 +257,7 @@ func TestMusicPartnerRejectsInvalidDailyBeforeWriting(t *testing.T) {
 			response := partnerTestDaily(false, false)
 			tt.alter(response)
 			fake := &partnerFake{daily: func(context.Context) (*weapi.PartnerTaskResp, error) { return response, nil }}
-			if err := command.run(context.Background(), fake, cfg); err == nil {
+			if err := command.run(context.Background(), fake, cfg, "account.json"); err == nil {
 				t.Fatal("expected invalid response error")
 			}
 			if len(fake.evaluations) > 0 {
@@ -272,7 +273,7 @@ func TestMusicPartnerCancelInterruptsWait(t *testing.T) {
 	defer cancel()
 	command.wait = func(ctx context.Context, d time.Duration) error { cancel(); return musicPartnerWait(ctx, d) }
 	fake := &partnerFake{daily: func(context.Context) (*weapi.PartnerTaskResp, error) { return partnerTestDaily(false), nil }}
-	if err := command.run(ctx, fake, cfg); !errors.Is(err, context.Canceled) {
+	if err := command.run(ctx, fake, cfg, "account.json"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("error=%v", err)
 	}
 	if len(fake.evaluations) > 0 {
@@ -287,7 +288,7 @@ func TestMusicPartnerStopsOnRateLimitAndExpiredLogin(t *testing.T) {
 			fake := &partnerFake{daily: func(context.Context) (*weapi.PartnerTaskResp, error) { return partnerTestDaily(false, false), nil }, evaluate: func(context.Context, *weapi.PartnerEvaluateReq) (*weapi.PartnerEvaluateResp, error) {
 				return &weapi.PartnerEvaluateResp{RespCommon: types.RespCommon[weapi.PartnerEvaluateRespData]{Code: code}}, nil
 			}}
-			if err := command.run(context.Background(), fake, cfg); err == nil {
+			if err := command.run(context.Background(), fake, cfg, "account.json"); err == nil {
 				t.Fatal("expected account stop error")
 			}
 			if len(fake.evaluations) != 1 {
@@ -299,6 +300,7 @@ func TestMusicPartnerStopsOnRateLimitAndExpiredLogin(t *testing.T) {
 
 func TestMusicPartnerResourceUnavailableIsNotSuccess(t *testing.T) {
 	command, cfg := partnerTestCommand(t)
+	command.root.Report = notify.NewReport("music-partner")
 	fake := &partnerFake{daily: func(context.Context) (*weapi.PartnerTaskResp, error) { return partnerTestDaily(false, false), nil }}
 	fake.evaluate = func(_ context.Context, req *weapi.PartnerEvaluateReq) (*weapi.PartnerEvaluateResp, error) {
 		if req.WorkId == "1" {
@@ -306,8 +308,11 @@ func TestMusicPartnerResourceUnavailableIsNotSuccess(t *testing.T) {
 		}
 		return &weapi.PartnerEvaluateResp{RespCommon: types.RespCommon[weapi.PartnerEvaluateRespData]{Code: 200, Data: weapi.PartnerEvaluateRespData{EvaluateRes: true}}}, nil
 	}
-	if err := command.run(context.Background(), fake, cfg); err == nil {
-		t.Fatal("resource skip incorrectly reported success")
+	if err := command.run(context.Background(), fake, cfg, "account.json"); err != nil {
+		t.Fatalf("unavailable resource must be skipped without failing the batch: %v", err)
+	}
+	if failed, skipped, unknown := command.root.Report.OutcomeCounts(); failed != 0 || skipped != 1 || unknown != 0 {
+		t.Fatalf("unavailable resource must remain a skip: %+v", command.root.Report.Items())
 	}
 	if len(fake.evaluations) != 2 {
 		t.Fatal("resource skip should allow the next work")
@@ -325,7 +330,7 @@ func TestMusicPartnerRechecksUncertainScoreOnceWithoutResubmitting(t *testing.T)
 			}, evaluate: func(context.Context, *weapi.PartnerEvaluateReq) (*weapi.PartnerEvaluateResp, error) {
 				return nil, context.DeadlineExceeded
 			}}
-			err := command.run(context.Background(), fake, cfg)
+			err := command.run(context.Background(), fake, cfg, "account.json")
 			if (err == nil) != confirmed {
 				t.Fatalf("confirmed=%v err=%v", confirmed, err)
 			}
@@ -349,7 +354,7 @@ func TestMusicPartnerRecheckRejectsChangedTask(t *testing.T) {
 	}, evaluate: func(context.Context, *weapi.PartnerEvaluateReq) (*weapi.PartnerEvaluateResp, error) {
 		return nil, io.ErrUnexpectedEOF
 	}}
-	if err := command.run(context.Background(), fake, cfg); err == nil {
+	if err := command.run(context.Background(), fake, cfg, "account.json"); err == nil {
 		t.Fatal("a different daily task cannot confirm the old write")
 	}
 	if len(fake.evaluations) != 1 {
@@ -363,7 +368,7 @@ func TestMusicPartnerFailedListenDoesNotScoreThatWork(t *testing.T) {
 	fake := &partnerFake{daily: func(context.Context) (*weapi.PartnerTaskResp, error) { return partnerTestDaily(), nil }, extra: func(context.Context) (*weapi.PartnerExtraTaskResp, error) { return partnerTestExtra(2, 0), nil }, report: func(_ context.Context, req *weapi.PartnerExtraReportReq) (*weapi.PartnerExtraReportResp, error) {
 		return &weapi.PartnerExtraReportResp{RespCommon: types.RespCommon[weapi.PartnerExtraReportRespData]{Code: 200, Data: weapi.PartnerExtraReportRespData{InteractResult: req.WorkId != "100"}}}, nil
 	}}
-	if err := command.run(context.Background(), fake, cfg); err == nil {
+	if err := command.run(context.Background(), fake, cfg, "account.json"); err == nil {
 		t.Fatal("partial report failure should fail the task")
 	}
 	if len(fake.evaluations) != 1 || fake.evaluations[0].WorkId != "101" {
@@ -406,7 +411,7 @@ func TestMusicPartnerInvalidExtraListNeverWrites(t *testing.T) {
 			list := partnerTestExtra(2, 0)
 			tt.alter(list)
 			fake := &partnerFake{daily: func(context.Context) (*weapi.PartnerTaskResp, error) { return partnerTestDaily(), nil }, extra: func(context.Context) (*weapi.PartnerExtraTaskResp, error) { return list, nil }}
-			if err := command.run(context.Background(), fake, cfg); err == nil {
+			if err := command.run(context.Background(), fake, cfg, "account.json"); err == nil {
 				t.Fatal("invalid extra response accepted")
 			}
 			if len(fake.evaluations) != 0 || len(fake.reports) != 0 {
@@ -430,7 +435,7 @@ func TestMusicPartnerExtraUncertainResultRechecksWithoutReplay(t *testing.T) {
 	}, evaluate: func(context.Context, *weapi.PartnerEvaluateReq) (*weapi.PartnerEvaluateResp, error) {
 		return nil, io.ErrUnexpectedEOF
 	}}
-	if err := command.run(context.Background(), fake, cfg); err != nil {
+	if err := command.run(context.Background(), fake, cfg, "account.json"); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.evaluations) != 1 || len(fake.reports) != 1 || reads != 2 {
@@ -443,7 +448,7 @@ func TestMusicPartnerDoesNotAcceptFalseEvaluationSuccess(t *testing.T) {
 	fake := &partnerFake{daily: func(context.Context) (*weapi.PartnerTaskResp, error) { return partnerTestDaily(false), nil }, evaluate: func(context.Context, *weapi.PartnerEvaluateReq) (*weapi.PartnerEvaluateResp, error) {
 		return &weapi.PartnerEvaluateResp{RespCommon: types.RespCommon[weapi.PartnerEvaluateRespData]{Code: 200}}, nil
 	}}
-	if err := command.run(context.Background(), fake, cfg); err == nil {
+	if err := command.run(context.Background(), fake, cfg, "account.json"); err == nil {
 		t.Fatal("missing evaluateRes incorrectly marked success")
 	}
 	if len(fake.evaluations) != 1 {
@@ -529,7 +534,7 @@ func TestMusicPartnerCancellationStopsPendingHTTP(t *testing.T) {
 		return nil, ctx.Err()
 	}}
 	done := make(chan error, 1)
-	go func() { done <- command.run(ctx, fake, cfg) }()
+	go func() { done <- command.run(ctx, fake, cfg, "account.json") }()
 	<-started
 	cancel()
 	select {
@@ -544,6 +549,7 @@ func TestMusicPartnerCancellationStopsPendingHTTP(t *testing.T) {
 
 func TestMusicPartnerSkippedExtraDoesNotConsumeSuccessLimit(t *testing.T) {
 	command, cfg := partnerTestCommand(t)
+	command.root.Report = notify.NewReport("music-partner")
 	cfg.ExtraTasks = true
 	cfg.ExtraLimitMin, cfg.ExtraLimitMax = 1, 1
 	fake := &partnerFake{daily: func(context.Context) (*weapi.PartnerTaskResp, error) { return partnerTestDaily(), nil }, extra: func(context.Context) (*weapi.PartnerExtraTaskResp, error) { return partnerTestExtra(3, 0), nil }}
@@ -553,8 +559,11 @@ func TestMusicPartnerSkippedExtraDoesNotConsumeSuccessLimit(t *testing.T) {
 		}
 		return &weapi.PartnerEvaluateResp{RespCommon: types.RespCommon[weapi.PartnerEvaluateRespData]{Code: 200, Data: weapi.PartnerEvaluateRespData{EvaluateRes: true}}}, nil
 	}
-	if err := command.run(context.Background(), fake, cfg); err == nil {
-		t.Fatal("partial failure should be returned")
+	if err := command.run(context.Background(), fake, cfg, "account.json"); err != nil {
+		t.Fatalf("a skipped work must not fail the run: %v", err)
+	}
+	if failed, skipped, unknown := command.root.Report.OutcomeCounts(); failed != 0 || skipped != 1 || unknown != 0 {
+		t.Fatalf("skipped extra work must remain a skip: %+v", command.root.Report.Items())
 	}
 	if len(fake.evaluations) != 2 || len(fake.reports) != 2 {
 		t.Fatalf("expected skipped work plus one success, got %d scores/%d reports", len(fake.evaluations), len(fake.reports))
@@ -583,7 +592,7 @@ func TestMusicPartnerHTTPRejectionStopsWithoutRecheck(t *testing.T) {
 			}, evaluate: func(context.Context, *weapi.PartnerEvaluateReq) (*weapi.PartnerEvaluateResp, error) {
 				return nil, &api.HTTPStatusError{StatusCode: status}
 			}}
-			if err := command.run(context.Background(), fake, cfg); err == nil {
+			if err := command.run(context.Background(), fake, cfg, "account.json"); err == nil {
 				t.Fatal("HTTP rejection accepted")
 			}
 			if reads != 1 || len(fake.evaluations) != 1 {

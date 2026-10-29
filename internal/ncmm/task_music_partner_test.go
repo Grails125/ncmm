@@ -11,6 +11,7 @@ import (
 
 	"github.com/3899/ncmm/api"
 	"github.com/3899/ncmm/config"
+	"github.com/3899/ncmm/pkg/notify"
 )
 
 func TestTaskMusicPartnerLegacyQueueAndFailure(t *testing.T) {
@@ -61,15 +62,18 @@ func TestTaskMusicPartnerAccountStopReasons(t *testing.T) {
 	}
 }
 
-func TestTaskMusicPartnerBlockedByPreviousTaskIsNotSuccess(t *testing.T) {
+func TestTaskMusicPartnerBlockedByPreviousTaskIsSkipped(t *testing.T) {
 	cfg := &config.Config{Task: &config.TaskConf{MusicPartner: true}}
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	task := NewTask(&Root{Cfg: cfg}, nil)
+	task := NewTask(&Root{Cfg: cfg, Report: notify.NewReport("task")}, nil)
 	task.runQueue(context.Background(), []string{"music-partner"}, []Account{{Filepath: "account.json", IsMain: true}}, map[string]bool{"music-partner": true}, map[string]bool{"account.json": true}, nil, false)
-	if task.musicPartnerErr == nil {
-		t.Fatal("unexecuted scoring incorrectly considered successful")
+	if err := task.finishRun(); err != nil {
+		t.Fatalf("unexecuted scoring should be a non-failing skip: %v", err)
+	}
+	if failed, skipped, unknown := task.root.Report.OutcomeCounts(); failed != 0 || skipped != 1 || unknown != 0 {
+		t.Fatalf("unexecuted scoring must remain a skip: %+v", task.root.Report.Items())
 	}
 }
 
@@ -79,8 +83,11 @@ func TestTaskMusicPartnerNoSelectedAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	task := NewTask(&Root{Cfg: cfg}, nil)
-	if err := task.execute(context.Background()); err == nil {
-		t.Fatal("empty account selection was reported as success")
+	if err := task.execute(context.Background()); err != nil {
+		t.Fatalf("disabled account selection must be a non-failing skip: %v", err)
+	}
+	if failed, skipped, unknown := task.root.Report.OutcomeCounts(); failed != 0 || skipped != 1 || unknown != 0 {
+		t.Fatalf("disabled account selection must remain a skip: %+v", task.root.Report.Items())
 	}
 	task.opts.OnlyFast = true
 	if err := task.execute(context.Background()); err != nil {

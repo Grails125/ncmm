@@ -32,15 +32,14 @@ type TaskOpts struct {
 }
 
 type Task struct {
-	root            *Root
-	cmd             *cobra.Command
-	l               *log.Logger
-	opts            TaskOpts
-	rng             *rand.Rand
-	wait            func(context.Context, time.Duration)
-	failures        []error
-	skipped         int
-	musicPartnerErr error // 评分未能执行时保留非零退出；已执行的评分错误统一记入 failures。
+	root     *Root
+	cmd      *cobra.Command
+	l        *log.Logger
+	opts     TaskOpts
+	rng      *rand.Rand
+	wait     func(context.Context, time.Duration)
+	failures []error
+	skipped  int
 }
 
 type Account struct {
@@ -599,9 +598,6 @@ func (c *Task) markAccountTasksBlocked(account Account, queue []string, activeTa
 		}
 		seen[reportAction] = true
 		reason := "账号鉴权失效或被限流，任务未执行"
-		if reportAction == "music-partner" && c.musicPartnerErr == nil {
-			c.musicPartnerErr = fmt.Errorf("账号 (%s) 鉴权失效或被限流，音乐合伙人评分未执行", account.Filepath)
-		}
 		c.reportSkip(account.Filepath, reportAction, reason)
 	}
 }
@@ -609,7 +605,6 @@ func (c *Task) markAccountTasksBlocked(account Account, queue []string, activeTa
 func (c *Task) execute(ctx context.Context) error {
 	c.failures = nil
 	c.skipped = 0
-	c.musicPartnerErr = nil
 	c.root.yunbeiRewards = nil
 	if c.root.Report == nil {
 		c.root.Report = notify.NewReport("task")
@@ -726,8 +721,7 @@ func (c *Task) execute(ctx context.Context) error {
 			}
 		}
 		if !selected {
-			c.musicPartnerErr = fmt.Errorf("音乐合伙人未选择可执行账号，请启用已配置的主账号或辅助账号")
-			c.reportSkip("-", "music-partner", c.musicPartnerErr.Error())
+			c.reportSkip("-", "music-partner", "音乐合伙人未选择可执行账号，请启用已配置的主账号或辅助账号")
 		}
 	}
 	// 整次 task 进程共享：同一账号 Cookie 失效后，快/慢任务组均不再继续执行该账号
@@ -811,16 +805,10 @@ func (c *Task) finishRun() error {
 	}
 	if failures > 0 || unconfirmed > 0 {
 		batchErr := errors.Join(c.failures...)
-		if c.musicPartnerErr != nil {
-			batchErr = errors.Join(batchErr, c.musicPartnerErr)
-		}
 		if batchErr != nil {
 			return fmt.Errorf("批量任务执行结束：%d 项任务失败，%d 项未确认: %w", failures, unconfirmed, batchErr)
 		}
 		return fmt.Errorf("批量任务执行结束：%d 项任务失败，%d 项未确认，请查看子任务汇总", failures, unconfirmed)
-	}
-	if c.musicPartnerErr != nil {
-		return c.musicPartnerErr
 	}
 	if skips > 0 {
 		return nil

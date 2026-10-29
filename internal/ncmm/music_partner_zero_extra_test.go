@@ -14,7 +14,7 @@ func TestMusicPartnerZeroExtraTargetSkipsExtraRequests(t *testing.T) {
 		t.Fatal("每日额外目标为0时不得请求额外任务")
 		return nil, nil
 	}}
-	if err := command.extra(context.Background(), fake, cfg, 10); err != nil {
+	if err := command.extra(context.Background(), fake, cfg, 10, "account.json"); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.evaluations) != 0 || len(fake.reports) != 0 {

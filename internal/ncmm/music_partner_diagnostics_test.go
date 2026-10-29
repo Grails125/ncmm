@@ -32,7 +32,7 @@ func TestMusicPartnerDiagnosticsKeepStageAndCodeWithoutSecrets(t *testing.T) {
 		return &weapi.PartnerEvaluateResp{RespCommon: types.RespCommon[weapi.PartnerEvaluateRespData]{Code: 405, Message: "操作频繁 " + secret}}, nil
 	}
 	cfg.ExtraTasks = true
-	if err := command.run(context.Background(), fake, cfg); err == nil {
+	if err := command.run(context.Background(), fake, cfg, "account.json"); err == nil {
 		t.Fatal("rejection accepted")
 	}
 	for _, want := range []string{"阶段=播放结束上报", "阶段=评分提交", "作品=100", "服务码=405", "分类=频率限制"} {
@@ -60,7 +60,7 @@ func TestMusicPartnerDiagnosticsIdentifyConfirmationFailure(t *testing.T) {
 	}, evaluate: func(context.Context, *weapi.PartnerEvaluateReq) (*weapi.PartnerEvaluateResp, error) {
 		return &weapi.PartnerEvaluateResp{RespCommon: types.RespCommon[weapi.PartnerEvaluateRespData]{Code: 200}}, nil
 	}}
-	if err := command.run(context.Background(), fake, cfg); err == nil {
+	if err := command.run(context.Background(), fake, cfg, "account.json"); err == nil {
 		t.Fatal("unconfirmed score accepted")
 	}
 	for _, want := range []string{"服务码=200", "评分成功标记=false", "阶段=评分结果核对", "阶段=读取每日任务", "服务码=460"} {
@@ -80,7 +80,7 @@ func TestMusicPartnerHTTPDiagnosticsKeepStatus(t *testing.T) {
 	fake := &partnerFake{daily: func(context.Context) (*weapi.PartnerTaskResp, error) { return partnerTestDaily(false), nil }, evaluate: func(context.Context, *weapi.PartnerEvaluateReq) (*weapi.PartnerEvaluateResp, error) {
 		return nil, &api.HTTPStatusError{StatusCode: http.StatusTooManyRequests}
 	}}
-	if err := command.run(context.Background(), fake, cfg); err == nil {
+	if err := command.run(context.Background(), fake, cfg, "account.json"); err == nil {
 		t.Fatal("HTTP rejection accepted")
 	}
 	if !strings.Contains(output.String(), "阶段=评分提交") || !strings.Contains(output.String(), "HTTP=429") {
