@@ -561,17 +561,32 @@ func (c *PlayIds) executeForClient(ctx context.Context, cli *api.Client, cookieF
 	}
 
 	var (
-		totalSuccess     int64 = 0
-		candidateSuccess int64 = 0
-		downloadedSongs        = make(map[string]bool)
-		totalPlayedCount int64 = 0
-		round            int   = 1
+		totalSuccess      int64 = 0
+		candidateSuccess  int64 = 0
+		downloadedSongs         = make(map[string]bool)
+		failedSongs             = make(map[string]bool)
+		dailyLimitReached bool
+		totalPlayedCount  int64 = 0
+		round             int   = 1
 	)
 
 	c.log("播放任务启动：本次目标刷播=%d首, 今日已播累计=%d首, 今日随机上限=%d首", runTarget, dailyCompleted, dailyTarget)
 
 	// 外层大循环：按轮次播放，直到播完本日单次目标 runTarget
 	for totalPlayedCount < runTarget {
+		if ctx.Err() != nil {
+			return candidateSuccess, ctx.Err()
+		}
+		countable := false
+		for _, id := range validCandidateIds {
+			if !failedSongs[id] {
+				countable = true
+				break
+			}
+		}
+		if !countable && (c.root.Cfg.MixPlay == nil || !c.root.Cfg.MixPlay.CountTarget) {
+			break
+		}
 		// A. 组装并打乱本轮歌池
 		var roundList []string
 		if len(allRecommendIds) > 0 && targetNumRecommend > 0 {
@@ -592,7 +607,7 @@ func (c *PlayIds) executeForClient(ctx context.Context, cli *api.Client, cookieF
 		// 过滤在详情获取中失败或不存在的 ID
 		var validRoundList []string
 		for _, id := range roundList {
-			if _, ok := songsDetailMap[id]; ok {
+			if _, ok := songsDetailMap[id]; ok && !failedSongs[id] {
 				validRoundList = append(validRoundList, id)
 			}
 		}
@@ -618,6 +633,12 @@ func (c *PlayIds) executeForClient(ctx context.Context, cli *api.Client, cookieF
 		// C. 内层小循环：顺序播放当前轮次的每首歌曲
 		var isInterrupted = false
 		for roundIdx, songId := range validRoundList {
+			if ctx.Err() != nil {
+				return candidateSuccess, ctx.Err()
+			}
+			if failedSongs[songId] {
+				continue
+			}
 			// 校验当前是否达到了今日最大上限；无缓存模式只能使用本进程内已经完成的播放数
 			currentCompleted := dailyCompleted + totalPlayedCount
 			if cacheEnabled {
@@ -633,6 +654,7 @@ func (c *PlayIds) executeForClient(ctx context.Context, cli *api.Client, cookieF
 			if currentCompleted >= dailyTarget {
 				c.log("  [playids] ⚠️ 触发今日风控随机播放总上限 (%d首)，优雅退出当前运行", dailyTarget)
 				isInterrupted = true
+				dailyLimitReached = true
 				break
 			}
 
@@ -668,9 +690,15 @@ func (c *PlayIds) executeForClient(ctx context.Context, cli *api.Client, cookieF
 			var isCached = false
 			playerResp, err := request.SongPlayerV1(ctx, playerReq)
 			if err != nil {
-				c.log("[WARN] [%d/%d] 调用 SongPlayerV1 失败: %s", totalPlayedCount+1, runTarget, err)
-			} else if playerResp.Code == 200 && len(playerResp.Data) > 0 {
-				songUrl := playerResp.Data[0].Url
+				c.log("[WARN] [%d/%d] 调用 SongPlayerV1 失败: %s", totalPlayedCount+1, runTarget, yunbeiRequestFailure(err))
+			} else if playerResp != nil && playerResp.Code == 200 && len(playerResp.Data) > 0 {
+				songUrl := ""
+				for _, item := range playerResp.Data {
+					if item.Id == songIdInt {
+						songUrl = item.Url
+						break
+					}
+				}
 				if songUrl != "" {
 					if !downloadedSongs[songId] {
 						c.log("开始拉取资源：songId=%s", songId)
@@ -690,22 +718,38 @@ func (c *PlayIds) executeForClient(ctx context.Context, cli *api.Client, cookieF
 					}
 				}
 			}
+			if ctx.Err() != nil {
+				return candidateSuccess, ctx.Err()
+			}
+			if !apiSuccess {
+				failedSongs[songId] = true
+				c.log("跳过歌曲：songId=%s，音频未就绪，不等待整首、不发送播放完成上报；继续其他歌曲", songId)
+				c.root.ReportSkip(cookieFile, "playids/"+songId, "音频未就绪，未发送播放完成上报")
+				continue
+			}
 
 			// 补等待播放时长
 			sleepDuration := time.Duration(songTime) * time.Second
+			if !isCached {
+				sleepDuration -= downloadDuration
+				if sleepDuration < 0 {
+					sleepDuration = 0
+				}
+			}
 			if apiSuccess {
 				if isCached {
 					c.log("拉取完成：songId=%s, 来源=缓存, 已耗时=0ms, 补等待=%s", songId, formatDuration(int64(sleepDuration.Seconds())))
 				} else {
 					c.log("拉取完成：songId=%s, 来源=CDN, 已耗时=%s, 补等待=%s", songId, formatDurationMs(downloadDuration), formatDuration(int64(sleepDuration.Seconds())))
 				}
-			} else {
-				c.log("拉取失败：songId=%s, 将直接等待完整时长=%s", songId, formatDuration(songTime))
 			}
 
 			// 真实进行播放补等待
 			if sleepDuration > 0 {
 				c.sleepWithProgress(ctx, "播放进度", sleepDuration)
+			}
+			if ctx.Err() != nil {
+				return candidateSuccess, ctx.Err()
 			}
 
 			var req = &weapi.WebLogReq{CsrfToken: "", Logs: []map[string]interface{}{
@@ -728,12 +772,20 @@ func (c *PlayIds) executeForClient(ctx context.Context, cli *api.Client, cookieF
 
 			resp, err := request.WebLog(ctx, req)
 			if err != nil {
-				c.log("[ERROR] [%d/%d] 发送播放动作失败: %s", totalPlayedCount+1, runTarget, err)
+				if ctx.Err() != nil {
+					return candidateSuccess, ctx.Err()
+				}
+				failedSongs[songId] = true
+				c.log("[ERROR] [%d/%d] 发送播放动作失败: %s", totalPlayedCount+1, runTarget, yunbeiRequestFailure(err))
 				continue
 			}
-			if resp.Code != 200 {
-				c.log("[ERROR] [%d/%d] 网易云接口返回播放失败，响应数据: %+v", totalPlayedCount+1, runTarget, resp)
-				time.Sleep(1 * time.Second)
+			if resp == nil || resp.Code != 200 {
+				failedSongs[songId] = true
+				code := int64(0)
+				if resp != nil {
+					code = resp.Code
+				}
+				c.log("[ERROR] [%d/%d] 网易云接口返回播放失败，服务码=%d", totalPlayedCount+1, runTarget, code)
 				continue
 			}
 
@@ -808,7 +860,10 @@ func (c *PlayIds) executeForClient(ctx context.Context, cli *api.Client, cookieF
 		round++
 	}
 
-	c.log("本次实际运行总上报数: %d，成功: %d", totalPlayedCount, totalSuccess)
+	c.log("本次播放上报成功: %d，计入目标: %d/%d，失败或跳过歌曲: %d", totalSuccess, totalPlayedCount, runTarget, len(failedSongs))
+	if totalPlayedCount < runTarget && len(failedSongs) > 0 && !dailyLimitReached {
+		return candidateSuccess, fmt.Errorf("播放未达到本次目标：完成 %d/%d 首，%d 首歌曲的音频或上报失败，已继续处理其他可用歌曲", totalPlayedCount, runTarget, len(failedSongs))
+	}
 	return candidateSuccess, nil
 }
 
@@ -883,13 +938,8 @@ func parseIdsFromFile(filePath string) ([]string, error) {
 	return parsePlaySongIDs(string(data)), nil
 }
 
-func downloadAudioToBuffer(ctx context.Context, cli *api.Client, songUrl string) error {
-	resp, err := cli.Download(ctx, songUrl, nil, nil, io.Discard, nil)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	return nil
+func downloadAudioToBuffer(ctx context.Context, cli *api.Client, songURL string) error {
+	return readNeteaseAudio(ctx, neteaseMediaClient(cli), songURL)
 }
 
 func playIdsRecordKey(uid string, songId string) string {

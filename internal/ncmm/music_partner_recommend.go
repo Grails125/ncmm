@@ -107,7 +107,7 @@ func (c *MusicPartner) recommendAccount(ctx context.Context, client *api.Client,
 	uid := home.Data.User.UserId
 	day := time.Now().In(time.FixedZone("CST", 8*3600)).Format("2006-01-02")
 	path := filepath.Join(c.root.getHomePath(), "music-partner-recommend", fmt.Sprintf("%d-%s.json", uid, day))
-	adapter := &partnerRecommendClient{Api: partner, publish: eapi.New(client), uid: uid, media: partnerMediaClient(client), token: c.root.Cfg.Accounts.AntiCheatTokenFor(cookieFile)}
+	adapter := &partnerRecommendClient{Api: partner, publish: eapi.New(client), uid: uid, media: neteaseMediaClient(client), token: c.root.Cfg.Accounts.AntiCheatTokenFor(cookieFile)}
 	cleanupErr := c.cleanupRecommendations(ctx, uid, adapter)
 	if cleanupErr != nil {
 		c.printf("推荐内容到期清理未全部完成：%v", cleanupErr)

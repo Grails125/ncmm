@@ -206,6 +206,46 @@ func TestVipPendingWelfareDoesNotRepeatClaims(t *testing.T) {
 	}
 }
 
+func TestVipNativeWelfareWithoutTaskContextRequiresApp(t *testing.T) {
+	client := newVipConfirmationClient(t, func(path string) string {
+		switch path {
+		case "/eapi/vip-center-bff/task/list":
+			return `{"code":200,"data":[]}`
+		case "/eapi/vipnewcenter/app/user/sign/info":
+			return `{"code":200,"data":[{"today":true,"recordId":123}]}`
+		case "/eapi/vipnewcenter/app/level/growhpoint/basic":
+			return `{"code":200,"data":{"userLevel":{"growthPoint":8314}}}`
+		case "/eapi/vipnewcenter/app/level/growth/details":
+			return `{"code":200,"data":{}}`
+		case "/weapi/middle/vip/mission/user/progress/list":
+			return `{"code":200,"data":[{"missionStatus":50,"progressRate":0,"totalCompleteNum":1,"basicMissionDTO":{"missionId":42,"missionCode":"FLQ","name":"福利券","schemaContent":"{\"jumpUrl\":\"orpheus://rnpage?component=ReactNativeVip&route=welfarecenter\"}"},"stageProgressDTOS":[{"stageStatus":10,"worth":2}]}]}`
+		case "/eapi/vipnewcenter/app/level/task/reward/getall":
+			return `{"code":200,"data":{"result":true}}`
+		default:
+			t.Fatalf("缺少原生任务上下文时不能猜测浏览参数或领取无关商家券：%s", path)
+			return ""
+		}
+	})
+	root := &Root{Cfg: &config.Config{Sign: &config.SignConf{Automatic: true}}, Report: notify.NewReport("test")}
+	c := NewSign(root, nil)
+	var output bytes.Buffer
+	c.cmd.SetOut(&output)
+	c.handleVipTasks(t.Context(), client, weapi.New(client), 4, "fixture")
+	failures, skipped, unknown := root.Report.OutcomeCounts()
+	if failures != 0 || skipped != 1 || unknown != 0 || !strings.Contains(output.String(), "App") {
+		t.Fatalf("应准确标记需 App 完成，不能伪造完成或重复未确认：report=%+v 日志=%s", root.Report.Items(), output.String())
+	}
+}
+
+func TestVipWelfareWithExplicitTaskContextRemainsSupported(t *testing.T) {
+	for _, link := range []string{"orpheus://rnpage?component=ReactNativeVip&route=welfarecenter&view_task_id=42", "https://music.163.com/welfare?view_task_id=42"} {
+		task := eapi.VipTaskListData{MissionId: 42, MissionCode: "FLQ", MainTitle: "福利券", JumpUrl: link}
+		if reason := vipManualTaskReason(task); reason != "" {
+			t.Fatalf("显式任务参数应保留已有路径：%s", reason)
+		}
+	}
+}
+
 func TestVipFinalSignUsesOneConfirmedOutcomeWithoutOverwritingList(t *testing.T) {
 	for _, confirmed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("confirmed-%t", confirmed), func(t *testing.T) {
