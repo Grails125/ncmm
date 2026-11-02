@@ -50,6 +50,19 @@ type partnerRecommendReceipt struct {
 	Comment    partnerPublishReceipt `json:"comment"`
 }
 
+// 任何发布字段均保守占用每日目标；仅下载音频前保存的空记录不占名额。
+func (r *partnerRecommendReceipt) hasPublication() bool {
+	return r != nil && (r.Note != (partnerPublishReceipt{}) || r.Comment != (partnerPublishReceipt{}))
+}
+
+// 音频准备只有只读请求，可在没有任何发布痕迹时改选候选歌曲。
+type partnerRecommendAudioError struct{ cause error }
+
+func (e *partnerRecommendAudioError) Error() string {
+	return fmt.Sprintf("获取推荐音频失败，未发布：%v", e.cause)
+}
+func (e *partnerRecommendAudioError) Unwrap() error { return e.cause }
+
 type partnerRecommendJournal struct {
 	Version int                                 `json:"version"`
 	Works   map[string]*partnerRecommendReceipt `json:"works"`
@@ -184,16 +197,20 @@ func (c *MusicPartner) recommend(ctx context.Context, client musicPartnerRecomme
 			completed++
 		}
 	}
-	for key := range journal.Works {
-		used[key] = true
+	for key, receipt := range journal.Works {
+		if receipt.hasPublication() {
+			used[key] = true
+		}
 	}
 	c.printf("推荐歌曲：每日目标 %d 首（范围 %d～%d），服务器已完成笔记和乐评 %d 首", target, cfg.RecommendCountMin, cfg.RecommendCountMax, completed)
 	if completed >= target {
 		return nil
 	}
 	var failures []error
+	var audioFailures []error
 	seen := make(map[int64]bool)
 	selected := 0
+	audioFailureStreak := 0
 	// 先恢复部分完成的歌曲，防止另选新歌导致超出每日目标。
 	ordered := append([]weapi.PartnerRecommendResource{}, items...)
 	if cfg.RecommendOrder == "random" {
@@ -204,6 +221,7 @@ func (c *MusicPartner) recommend(ctx context.Context, client musicPartnerRecomme
 	} else {
 		c.printf("推荐歌曲抽取方式：按列表顺序")
 	}
+candidateLoop:
 	for pass := 0; pass < 2; pass++ {
 		for _, item := range ordered {
 			key := strconv.FormatInt(item.Work.Id, 10)
@@ -229,22 +247,39 @@ func (c *MusicPartner) recommend(ctx context.Context, client musicPartnerRecomme
 			}
 			selected++
 			if err := c.recommendSong(ctx, client, cfg, item, path, journal); err != nil {
+				if musicPartnerMustStop(ctx, err) {
+					return errors.Join(errors.Join(failures...), errors.Join(audioFailures...), err)
+				}
+				var audioErr *partnerRecommendAudioError
+				if errors.As(err, &audioErr) && !journal.Works[key].hasPublication() {
+					selected--
+					delete(used, key)
+					audioFailures = append(audioFailures, err)
+					audioFailureStreak++
+					c.printf("%s 音频未就绪，本首未开始试听或发布，不占用今日发布名额，继续其他候选：%v", musicPartnerWorkLabel(item.Work), err)
+					if audioFailureStreak >= 3 {
+						c.printf("连续 3 首候选音频未就绪，暂停本轮候选尝试；请检查运行环境的 CDN 连通性，下次调度再恢复")
+						break candidateLoop
+					}
+					continue
+				}
 				c.printf("%s 推荐任务未完成：%v", musicPartnerWorkLabel(item.Work), err)
 				failures = append(failures, err)
-				if musicPartnerMustStop(ctx, err) {
-					return errors.Join(failures...)
-				}
 			}
+			audioFailureStreak = 0
 		}
 	}
 	after, err := c.recommendDaily(ctx, client)
 	if err != nil {
-		return errors.Join(append(failures, err)...)
+		return errors.Join(errors.Join(failures...), errors.Join(audioFailures...), err)
 	}
 	finished := 0
 	finalItems := after.Data.RecResources
 	if refreshed, refreshErr := client.PartnerRecommendResources(ctx); refreshErr == nil && refreshed != nil && refreshed.Code == 200 {
 		finalItems = mergePartnerRecommendations(refreshed.Data.Resources, finalItems)
+	}
+	if ctx.Err() != nil {
+		return errors.Join(errors.Join(failures...), errors.Join(audioFailures...), ctx.Err())
 	}
 	for _, item := range finalItems {
 		if item.PublishEvent && item.PublishComment {
@@ -253,7 +288,10 @@ func (c *MusicPartner) recommend(ctx context.Context, client musicPartnerRecomme
 	}
 	c.printf("推荐歌曲：服务器确认已完成 %d 首，今日推荐积分 %d → %d（%+d）", finished, daily.Data.CurRcmdScore, after.Data.CurRcmdScore, after.Data.CurRcmdScore-daily.Data.CurRcmdScore)
 	if finished < target {
-		failures = append(failures, fmt.Errorf("推荐歌曲尚未达到每日目标，已保留发布记录，下次仅恢复未完成步骤"))
+		failures = append(failures, audioFailures...)
+		failures = append(failures, fmt.Errorf("推荐歌曲尚未达到每日目标：服务器确认 %d/%d 首；已保留发布记录，下次仅恢复未完成步骤", finished, target))
+	} else if len(audioFailures) > 0 {
+		c.printf("推荐歌曲：跳过 %d 首音频未就绪候选，今日目标已由其他可用歌曲补足", len(audioFailures))
 	}
 	return errors.Join(failures...)
 }
@@ -341,7 +379,7 @@ func (c *MusicPartner) recommendSong(ctx context.Context, client musicPartnerRec
 	needsNew := (!receipt.Note.Reported && !receipt.Note.Attempted) || (!receipt.Comment.Reported && !receipt.Comment.Attempted)
 	if needsNew {
 		if err := client.PrepareAudio(ctx, item.Work); err != nil {
-			return fmt.Errorf("获取推荐音频失败，未发布：%w", err)
+			return &partnerRecommendAudioError{cause: err}
 		}
 		delay := cfg.RecommendWaitMin
 		if cfg.RecommendWaitMax > delay {

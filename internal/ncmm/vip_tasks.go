@@ -695,39 +695,58 @@ func (c *SignIn) handleVipTasks(ctx context.Context, cli *api.Client, request *w
 		c.cmd.Printf("  ⚠️ 获取黑胶乐签最终记录失败（错误类型 %T）\n", err)
 	}
 
-	// 统一取消红心，避免干扰用户歌单
+	// 沿用本轮记录的取消请求；请求回执不代表原有红心状态已被完整恢复。
 	if len(likedSongIds) > 0 {
-		c.cmd.Printf("  👉 统一取消 %d 首热门 VIP 歌曲的红心，彻底恢复用户歌单...\n", len(likedSongIds))
+		c.cmd.Printf("  👉 为本轮记录的 %d 首歌曲提交取消红心请求...\n", len(likedSongIds))
+		accepted := 0
 		for _, songIdStr := range likedSongIds {
-			_, _ = eapiRequest.SongLike(ctx, &eapi.SongLikeReq{
+			reply, err := eapiRequest.SongLike(ctx, &eapi.SongLikeReq{
 				TrackId:    songIdStr,
 				Like:       "false",
 				Time:       "3",
 				CheckToken: "",
 			})
+			switch {
+			case err != nil:
+				c.cmd.Printf("    ⚠️ 歌曲 ID %s 取消红心请求失败（错误类型 %T）\n", songIdStr, err)
+			case reply == nil:
+				c.cmd.Printf("    ⚠️ 歌曲 ID %s 取消红心回执缺失，结果未确认\n", songIdStr)
+			case reply.Code != 200:
+				c.cmd.Printf("    ⚠️ 歌曲 ID %s 取消红心未获接受（服务码=%d）\n", songIdStr, reply.Code)
+			default:
+				accepted++
+			}
 			sleepSec := 1 + rand.Intn(3)
 			time.Sleep(time.Duration(sleepSec) * time.Second)
 		}
-		c.cmd.Println("  ✅ 统一取消红心完成")
+		c.cmd.Printf("  ℹ️ 取消红心请求已接受：%d/%d；未获接受的请求不计为清理成功\n", accepted, len(likedSongIds))
 	}
 	return finalGrowthState
 }
 
-// doVipSongLike 专门操作热门 VIP 歌曲，不干扰个人收藏歌单
-func (c *SignIn) doVipSongLike(ctx context.Context, request *weapi.Api, eapiRequest *eapi.Api) []string {
+type vipSongLikeAPI interface {
+	SongLike(context.Context, *eapi.SongLikeReq) (*eapi.SongLikeResp, error)
+}
+
+// doVipSongLike 提交候选歌曲红心请求，任务完成仍以官方状态为准。
+func (c *SignIn) doVipSongLike(ctx context.Context, request *weapi.Api, eapiRequest vipSongLikeAPI) []string {
 	// 获取热门 VIP 歌曲歌单 8402996200
 	detail, err := request.PlaylistDetail(ctx, &weapi.PlaylistDetailReq{
 		Id: "8402996200",
 		N:  "10",
 		S:  "0",
 	})
-	if err != nil || detail.Code != 200 || len(detail.Playlist.TrackIds) == 0 {
-		c.cmd.Printf("  ❌ 获取热门 VIP 歌曲歌单失败，取消操作以避嫌: %v\n", err)
+	if err != nil || detail == nil || detail.Code != 200 || len(detail.Playlist.TrackIds) == 0 {
+		code := int64(0)
+		if detail != nil {
+			code = detail.Code
+		}
+		c.cmd.Printf("  ⚠️ 获取 VIP 候选歌单失败或无可用候选，未提交红心请求（服务码=%d，错误类型 %T）\n", code, err)
 		return nil
 	}
 
 	trackIds := detail.Playlist.TrackIds
-	c.cmd.Printf("  👉 成功获取热门 VIP 歌单，包含 %d 首歌曲，准备随机挑选 3 首进行红心打卡...\n", len(trackIds))
+	c.cmd.Printf("  👉 VIP 候选歌单包含 %d 首歌曲，目标红心 3 首；候选不等于新增红心，实际进度以官方状态为准\n", len(trackIds))
 
 	n := len(trackIds)
 	count := 3
@@ -745,20 +764,28 @@ func (c *SignIn) doVipSongLike(ctx context.Context, request *weapi.Api, eapiRequ
 		songIdStr := fmt.Sprintf("%d", songId)
 
 		// 1. 红心该热门歌曲
-		_, likeErr := eapiRequest.SongLike(ctx, &eapi.SongLikeReq{
+		likeReply, likeErr := eapiRequest.SongLike(ctx, &eapi.SongLikeReq{
 			TrackId:    songIdStr,
 			Like:       "true",
 			Time:       "3",
 			CheckToken: "",
 		})
 		if likeErr != nil {
-			c.cmd.Printf("    ❌ [%d/3] 红心歌曲 ID %d 失败: %v\n", i+1, songId, likeErr)
+			c.cmd.Printf("    ❌ [%d/3] 歌曲 ID %d 红心请求失败（错误类型 %T）\n", i+1, songId, likeErr)
+			continue
+		}
+		if likeReply == nil {
+			c.cmd.Printf("    ⚠️ [%d/3] 歌曲 ID %d 红心回执缺失，结果未确认\n", i+1, songId)
+			continue
+		}
+		if likeReply.Code != 200 {
+			c.cmd.Printf("    ❌ [%d/3] 歌曲 ID %d 红心请求未获接受（服务码=%d）\n", i+1, songId, likeReply.Code)
 			continue
 		}
 
 		// 2. 模拟播放器停留避嫌
 		sleepSec := 3 + rand.Intn(8) // 3 ~ 10 秒
-		c.cmd.Printf("    ⏳ [%d/3] 歌曲 ID %d 已红心，模拟在播放器停留 %d 秒以避嫌...\n", i+1, songId, sleepSec)
+		c.cmd.Printf("    ⏳ [%d/3] 歌曲 ID %d 红心请求已接受（服务码=200），等待 %d 秒；不据此确认新增红心或任务完成\n", i+1, songId, sleepSec)
 
 		select {
 		case <-ctx.Done():
@@ -770,7 +797,7 @@ func (c *SignIn) doVipSongLike(ctx context.Context, request *weapi.Api, eapiRequ
 		likedIds = append(likedIds, songIdStr)
 		successCount++
 	}
-	c.cmd.Printf("  ✅ 红心 3 首 VIP 单曲操作完毕，成功: %d/%d (暂保留红心以待领取奖励)\n", successCount, count)
+	c.cmd.Printf("  ℹ️ 红心请求处理结束：目标 3 首，本次已接受并等待 %d/%d；任务完成以官方状态为准\n", successCount, count)
 	return likedIds
 }
 
