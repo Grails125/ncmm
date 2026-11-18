@@ -447,9 +447,18 @@ func (s *configStore) validateAndWriteLocked(data []byte) error {
 }
 
 func (s *configStore) updateAccount(expectedRevision string, result loginresult.Result) (configDocument, error) {
+	return s.updateAccountWithCookie(expectedRevision, result, nil)
+}
+
+// 短信会话先验证身份，再在同一次配置锁内提交 Cookie 与账号元数据。
+func (s *configStore) updateAccountWithCookie(expectedRevision string, result loginresult.Result, cookieData []byte) (configDocument, error) {
+	return s.updateAccountWithCookieContext(context.Background(), expectedRevision, result, cookieData)
+}
+
+func (s *configStore) updateAccountWithCookieContext(ctx context.Context, expectedRevision string, result loginresult.Result, cookieData []byte) (configDocument, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	lock, err := acquireConfigLock(s.path)
+	lock, err := acquireConfigLockContext(ctx, s.path)
 	if err != nil {
 		return configDocument{}, err
 	}
@@ -485,14 +494,55 @@ func (s *configStore) updateAccount(expectedRevision string, result loginresult.
 	if err := encoder.Close(); err != nil {
 		return configDocument{}, err
 	}
-	if err := s.validateAndWriteLocked(out.Bytes()); err != nil {
+	var oldCookie []byte
+	var cookieExisted bool
+	if err := ctx.Err(); err != nil {
+		return configDocument{}, err
+	}
+	if cookieData != nil {
+		if info, err := os.Lstat(result.CookiePath); err == nil {
+			if !info.Mode().IsRegular() {
+				return configDocument{}, fmt.Errorf("Cookie 目标不是普通文件")
+			}
+			cookieExisted = true
+			oldCookie, err = os.ReadFile(result.CookiePath)
+			if err != nil {
+				return configDocument{}, err
+			}
+		} else if !os.IsNotExist(err) {
+			return configDocument{}, err
+		}
+		if err := writeFileAtomic(result.CookiePath, cookieData, 0600); err != nil {
+			return configDocument{}, err
+		}
+	}
+	writeErr := ctx.Err()
+	if writeErr == nil {
+		writeErr = s.validateAndWriteLocked(out.Bytes())
+	}
+	if err := writeErr; err != nil {
+		if cookieData != nil {
+			var rollback error
+			if cookieExisted {
+				rollback = writeFileAtomic(result.CookiePath, oldCookie, 0600)
+			} else {
+				rollback = os.Remove(result.CookiePath)
+			}
+			if rollback != nil {
+				return configDocument{}, errors.Join(err, rollback)
+			}
+		}
 		return configDocument{}, err
 	}
 	return s.getLocked()
 }
 
 func acquireConfigLock(path string) (*filelock.Lock, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), configLockTimeout)
+	return acquireConfigLockContext(context.Background(), path)
+}
+
+func acquireConfigLockContext(parent context.Context, path string) (*filelock.Lock, error) {
+	ctx, cancel := context.WithTimeout(parent, configLockTimeout)
 	defer cancel()
 	lock, err := filelock.Acquire(ctx, path+".lock")
 	if err != nil {

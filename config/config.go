@@ -122,6 +122,10 @@ type YunbeiTaskConf struct {
 	EnablePublishNote        bool `json:"enablePublishNote" yaml:"enablePublishNote"`
 	EnableShareSong          bool `json:"enableShareSong" yaml:"enableShareSong"`
 	EnablePlayDailyRecommend bool `json:"enablePlayDailyRecommend" yaml:"enablePlayDailyRecommend"`
+	EnableRedPacket          bool `json:"enableRedPacket" yaml:"enableRedPacket"`
+	EnableLottery            bool `json:"enableLottery" yaml:"enableLottery"`
+	EnableLotteryWatchVideo  bool `json:"enableLotteryWatchVideo" yaml:"enableLotteryWatchVideo"`
+	EnableWatchVideoYunbei   bool `json:"enableWatchVideoYunbei" yaml:"enableWatchVideoYunbei"`
 }
 
 type SignConf struct {
@@ -708,6 +712,29 @@ func (c *Config) Validate() error {
 			isKoiWish := func(task string) bool { return strings.EqualFold(task, "KoiWish") }
 			if !slices.ContainsFunc(c.Task.FastTasks, isKoiWish) && !slices.ContainsFunc(c.Task.SlowTasks, isKoiWish) {
 				c.Task.FastTasks = append(c.Task.FastTasks, "KoiWish")
+			}
+		}
+		if c.Sign != nil && c.Sign.YunbeiTask != nil {
+			activities := []struct {
+				key     string
+				enabled bool
+				slow    bool
+			}{
+				{"RedPacket", c.Sign.YunbeiTask.EnableRedPacket, false},
+				{"Lottery", c.Sign.YunbeiTask.EnableLottery, false},
+				{"LotteryWatchVideo", c.Sign.YunbeiTask.EnableLotteryWatchVideo, true},
+				{"WatchVideoYunbei", c.Sign.YunbeiTask.EnableWatchVideoYunbei, true},
+			}
+			for _, activity := range activities {
+				matches := func(key string) bool { return strings.EqualFold(strings.TrimSpace(key), activity.key) }
+				if !activity.enabled || slices.ContainsFunc(c.Task.FastTasks, matches) || slices.ContainsFunc(c.Task.SlowTasks, matches) {
+					continue
+				}
+				if activity.slow {
+					c.Task.SlowTasks = append(c.Task.SlowTasks, activity.key)
+				} else {
+					c.Task.FastTasks = append(c.Task.FastTasks, activity.key)
+				}
 			}
 		}
 	}

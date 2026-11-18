@@ -348,7 +348,7 @@ func (c *SignIn) execute(ctx context.Context) error {
 	}
 
 	c.cmd.Println("[sign] 所有日常签到及播放任务执行完毕！")
-	return nil
+	return c.finishSignRun()
 }
 
 func (c *SignIn) RunSignForCookie(ctx context.Context, cookieFile string, isPrimary bool, allowedTasks map[string]bool) error {
@@ -370,6 +370,7 @@ func (c *SignIn) runSignForCookie(
 			"VipTask": true, "Reserve": true, "ViewVipCenter": true, "LikeComment": true,
 			"FollowArtist": true, "LikeSong": true, "CollectSong": true, "PublishNote": true,
 			"ListenIndie": true, "PlayDailyRecommend": true, "ShareSong": true,
+			"RedPacket": true, "Lottery": true, "LotteryWatchVideo": true, "WatchVideoYunbei": true,
 		}
 	}
 	if earningsReport == nil {
@@ -480,6 +481,9 @@ func (c *SignIn) runSignForCookie(
 			c.handleYunbeiTasks(ctx, cli, request, userId, cookieFile, allowedTasks)
 		} else {
 			c.cmd.Println("  [云贝调度] 当前任务组没有云贝子任务，日推播放和分享歌曲本组不执行")
+		}
+		if err := c.handleYunbeiActivities(ctx, cli, cookieFile, allowedTasks, earningsReport); err != nil {
+			return err
 		}
 	} else {
 		c.cmd.Println("  [云贝调度] 自动任务关闭（sign.automatic=false 且未指定 --automatic），日推播放和分享歌曲未执行")

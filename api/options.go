@@ -42,6 +42,8 @@ type Options struct {
 	FansGroupWebSession bool
 	// NoRetry 禁止自动重发不可安全重放的写请求。
 	NoRetry bool
+	// IsolatedCookieOverrides 仅在本次请求中替换 Cookies 的同名项，禁止响应回写共享 Cookie。
+	IsolatedCookieOverrides bool
 }
 
 func (o *Options) SetCookies(c ...*http.Cookie) {

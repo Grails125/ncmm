@@ -340,6 +340,8 @@ func (a *Api) SendSMS(ctx context.Context, req *SendSMSReq) (*SendSMSResp, error
 		reply SendSMSResp
 		opts  = api.NewOptions()
 	)
+	opts.Sensitive = true
+	opts.NoRetry = true
 	if req.CtCode <= 0 {
 		req.CtCode = 86
 	}
@@ -372,6 +374,8 @@ func (a *Api) SMSVerify(ctx context.Context, req *SMSVerifyReq) (*SMSVerifyResp,
 		reply SMSVerifyResp
 		opts  = api.NewOptions()
 	)
+	opts.Sensitive = true
+	opts.NoRetry = true
 	if req.CtCode <= 0 {
 		req.CtCode = 86
 	}
@@ -477,6 +481,8 @@ func (a *Api) LoginCellphone(ctx context.Context, req *LoginCellphoneReq) (*Logi
 		params = make(map[string]interface{})
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
+	opts.NoRetry = true
 	if req.Countrycode <= 0 {
 		req.Countrycode = 86
 	}

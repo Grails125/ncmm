@@ -53,6 +53,10 @@
 
 实际提交需要当前账号配套的移动端 Cookie、UA 与 Token；Token 复用 `accounts.antiCheatTokens` 的按账号映射，不能使用网页评论的 `checkToken` 替代。官方状态已显示今日免费次数用过时直接跳过，不购买或消耗付费次数。每次先查询实时活动，最多提交一次，再读取状态确认；提交或确认结果未知时记为“未确认”，不自动重试写请求。协议来源、状态证据与验收边界见 [锦鲤免费许愿说明](koi-wish.md)。
 
+## 云贝活动与短信登录
+
+新增 `sign.yunbeiTask.enableRedPacket`、`enableLottery`、`enableLotteryWatchVideo`、`enableWatchVideoYunbei`，默认均关闭。开启后接入现有快慢队列；视频任务还需要当前账号配套的 Android 移动会话及 Token。账号中心新增短信验证码登录，沿用原账号保存与配置并发检查。配置、额度、回执和验证边界见 [云贝活动与短信登录](yunbei-activities.md)。
+
 ## 歌曲与音乐人歌单
 
 `playids.ids`、`idsFile`、`playlistIds` 合并去重。歌曲文本支持中英文逗号、分号、空白和 `#` / `//` 注释；歌单支持ID及官方分享链接，由每个实际听歌账号独立读取，权限不足的来源不保证可用。

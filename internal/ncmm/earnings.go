@@ -53,10 +53,11 @@ type vipEarnings struct {
 }
 
 type accountEarningsReport struct {
-	Account        string
-	Yunbei         *yunbeiEarnings
-	VIP            *vipEarnings
-	koiWishHandled bool
+	Account                 string
+	Yunbei                  *yunbeiEarnings
+	VIP                     *vipEarnings
+	koiWishHandled          bool
+	yunbeiActivitiesHandled map[string]bool
 }
 
 func (report *accountEarningsReport) collectYunbei(fetch func() yunbeiEarnings) yunbeiEarnings {

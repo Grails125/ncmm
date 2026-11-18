@@ -75,6 +75,32 @@ test('锦鲤免费许愿可主动加入队列但不会开启许愿或自动任�
   assert.equal(ui.state.configDirty, true);
 });
 
+test('新云贝活动默认不加入队列，启用后按快慢分组补齐且保留合伙人顺序', () => {
+  const ui = harness();
+  ui.state.config = { data: {
+    task: { fast_tasks: ['VipTask', 'custom-extension'], slow_tasks: ['music-partner'] },
+    sign: { yunbeiTask: {} },
+  } };
+  const tasks = [
+    ['RedPacket', 'enableRedPacket', '时段红包雨'],
+    ['Lottery', 'enableLottery', '云贝活动抽奖'],
+    ['LotteryWatchVideo', 'enableLotteryWatchVideo', '广告增加抽奖次数'],
+    ['WatchVideoYunbei', 'enableWatchVideoYunbei', '看视频赚云贝'],
+  ];
+  for (const [key, , name] of tasks) assert.equal(ui.getTaskSubtaskInfo(key).name, name);
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().fastTasks), ['VipTask', 'custom-extension']);
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().slowTasks), ['music-partner']);
+  for (const [, key] of tasks) ui.state.config.data.sign.yunbeiTask[key] = true;
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().fastTasks), ['VipTask', 'custom-extension', 'RedPacket', 'Lottery']);
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().slowTasks), ['music-partner', 'LotteryWatchVideo', 'WatchVideoYunbei']);
+  assert.deepEqual(ui.state.config.data.task.fast_tasks, ['VipTask', 'custom-extension']);
+  assert.deepEqual(ui.state.config.data.task.slow_tasks, ['music-partner']);
+  ui.state.config.data.task.slow_tasks.push('redpacket', 'lottery');
+  ui.state.config.data.task.fast_tasks.push('LOTTERYWATCHVIDEO', 'WATCHVIDEOYUNBEI');
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().fastTasks), ['VipTask', 'custom-extension', 'LOTTERYWATCHVIDEO', 'WATCHVIDEOYUNBEI']);
+  assert.deepEqual(Array.from(ui.getTaskQueueLists().slowTasks), ['music-partner', 'redpacket', 'lottery']);
+});
+
 test('两种调度模式均展示任务队列，切换为单账号模式不会隐藏队列', () => {
   const ui = harness();
   ui.state.config = { data: { task: {} } };

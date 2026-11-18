@@ -9,7 +9,7 @@ import (
 
 // 独立 HTTP 客户端只共享线程安全的 Transport，避免临时网页会话污染持久化 Cookie。
 func (c *Client) requestClient(opts *Options) *resty.Client {
-	if !opts.FansGroupWebSession && !opts.NoRetry {
+	if !opts.FansGroupWebSession && !opts.NoRetry && !opts.IsolatedCookieOverrides {
 		return c.cli
 	}
 	httpClient := *c.GetClient()
@@ -20,6 +20,14 @@ func (c *Client) requestClient(opts *Options) *resty.Client {
 			transport = http.DefaultTransport
 		}
 		httpClient.Transport = fansGroupTransport{base: transport}
+	}
+	if opts.IsolatedCookieOverrides {
+		httpClient.Jar = requestCookieOverrideView{base: httpClient.Jar, overrides: opts.Cookies}
+		transport := httpClient.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		httpClient.Transport = requestCookieOverrideTransport{base: transport, overrides: opts.Cookies}
 	}
 	client := resty.NewWithClient(&httpClient)
 	client.OnAfterResponse(contentEncoding)
