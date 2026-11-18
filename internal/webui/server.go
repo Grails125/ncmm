@@ -40,6 +40,7 @@ type Server struct {
 	runner            *runManager
 	scheduler         *scheduler
 	qrcode            *qrcodeLoginManager
+	sms               *smsLoginManager
 	processes         *processSupervisor
 	plugins           PluginManager
 	daemons           *pluginDaemonManager
@@ -103,6 +104,7 @@ func New(ctx context.Context, opts Options) (*Server, error) {
 			return updateErr
 		}, processes),
 	}
+	s.sms = newSMSLoginManager(s.newSMSClient)
 	s.daemons, err = newPluginDaemonManager(scheduler.ctx, opts, opts.PluginManager, processes)
 	if err != nil {
 		scheduler.close()
@@ -123,6 +125,7 @@ func (s *Server) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer s.qrcode.close()
+	defer s.sms.close()
 	defer s.processes.Close(10 * time.Second)
 	instanceLock, err := acquireWebInstanceLock(s.opts.Home)
 	if err != nil {
@@ -237,6 +240,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/logs/cleanup/advanced", s.handleLogsAdvancedCleanup)
 	mux.HandleFunc("POST /api/v1/system/restart", s.handleSystemRestart)
 	mux.HandleFunc("POST /api/v1/accounts/cookie", s.handleCookieImport)
+	mux.HandleFunc("POST /api/v1/accounts/sms/send", s.handleSMSLoginSend)
+	mux.HandleFunc("POST /api/v1/accounts/sms/login", s.handleSMSLogin)
+	mux.HandleFunc("DELETE /api/v1/accounts/sms/{id}", s.handleSMSLoginCancel)
 	mux.HandleFunc("GET /api/v1/accounts/qrcode", s.handleQRCodeLoginCurrent)
 	mux.HandleFunc("POST /api/v1/accounts/qrcode", s.handleQRCodeLoginStart)
 	mux.HandleFunc("GET /api/v1/accounts/qrcode/{id}", s.handleQRCodeLoginGet)

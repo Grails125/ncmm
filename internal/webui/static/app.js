@@ -48,6 +48,11 @@
     qrcodeSession: null,
     qrcodePoller: null,
     qrcodeImageURL: '',
+    smsSession: null,
+    smsCooldownUntil: 0,
+    smsTimer: null,
+    smsBusy: false,
+    smsGeneration: 0,
     poller: null,
     pollInFlight: false,
     pollGeneration: 0,
@@ -88,6 +93,7 @@
     main: '主账号', primary: '旧版主账号', secondary: '辅助账号', antiCheatTokens: '反作弊令牌',
     enabled: '启用', enableMain: '启用主账号', enableSecondaries: '启用辅助账号', automatic: '自动执行',
     enableVipTask: '黑胶 VIP 任务', enableKoiWish: '锦鲤免费许愿', mode: '执行模式', fast_tasks: '快速任务', slow_tasks: '慢速任务',
+    enableRedPacket: '时段红包雨', enableLottery: '云贝活动抽奖', enableLotteryWatchVideo: '广告增加抽奖次数', enableWatchVideoYunbei: '看视频赚云贝',
     scoreMin: '评分下限', scoreMax: '评分上限', extraTasks: '执行额外评分', fullExtraTasks: '完成当前全部额外任务', extraLimitMin: '每日额外评分目标下限', extraLimitMax: '每日额外评分目标上限', waitMin: '评分等待下限', waitMax: '评分等待上限', syncYunCircle: '同步评分到云圈', comments: '按分值配置乐评',
     timeout: '超时时间', retry: '重试次数', debug: '调试模式', user_agent: 'User-Agent',
     daily_min: '每日最小数量', daily_max: '每日最大数量', run_min: '单次最小数量', run_max: '单次最大数量',
@@ -434,6 +440,7 @@
   }
 
   function clearSession(showLogin = true) {
+    clearSMSLogin();
     state.authenticated = false;
     state.csrf = '';
     clearInterval(state.poller);
@@ -557,8 +564,8 @@
     $('#qrcode-message').textContent = session?.message || '等待生成二维码';
     $('#qrcode-filename').textContent = session?.filename || $('#account-filename').value || 'cookie.json';
     $('#qrcode-cancel').classList.toggle('hidden', !qrcodeSessionActive());
-    $('#account-submit').disabled = qrcodeSessionActive();
-    $$('#account-login-method button, .account-type button').forEach(button => { button.disabled = qrcodeSessionActive(); });
+    $('#account-submit').disabled = qrcodeSessionActive() || (state.accountMethod === 'sms' && (state.smsBusy || !state.smsSession));
+    $$('#account-login-method button, .account-type button').forEach(button => { button.disabled = qrcodeSessionActive() || state.smsBusy; });
   }
 
   async function loadQRCodeImage(id) {
@@ -607,16 +614,60 @@
   }
 
   function setAccountMethod(method) {
+    if (state.accountMethod === 'sms' && method !== 'sms') clearSMSLogin();
     state.accountMethod = method;
     $$('#account-login-method button').forEach(button => button.classList.toggle('active', button.dataset.loginMethod === method));
     $('#cookie-login-fields').classList.toggle('hidden', method !== 'cookie');
     $('#qrcode-login-fields').classList.toggle('hidden', method !== 'qrcode');
+    $('#sms-login-fields').classList.toggle('hidden', method !== 'sms');
+    ['sms-country', 'sms-phone', 'sms-captcha'].forEach(id => { $(`#${id}`).disabled = method !== 'sms'; });
     $('#cookie-result').classList.toggle('hidden', method !== 'cookie' || !$('#cookie-result').textContent);
     $('#cookie-format').disabled = method !== 'cookie';
     $('#cookie-content').disabled = method !== 'cookie';
-    $('#account-submit-label').textContent = method === 'cookie' ? '验证并导入' : '生成二维码';
-    $('#account-submit-icon').setAttribute('href', method === 'cookie' ? '#i-user' : '#i-qr');
+    $('#account-submit-label').textContent = method === 'cookie' ? '验证并导入' : method === 'sms' ? '验证并登录' : '生成二维码';
+    $('#account-submit-icon').setAttribute('href', method === 'qrcode' ? '#i-qr' : '#i-user');
     renderQRCodeSession();
+    renderSMSLogin();
+  }
+
+  function clearSMSLogin() {
+    state.smsGeneration++;
+    const id = state.smsSession?.id;
+    state.smsSession = null;
+    clearInterval(state.smsTimer); state.smsTimer = null;
+    $('#sms-captcha').value = ''; $('#sms-phone').value = '';
+    $('#sms-status').textContent = '验证码发送成功后 60 秒可重新获取。验证成功后保存账号。';
+    if (id) void api(`/api/v1/accounts/sms/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+  }
+
+  function renderSMSLogin() {
+    const remaining = Math.max(0, Math.ceil((state.smsCooldownUntil - Date.now()) / 1000));
+    $('#sms-send').textContent = remaining ? `${remaining} 秒后重发` : '获取验证码';
+    $('#sms-send').disabled = state.smsBusy || remaining > 0 || state.accountMethod !== 'sms';
+    $('#account-filename').disabled = state.smsBusy;
+    ['sms-country', 'sms-phone', 'sms-captcha'].forEach(id => { $(`#${id}`).disabled = state.accountMethod !== 'sms' || state.smsBusy; });
+    if (remaining && !state.smsTimer) state.smsTimer = setInterval(renderSMSLogin, 250);
+    if (state.accountMethod === 'sms') $('#account-submit').disabled = state.smsBusy || !state.smsSession;
+    if (!remaining) { clearInterval(state.smsTimer); state.smsTimer = null; }
+  }
+
+  async function sendSMSLogin() {
+    if (!$('#sms-phone').reportValidity() || !$('#sms-country').reportValidity()) return;
+    const generation = state.smsGeneration;
+    state.smsBusy = true; renderSMSLogin(); renderQRCodeSession();
+    try {
+      const session = await api('/api/v1/accounts/sms/send', { method: 'POST', body: {
+        phone: $('#sms-phone').value.trim(), countryCode: Number($('#sms-country').value),
+        filename: $('#account-filename').value, main: state.accountMain,
+      }});
+      if (generation !== state.smsGeneration) { void api(`/api/v1/accounts/sms/${encodeURIComponent(session.id)}`, { method: 'DELETE' }).catch(() => {}); return; }
+      state.smsSession = session;
+      state.smsCooldownUntil = Date.now() + state.smsSession.retryAfter * 1000;
+      $('#sms-status').textContent = '验证码已发送，请在 5 分钟内验证。保存目标已绑定，修改账号信息后需要重新获取。';
+      $('#sms-captcha').value = ''; $('#sms-captcha').focus();
+      clearInterval(state.smsTimer); state.smsTimer = setInterval(renderSMSLogin, 250);
+    } catch (error) { toast(error.message, true); }
+    finally { state.smsBusy = false; renderSMSLogin(); renderQRCodeSession(); }
   }
 
   function activeDocument() {
@@ -1615,11 +1666,13 @@
   }
 
   function closeAccountPanel() {
+    if (state.smsBusy) { toast('短信登录请求处理中，请稍候', true); return; }
     if (qrcodeSessionActive()) {
       toast('请先完成或取消当前二维码登录', true);
       return;
     }
     state.accountEditing = null;
+    clearSMSLogin();
     $('#account-filename').readOnly = false;
     $('#account-target-fields').classList.remove('hidden');
     $('#accounts-layout').classList.remove('panel-open');
@@ -1753,6 +1806,10 @@
     { id: 'CollectSong', name: '收藏歌单歌曲', duration: '', badge: 'success' },
     { id: 'PublishNote', name: '发布图文动态', duration: '', badge: 'success' },
     { id: 'ShareSong', name: '分享歌曲', duration: '', badge: 'success' },
+    { id: 'RedPacket', name: '时段红包雨', duration: '', badge: 'success' },
+    { id: 'Lottery', name: '云贝活动抽奖', duration: '', badge: 'success' },
+    { id: 'LotteryWatchVideo', name: '广告增加抽奖次数', duration: '实验性慢任务', badge: 'amber' },
+    { id: 'WatchVideoYunbei', name: '看视频赚云贝', duration: '实验性慢任务', badge: 'amber' },
     { id: 'musician-sign', name: '音乐人每日签到', duration: '', badge: 'amber' },
     { id: 'note', name: '公共图文笔记', duration: '', badge: 'primary' },
     { id: 'vip-member-gift', name: '黑胶会员赠礼/领礼', duration: '', badge: 'cyan' },
@@ -1796,6 +1853,14 @@
     }
     if (root?.sign?.enableKoiWish === true && ![...fastTasks, ...slowTasks].some(id => String(id).toLowerCase() === 'koiwish')) {
       fastTasks.push('KoiWish');
+    }
+    for (const [key, option, slow] of [
+      ['RedPacket', 'enableRedPacket', false], ['Lottery', 'enableLottery', false],
+      ['LotteryWatchVideo', 'enableLotteryWatchVideo', true], ['WatchVideoYunbei', 'enableWatchVideoYunbei', true],
+    ]) {
+      if (root?.sign?.yunbeiTask?.[option] === true && ![...fastTasks, ...slowTasks].some(id => String(id).trim().toLowerCase() === key.toLowerCase())) {
+        (slow ? slowTasks : fastTasks).push(key);
+      }
     }
     return { fastTasks, slowTasks };
   }
@@ -1943,13 +2008,13 @@
 
   function renderFlowSign() {
     const main = renderFlowCard('签到控制', renderFlowFields(['sign.automatic', 'sign.enableMain', 'sign.enableSecondaries', 'sign.enableVipTask', 'sign.enableKoiWish']), '日常必备', 'success');
-    const subtaskPaths = ['sign.yunbeiTask.enableViewVipCenter', 'sign.yunbeiTask.enableLikeComment', 'sign.yunbeiTask.enableListenIndie', 'sign.yunbeiTask.enableReserve', 'sign.yunbeiTask.enableFollowArtist', 'sign.yunbeiTask.enableLikeSong', 'sign.yunbeiTask.enableCollectSong', 'sign.yunbeiTask.enablePublishNote', 'sign.yunbeiTask.enableShareSong', 'sign.yunbeiTask.enablePlayDailyRecommend'];
+    const subtaskPaths = ['sign.yunbeiTask.enableViewVipCenter', 'sign.yunbeiTask.enableLikeComment', 'sign.yunbeiTask.enableListenIndie', 'sign.yunbeiTask.enableReserve', 'sign.yunbeiTask.enableFollowArtist', 'sign.yunbeiTask.enableLikeSong', 'sign.yunbeiTask.enableCollectSong', 'sign.yunbeiTask.enablePublishNote', 'sign.yunbeiTask.enableShareSong', 'sign.yunbeiTask.enablePlayDailyRecommend', 'sign.yunbeiTask.enableRedPacket', 'sign.yunbeiTask.enableLottery', 'sign.yunbeiTask.enableLotteryWatchVideo', 'sign.yunbeiTask.enableWatchVideoYunbei'];
     const subtasks = subtaskPaths.map(path => {
       const info = flowFieldInfo(path);
       if (!info) return '';
       return `<div class="subtask-item"><span>${escapeHTML(info.field.title)}</span>${renderSchemaControl(info.field, info.keys, info.value)}</div>`;
     }).join('');
-    const detail = renderFlowCard('云贝精细化子任务', `<div class="subtask-grid">${subtasks}</div>`, '10 项子任务', 'cyan');
+    const detail = renderFlowCard('云贝精细化子任务', `<div class="subtask-grid">${subtasks}</div><p class="form-row-desc">新活动默认关闭；广告增次和看视频任务为实验性功能，需要当前账号配套的移动端凭据。无免费次数时正常跳过，收益以服务器确认结果为准。</p>`, `${subtaskPaths.length} 项子任务`, 'cyan');
     return `<div class="config-cards-grid">${main}${detail}</div>`;
   }
 
@@ -4083,14 +4148,15 @@
       } catch (error) { toast(error.message, true); }
     });
     $$('#account-login-method button').forEach(button => button.addEventListener('click', () => {
-      if (qrcodeSessionActive()) {
-        toast('请先完成或取消当前二维码登录', true);
+      if (qrcodeSessionActive() || state.smsBusy) {
+        toast(state.smsBusy ? '短信登录请求处理中，请稍候' : '请先完成或取消当前二维码登录', true);
         return;
       }
       setAccountMethod(button.dataset.loginMethod);
     }));
     $$('.account-type button').forEach(button => button.addEventListener('click', () => {
-      if (qrcodeSessionActive() || state.accountEditing) return;
+      if (qrcodeSessionActive() || state.accountEditing || state.smsBusy) return;
+      clearSMSLogin();
       const previousDefault = state.accountMain ? 'cookie.json' : 'fan1.json';
       state.accountMain = button.dataset.main === 'true';
       $$('.account-type button').forEach(x => x.classList.toggle('active', x === button));
@@ -4099,9 +4165,26 @@
       renderQRCodeSession();
     }));
     $('#account-filename').addEventListener('input', renderQRCodeSession);
+    $('#sms-send').addEventListener('click', sendSMSLogin);
+    ['sms-phone', 'sms-country', 'account-filename'].forEach(id => $(`#${id}`).addEventListener('input', () => {
+      if (state.smsSession) { const old = state.smsSession; state.smsSession = null; $('#sms-captcha').value = ''; void api(`/api/v1/accounts/sms/${encodeURIComponent(old.id)}`, { method: 'DELETE' }).catch(() => {}); }
+      renderSMSLogin();
+    }));
     $('#account-form').addEventListener('submit', async event => {
       event.preventDefault();
       const submit = $('#account-submit'); submit.disabled = true;
+      if (state.accountMethod === 'sms') {
+        if (!state.smsSession) { renderSMSLogin(); return; }
+        state.smsBusy = true; renderSMSLogin(); renderQRCodeSession();
+        try {
+          const result = await api('/api/v1/accounts/sms/login', { method: 'POST', body: { id: state.smsSession.id, captcha: $('#sms-captcha').value } });
+          state.smsSession = null; $('#sms-captcha').value = '';
+          state.config = await api('/api/v1/config'); renderConfig(); renderAccounts(); renderDashboard();
+          toast(result.message); state.smsBusy = false; closeAccountPanel();
+        } catch (error) { $('#sms-captcha').value = ''; toast(error.message, true); }
+        finally { state.smsBusy = false; renderSMSLogin(); renderQRCodeSession(); }
+        return;
+      }
       if (state.accountMethod === 'qrcode') {
         clearQRCodeImage();
         state.qrcodeSession = null;

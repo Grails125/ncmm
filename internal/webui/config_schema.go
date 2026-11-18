@@ -246,6 +246,10 @@ func mainConfigSchema() configTargetSchema {
 		schemaField("sign.yunbeiTask.enablePublishNote", "发布图文动态", "使用笔记配置完成发布任务。", "yunbei", "boolean", "switch"),
 		schemaField("sign.yunbeiTask.enableShareSong", "分享歌曲", "提交歌曲分享请求，完成状态及奖励以云贝列表为准。", "yunbei", "boolean", "switch"),
 		schemaField("sign.yunbeiTask.enablePlayDailyRecommend", "播放日推歌曲", "听歌类慢任务，约 31 至 45 分钟。", "yunbei", "boolean", "switch"),
+		schemaField("sign.yunbeiTask.enableRedPacket", "时段红包雨", "默认关闭；仅领取当前时段可用的免费次数，无次数时正常跳过。", "yunbei", "boolean", "switch"),
+		schemaField("sign.yunbeiTask.enableLottery", "云贝活动抽奖", "默认关闭；刮刮乐、好运翻卡、扭蛋仅使用已有免费次数，不购买次数。", "yunbei", "boolean", "switch"),
+		schemaField("sign.yunbeiTask.enableLotteryWatchVideo", "广告增加抽奖次数（实验性）", "默认关闭；需要当前账号配套的移动端 Cookie、UA 和 Token，缺失时跳过。", "yunbei", "boolean", "switch"),
+		schemaField("sign.yunbeiTask.enableWatchVideoYunbei", "看视频赚云贝（实验性）", "默认关闭；分阶段执行，需要当前账号配套的移动端 Cookie、UA 和 Token，以服务器确认收益为准。", "yunbei", "boolean", "switch"),
 
 		schemaField("playids.enableMain", "主账号参与播放", "允许主账号执行指定歌曲播放。", "play-target", "boolean", "switch"),
 		schemaField("playids.enableSecondaries", "辅助账号参与播放", "允许全部辅助账号执行指定歌曲播放。", "play-target", "boolean", "switch"),

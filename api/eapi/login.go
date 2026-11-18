@@ -236,6 +236,8 @@ func (a *Api) GetUserInfo(ctx context.Context, req *GetUserInfoReq) (*GetUserInf
 		opts  = api.NewOptions()
 	)
 	opts.CryptoMode = api.CryptoModeEAPI
+	opts.Sensitive = true
+	opts.NoRetry = true
 
 	resp, err := a.client.Request(ctx, url, req, &reply, opts)
 	if err != nil {

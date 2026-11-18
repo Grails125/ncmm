@@ -1833,3 +1833,6 @@ tbody tr:last-child td {
     grid-template-columns: 1fr;
   }
 }
+.sms-code-row { display: flex; gap: .75rem; align-items: center; }
+.sms-code-row input { min-width: 0; flex: 1; }
+.sms-code-row button { flex-shrink: 0; }

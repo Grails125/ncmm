@@ -32,6 +32,8 @@ import (
 const (
 	DefaultWEAPIUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) NeteaseMusicDesktop/2.3.17.1034"
 	DefaultEAPIUserAgent  = "NeteaseMusic 9.4.95/6806 (iPhone; iOS 16.6.1; zh_CN)"
+	// DefaultXEAPIUserAgent 仅供明确选择 Android 活动协议的独立客户端使用，不替代账号配套 UA。
+	DefaultXEAPIUserAgent = "NeteaseMusic/9.6.05.260923162310(9006005);Dalvik/2.1.0 (Linux; U; Android 14; 23127PN0CC Build/UP1A.231005.007)"
 )
 
 type UserAgentConfig struct {
@@ -353,7 +355,13 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 		return nil, fmt.Errorf("network.user_agent.xeapi is required for xeapi requests")
 	}
 
-	request := c.requestClient(opts).R().
+	requestClient := c.requestClient(opts)
+	xeapiManager := c.xeapi
+	if opts.IsolatedCookieOverrides && opts.CryptoMode == CryptoModeXEAPI {
+		// 密钥协商也使用同一次隔离视图，不能通过它改写共享 Cookie 或复用其他平台的会话。
+		xeapiManager = xeapipkg.NewManager(xeapipkg.ManagerOptions{HTTPClient: requestClient.GetClient()})
+	}
+	request := requestClient.R().
 		SetContext(ctx).
 		SetHeader("Host", uri.Host).
 		SetHeader("Connection", "keep-alive").
@@ -430,7 +438,7 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 			return nil, fmt.Errorf("EApiEncrypt: %w", err)
 		}
 	case CryptoModeXEAPI:
-		encryptData, err = c.xeapi.Encrypt(ctx, xeapipkg.EncryptRequest{
+		encryptData, err = xeapiManager.Encrypt(ctx, xeapipkg.EncryptRequest{
 			URI:         uri.RequestURI(),
 			Data:        req,
 			Method:      opts.Method,
@@ -539,7 +547,7 @@ func (c *Client) Request(ctx context.Context, url string, req, resp interface{},
 			var decrypted []byte
 			if opts.CryptoMode == CryptoModeXEAPI {
 				if ssid, sskey := response.Header().Get("x-encr-ssid"), response.Header().Get("x-encr-sskey"); ssid != "" && sskey != "" {
-					c.xeapi.SetSession(ssid, sskey)
+					xeapiManager.SetSession(ssid, sskey)
 				}
 				decrypted, err = xeapipkg.DecryptResponse(decryptData)
 			} else {

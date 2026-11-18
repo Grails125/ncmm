@@ -641,7 +641,8 @@
               </div>
               <div id="account-login-method" class="mui-toggle-group full"><button type="button"
                   class="mui-toggle-btn active" data-login-method="cookie">Cookie 导入</button><button type="button"
-                  class="mui-toggle-btn" data-login-method="qrcode">二维码扫码</button></div>
+                  class="mui-toggle-btn" data-login-method="qrcode">二维码扫码</button><button type="button"
+                  class="mui-toggle-btn" data-login-method="sms">短信验证</button></div>
               <form id="account-form" class="account-form">
                 <div id="account-target-fields" class="form-grid two">
                   <label class="form-group"><span class="form-label">账号类型</span><span
@@ -663,6 +664,18 @@
                   <label class="form-group"><span class="form-label">Cookie 内容</span><textarea id="cookie-content"
                       class="form-textarea cookie-input" autocomplete="off" spellcheck="false"
                       required></textarea></label>
+                </div>
+                <div id="sms-login-fields" class="method-fields hidden">
+                  <div class="form-grid two">
+                    <label class="form-group"><span class="form-label">国家区号</span><input id="sms-country"
+                        class="form-input" type="text" inputmode="numeric" value="86" pattern="[0-9]{1,3}" maxlength="3" autocomplete="off" disabled required></label>
+                    <label class="form-group"><span class="form-label">手机号</span><input id="sms-phone"
+                        class="form-input" type="tel" inputmode="tel" pattern="[0-9]{5,15}" maxlength="15" autocomplete="tel-national" disabled required></label>
+                  </div>
+                  <label class="form-group"><span class="form-label">短信验证码</span><span class="sms-code-row"><input id="sms-captcha"
+                        class="form-input" type="text" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" autocomplete="one-time-code" disabled required>
+                      <button id="sms-send" class="btn btn-glass" type="button">获取验证码</button></span></label>
+                  <p id="sms-status" class="muted" role="status" aria-live="polite">验证码发送成功后 60 秒可重新获取。验证成功后保存账号。</p>
                 </div>
                 <div id="qrcode-login-fields" class="qrcode-login hidden" aria-live="polite">
                   <div class="qrcode-image-wrap">

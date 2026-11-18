@@ -219,7 +219,7 @@ func TestReusableQualityChecksUseRequestedCommitAndKeepAllGates(t *testing.T) {
 			t.Fatalf("%s 必须核验检出 SHA", name)
 		}
 	}
-	for _, required := range []string{"node --check", "node --test", "python3 -m unittest discover -s tests -p test_ncmm_update_script.py", "python3 -m unittest discover -s tests -p test_release_guard.py", "go vet ./...", "go test ./...", "go test -race", "./internal/selfupdate", "./internal/filelock", "./internal/atomicfile", "tests/webui_smoke.js", "tests/webui_music_partner.js", "tests/webui_cookie_status.js", "tests/webui_task_config.js", "tests/webui_mobile_config.js", "docker compose config --quiet", "docker build", "--network none"} {
+	for _, required := range []string{"node --check", "node --test", "python3 -m unittest discover -s tests -p test_ncmm_update_script.py", "python3 -m unittest discover -s tests -p test_release_guard.py", "go vet ./...", "go test ./...", "go test -race", "./internal/selfupdate", "./internal/filelock", "./internal/atomicfile", "tests/webui_smoke.js", "tests/webui_music_partner.js", "tests/webui_cookie_status.js", "tests/webui_sms_login.js", "tests/webui_task_config.js", "tests/webui_yunbei_activities.js", "tests/webui_mobile_config.js", "docker compose config --quiet", "docker build", "--network none"} {
 		if !strings.Contains(commands.String(), required) {
 			t.Errorf("发布质量门禁缺少既有检查: %s", required)
 		}

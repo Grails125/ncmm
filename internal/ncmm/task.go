@@ -110,6 +110,7 @@ func (c *Task) standardizeActionKey(action string) string {
 	keys := []string{
 		"VipTask", "KoiWish", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
 		"LikeSong", "CollectSong", "PublishNote", "ShareSong", "ListenIndie", "PlayDailyRecommend",
+		"RedPacket", "Lottery", "LotteryWatchVideo", "WatchVideoYunbei",
 		"musician-sign", "note", "daily-song-share", "vip-member-gift", "fansgroup", "playids", "musician-vip", "music-partner",
 	}
 	for _, k := range keys {
@@ -123,6 +124,23 @@ func (c *Task) standardizeActionKey(action string) string {
 func (c *Task) isActionActive(stdAction string, activeTasks map[string]bool) bool {
 	if stdAction == "KoiWish" {
 		return activeTasks["sign"] && c.root != nil && c.root.Cfg != nil && c.root.Cfg.Sign != nil && c.root.Cfg.Sign.EnableKoiWish && c.root.Cfg.Sign.Automatic
+	}
+	switch stdAction {
+	case "RedPacket", "Lottery", "LotteryWatchVideo", "WatchVideoYunbei":
+		if !activeTasks["sign"] || c.root == nil || c.root.Cfg == nil || c.root.Cfg.Sign == nil || !c.root.Cfg.Sign.Automatic || c.root.Cfg.Sign.YunbeiTask == nil {
+			return false
+		}
+		cfg := c.root.Cfg.Sign.YunbeiTask
+		switch stdAction {
+		case "RedPacket":
+			return cfg.EnableRedPacket
+		case "Lottery":
+			return cfg.EnableLottery
+		case "LotteryWatchVideo":
+			return cfg.EnableLotteryWatchVideo
+		default:
+			return cfg.EnableWatchVideoYunbei
+		}
 	}
 	signSubtasks := []string{
 		"VipTask", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
@@ -154,6 +172,7 @@ func (c *Task) isActionEnabledForAccount(stdAction string, isMain bool) bool {
 	signSubtasks := []string{
 		"viptask", "koiwish", "reserve", "viewvipcenter", "likecomment", "followartist",
 		"likesong", "collectsong", "publishnote", "sharesong", "listenindie", "playdailyrecommend",
+		"redpacket", "lottery", "lotterywatchvideo", "watchvideoyunbei",
 	}
 	for _, sub := range signSubtasks {
 		if actionLower == sub {
@@ -273,6 +292,10 @@ func isSessionInvalidError(err error) bool {
 	if errors.Is(err, errMusicPartnerAccountBlocked) {
 		return true
 	}
+	var activityIssue *yunbeiActivityIssue
+	if errors.As(err, &activityIssue) && activityIssue.blocked {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	patterns := []string{
 		"cookie 已失效",
@@ -322,6 +345,7 @@ func (c *Task) executeAction(
 	signSubtasks := []string{
 		"VipTask", "KoiWish", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
 		"LikeSong", "CollectSong", "PublishNote", "ShareSong", "ListenIndie", "PlayDailyRecommend",
+		"RedPacket", "Lottery", "LotteryWatchVideo", "WatchVideoYunbei",
 	}
 	for _, sub := range signSubtasks {
 		if stdAction == sub {
@@ -502,7 +526,8 @@ func (c *Task) queueHasActiveSignTasks(queue []string, activeTasks map[string]bo
 	for _, action := range queue {
 		switch c.standardizeActionKey(action) {
 		case "VipTask", "KoiWish", "Reserve", "ViewVipCenter", "LikeComment", "FollowArtist",
-			"LikeSong", "CollectSong", "PublishNote", "ShareSong", "ListenIndie", "PlayDailyRecommend":
+			"LikeSong", "CollectSong", "PublishNote", "ShareSong", "ListenIndie", "PlayDailyRecommend",
+			"RedPacket", "Lottery", "LotteryWatchVideo", "WatchVideoYunbei":
 			if c.isActionActive(c.standardizeActionKey(action), activeTasks) {
 				return true
 			}

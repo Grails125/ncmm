@@ -69,6 +69,8 @@ task:
   # 分享歌曲开关启用但两个队列均缺少 ShareSong 时，自动补到快任务末尾。
   # 如需停用分享歌曲，请关闭 sign.yunbeiTask.enableShareSong，而非只删除队列项。
   # 开启锦鲤免费许愿后，若两个队列均缺少 KoiWish，会补到快任务末尾；已有位置保持不变。
+  # 新云贝活动默认关闭；开启后缺少的 RedPacket、Lottery 自动补入快任务，
+  # LotteryWatchVideo、WatchVideoYunbei 补入慢任务；已有队列位置保持不变。
   fast_tasks:
     - VipTask          # 黑胶 VIP 日常任务
     - Reserve          # 预约领云贝
@@ -186,6 +188,14 @@ sign:
     enableShareSong: true
     # 播放日推歌曲，约需 31～45 分钟，默认关闭。
     enablePlayDailyRecommend: false
+    # 时段红包雨，仅领取当前时段的免费次数，默认关闭。
+    enableRedPacket: false
+    # 刮刮乐、好运翻卡、扭蛋，仅消耗已有免费次数，默认关闭。
+    enableLottery: false
+    # [实验性] 广告增加抽奖次数及额外云贝；需要对应账号的移动端 Token，默认关闭。
+    enableLotteryWatchVideo: false
+    # [实验性] 分阶段看视频赚云贝；需要对应账号的移动端 Token，默认关闭。
+    enableWatchVideoYunbei: false
 
 # 听歌通用旧参数，仅供旧版配置兼容。
 play:

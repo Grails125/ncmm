@@ -89,8 +89,14 @@ jobs:
       - name: Test verified login status in Chromium
         run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_cookie_status.js "$RUNNER_TEMP/webui-cookie-status"
 
+      - name: Test SMS login in Chromium without sending messages
+        run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_sms_login.js "$RUNNER_TEMP/webui-sms-login"
+
       - name: Test task configuration in Chromium
         run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_task_config.js "$RUNNER_TEMP/webui-task-config"
+
+      - name: Test Yunbei activity configuration in Chromium
+        run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_yunbei_activities.js "$RUNNER_TEMP/webui-yunbei-activities"
 
       - name: Test mobile configuration in Chromium
         run: node tests/run_webui_browser.js "$RUNNER_TEMP/ncmm" tests/webui_mobile_config.js "$RUNNER_TEMP/webui-mobile-config"
