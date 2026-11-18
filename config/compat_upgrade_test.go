@@ -122,6 +122,29 @@ func TestUpgradeRejectsUnknownFieldsWithoutWriting(t *testing.T) {
 	}
 }
 
+func TestNativeConfigVersionUsesReleaseTemplate(t *testing.T) {
+	current := GetDefault().Version
+	path := writeCompatibilityConfig(t, "version: 1.2.9-grails\naccounts: {main: './own.json'}\nmusicPartner: {scoreMin: 2, scoreMax: 4}\n")
+	if err := AutoUpgradeConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Version != current || cfg.Accounts.Main != "./own.json" || cfg.MusicPartner.ScoreMin != 2 || cfg.MusicPartner.ScoreMax != 4 {
+		t.Fatal("升级应写入当前分支版本，并保留账号和评分范围")
+	}
+	source := "version: " + current + ".1\n"
+	future := writeCompatibilityConfig(t, source)
+	if err := AutoUpgradeConfig(future); err == nil {
+		t.Fatal("未知的更新分支版本被接受")
+	}
+	if data, err := os.ReadFile(future); err != nil || string(data) != source {
+		t.Fatalf("未知版本的配置不应被改写: %v", err)
+	}
+}
+
 func TestUpgradePreservesComplexYAMLAndIsIdempotent(t *testing.T) {
 	for name, source := range map[string]string{
 		"aliases":     "version: 1.2.1\naccounts:\n  main: &main './音乐🎵.json' # 主账号\n  secondary: [*main] # 别名列表\nnetwork:\n  timeout: 21s\nlog:\n  app: >-\n    多行\n    名字\n  level: debug\n...\n",

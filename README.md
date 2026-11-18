@@ -2,13 +2,14 @@
 
 基于 Go 的网易云音乐多账号自动化工具，提供 WebUI 与命令行。**音乐合伙人评分、今日推荐歌曲的试听上报、图文笔记与乐评均原生集成**，共用账号、配置、定时任务、日志和通知，无需评分插件或 Python 桌面程序。
 
-当前已发布 **[v1.2.9-grails](https://github.com/Grails125/ncmm/releases/tag/v1.2.9-grails)**，提供 Windows / Linux 程序包和 Docker 镜像 `ghcr.io/grails125/ncmm:1.2.9-grails`。
+当前已发布 **[v1.2.10-grails](https://github.com/Grails125/ncmm/releases/tag/v1.2.10-grails)**，提供 Windows / Linux 程序包和 Docker 镜像 `ghcr.io/grails125/ncmm:1.2.10-grails`。
 
 ## 核心功能
 
 - **音乐合伙人评分**：基础与额外评分、主副账号选择、分数与每日额外目标范围、随机等待、各分值乐评模板、作品名日志和评分前后积分变化。
 - **今日推荐歌曲任务**：每日数量范围、按列表顺序或随机抽取、试听上报、独立笔记与乐评模板，支持 `{name}` / `{artist}` 占位符；记录发布回执和平台进度，恢复未完成步骤。
-- **WebUI 多账号管理**：二维码、Cookie、手机号和 CookieCloud 登录，集中管理任务、配置、运行日志和系统状态，支持明暗主题与移动端页面。
+- **WebUI 多账号管理**：二维码、Cookie、短信验证码和 CookieCloud 登录，集中管理任务、配置、运行日志和系统状态，支持明暗主题与移动端页面。
+- **云贝活动**：时段红包雨、已有次数抽奖、视频增次和阶段视频任务。活动默认关闭，配置与执行规则见 [云贝活动与短信登录](docs/yunbei-activities.md)。
 - **账号数据与收益**：当前云贝余额、VIP 等级、成长总值、合伙人本期和本周积分；今日收益只显示变化，最近 7 日可查看有效播放、云贝、成长值和合伙人积分变化。
 - **任务与调度**：签到、云贝、成长值、音乐人、歌曲播放、图文动态、每日推歌、会员礼品与乐迷团任务；支持批量或独立执行、cron 计划和失败通知。
 - **部署与数据管理**：Docker、Windows / Linux 单文件程序、配置备份与迁移、`--home` 实例隔离。
@@ -24,7 +25,7 @@
 ```yaml
 services:
   ncmm:
-    image: ghcr.io/grails125/ncmm:1.2.9-grails
+    image: ghcr.io/grails125/ncmm:1.2.10-grails
     restart: unless-stopped
     ports:
       - "127.0.0.1:3899:3899"
@@ -47,17 +48,17 @@ docker compose -f compose.release.yaml logs -f ncmm
 
 ### Windows / Linux：下载程序包
 
-从 [v1.2.9-grails 发布页](https://github.com/Grails125/ncmm/releases/tag/v1.2.9-grails) 选择对应架构并完整解压：
+从 [v1.2.10-grails 发布页](https://github.com/Grails125/ncmm/releases/tag/v1.2.10-grails) 选择对应架构并完整解压：
 
 | 平台 | 下载 |
 | --- | --- |
-| Windows x64 | [ncmm_Windows_x86_64.zip](https://github.com/Grails125/ncmm/releases/download/v1.2.9-grails/ncmm_Windows_x86_64.zip) |
-| Windows ARM64 | [ncmm_Windows_arm64.zip](https://github.com/Grails125/ncmm/releases/download/v1.2.9-grails/ncmm_Windows_arm64.zip) |
-| Linux x64 | [ncmm_Linux_x86_64.tar.gz](https://github.com/Grails125/ncmm/releases/download/v1.2.9-grails/ncmm_Linux_x86_64.tar.gz) |
-| Linux ARM64 | [ncmm_Linux_arm64.tar.gz](https://github.com/Grails125/ncmm/releases/download/v1.2.9-grails/ncmm_Linux_arm64.tar.gz) |
-| Linux ARMv6 | [ncmm_Linux_armv6.tar.gz](https://github.com/Grails125/ncmm/releases/download/v1.2.9-grails/ncmm_Linux_armv6.tar.gz) |
+| Windows x64 | [ncmm_Windows_x86_64.zip](https://github.com/Grails125/ncmm/releases/download/v1.2.10-grails/ncmm_Windows_x86_64.zip) |
+| Windows ARM64 | [ncmm_Windows_arm64.zip](https://github.com/Grails125/ncmm/releases/download/v1.2.10-grails/ncmm_Windows_arm64.zip) |
+| Linux x64 | [ncmm_Linux_x86_64.tar.gz](https://github.com/Grails125/ncmm/releases/download/v1.2.10-grails/ncmm_Linux_x86_64.tar.gz) |
+| Linux ARM64 | [ncmm_Linux_arm64.tar.gz](https://github.com/Grails125/ncmm/releases/download/v1.2.10-grails/ncmm_Linux_arm64.tar.gz) |
+| Linux ARMv6 | [ncmm_Linux_armv6.tar.gz](https://github.com/Grails125/ncmm/releases/download/v1.2.10-grails/ncmm_Linux_armv6.tar.gz) |
 
-发布页提供 [SHA256SUMS](https://github.com/Grails125/ncmm/releases/download/v1.2.9-grails/SHA256SUMS) 用于核对下载文件。
+发布页提供 [SHA256SUMS](https://github.com/Grails125/ncmm/releases/download/v1.2.10-grails/SHA256SUMS) 用于核对下载文件。
 
 Windows 双击 `一键启动.bat`，启动后自动打开 WebUI；停止时使用同目录的 `一键停止.bat`。它们以解压目录保存数据，详见 [Windows 运行指南](docs/windows.md)。
 

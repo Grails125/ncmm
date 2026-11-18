@@ -24,6 +24,7 @@ import (
 	"github.com/3899/ncmm/api"
 	"github.com/3899/ncmm/internal/atomicfile"
 	"github.com/3899/ncmm/internal/filelock"
+	"github.com/3899/ncmm/internal/upgradepolicy"
 	"github.com/3899/ncmm/pkg/database"
 	"github.com/3899/ncmm/pkg/log"
 
@@ -969,9 +970,16 @@ func migrateMusicPartnerRangeNodes(root *yaml.Node) (bool, error) {
 	return changed, nil
 }
 
-// 已逐项兼容公开到 1.2.9 的配置；未知未来版本仍拒绝改写。
+// 本分支按内置模板版本校验，其他发行版沿用已核对的兼容范围。
 func validateSourceVersion(version string) error {
-	core := strings.SplitN(strings.TrimPrefix(strings.TrimSpace(version), "v"), "-", 2)[0]
+	version = strings.TrimSpace(version)
+	if order, native := upgradepolicy.CompareNative(version, defaultConfig.Version); native {
+		if order > 0 {
+			return fmt.Errorf("配置版本高于当前 %s，请使用与配置匹配的程序版本", defaultConfig.Version)
+		}
+		return nil
+	}
+	core := strings.SplitN(strings.TrimPrefix(version, "v"), "-", 2)[0]
 	if core == "" {
 		return nil
 	}
